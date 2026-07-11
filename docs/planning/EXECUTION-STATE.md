@@ -55,12 +55,24 @@ This is **already designed**: it is the `agent-niceties` **SPEC** (tickets 00–
    **Residual tool-round-trip risk is RESOLVED:** a synthetic addressed event → the model called
    `github_create_issue` → issue #1 created in `wa-bot-sandbox` with the exact requested title/body.
    Eve-native tool loop routes our tools correctly.
-2. **User does the auth/setup** (they will do this live): pair a **fresh** WhatsApp number
-   (`npm run whatsapp` → scan QR), set `GITHUB_TOKEN` + `GITHUB_REPO=<sandbox>` + subscription auth.
-3. Verify pairing: `npx tsx scripts/whatsapp-dry-run.ts ./.wa-auth` → expect `status: online`.
-4. Create the sandbox repo (`gh repo create AaronAbuUsama/wa-bot-sandbox --public`).
-5. **Test everything E2E**: drive all 13 tools + the gate against the sandbox repo from a real group
-   (or via `curl` POST /event during dev). Confirm the access gate drops unaddressed/foreign-group msgs.
+2. ✅ **Paired** a fresh number (Benin 229…); creds in `./.wa-auth`. Group locked to **"Lavin UK"**
+   `WHATSAPP_GROUP_ID=120363410063306573@g.us` (found via `scripts/find-group-jid.ts`; note: the
+   sidecar drops `fromMe`, so send test messages from a *second* number).
+3. ✅ **Sandbox repo** `AaronAbuUsama/wa-bot-sandbox` created (private). The user's fine-grained PAT
+   wasn't scoped to it → E2E used the `gh` CLI token via gitignored `.env.local`. For real use, scope
+   the PAT (add the repo + Issues/PRs read-write, Contents read) and delete `.env.local`.
+4. ✅ **E2E PROVEN — every leg**: gate accepts addressed msg → session → `experimental_chatgpt` (no key)
+   → `github_create_issue` → issue #1 in sandbox; and the reply leg `sidecar POST /send → WhatsApp group`
+   delivered a message to Lavin UK. Run harness: `POST http://127.0.0.1:2000/event` with a synthetic
+   `SidecarEvent` (see §7). Ports: sidecar 8788, agent 2000; use **127.0.0.1** (sidecar is IPv4-only).
+5. 🐞 **Found + fixed a whatsappd bug** that blocked the reply leg: `adapter.start()` awaited the
+   never-resolving `supervise()` loop, so `runSidecar` never reached `server.listen()` and the sidecar
+   HTTP server never bound 8788 (replies → ECONNREFUSED). Filed **whatsappd#1**, opened **PR whatsappd#2**
+   (fix + regression test + bump to **0.2.1**). Bot bridges via `pnpm patch whatsappd@0.2.0`
+   (`patches/whatsappd@0.2.0.patch`) until 0.2.1 ships.
+   **→ NEXT (needs the maintainer): merge PR #2 and `pnpm publish` whatsappd 0.2.1**, then in the bot
+   `pnpm add whatsappd@^0.2.1` and drop the patch (`patches/` + `pnpm.patchedDependencies`).
+   Then Stage 1 is fully closed and we start Stage 2.
 
 **STAGE 2 — build the two-tier (from the SPEC, §6).**
 6. Sidecar-side **fast gate + two-speed debounce/buffer** (free @mention/quote short-circuit; else
