@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getOctokit, resetOctokitForTests, resolveRepo } from "../../agent/lib/github.ts";
+import {
+  allowedWriteRepos,
+  getOctokit,
+  resetOctokitForTests,
+  resolveRepo,
+  resolveWritableRepo,
+} from "../../agent/lib/github.ts";
 
 describe("resolveRepo", () => {
   const originalRepo = process.env.GITHUB_REPO;
@@ -35,6 +41,44 @@ describe("resolveRepo", () => {
   it("throws when GITHUB_REPO is malformed", () => {
     process.env.GITHUB_REPO = "not-a-valid-repo-spec";
     expect(() => resolveRepo({})).toThrow(/must be "owner\/repo"/);
+  });
+});
+
+describe("resolveWritableRepo (write allow-list)", () => {
+  const originalRepo = process.env.GITHUB_REPO;
+  const originalAllowed = process.env.GITHUB_ALLOWED_REPOS;
+
+  afterEach(() => {
+    if (originalRepo === undefined) delete process.env.GITHUB_REPO;
+    else process.env.GITHUB_REPO = originalRepo;
+    if (originalAllowed === undefined) delete process.env.GITHUB_ALLOWED_REPOS;
+    else process.env.GITHUB_ALLOWED_REPOS = originalAllowed;
+  });
+
+  it("allows the configured GITHUB_REPO by default", () => {
+    process.env.GITHUB_REPO = "acme/widgets";
+    delete process.env.GITHUB_ALLOWED_REPOS;
+    expect(resolveWritableRepo({})).toEqual({ owner: "acme", repo: "widgets" });
+  });
+
+  it("matches the allow-list case-insensitively but refuses anything outside it", () => {
+    process.env.GITHUB_REPO = "acme/widgets";
+    delete process.env.GITHUB_ALLOWED_REPOS;
+    expect(resolveWritableRepo({ owner: "Acme", repo: "Widgets" })).toEqual({ owner: "Acme", repo: "Widgets" });
+    expect(() => resolveWritableRepo({ owner: "evil", repo: "repo" })).toThrow(/not in the write allow-list/);
+  });
+
+  it("honors a multi-repo GITHUB_ALLOWED_REPOS list", () => {
+    process.env.GITHUB_REPO = "acme/widgets";
+    process.env.GITHUB_ALLOWED_REPOS = "acme/widgets, acme/other";
+    expect(resolveWritableRepo({ owner: "acme", repo: "other" })).toEqual({ owner: "acme", repo: "other" });
+    expect(allowedWriteRepos().has("acme/other")).toBe(true);
+  });
+
+  it("throws when no writable repos are configured at all", () => {
+    delete process.env.GITHUB_REPO;
+    delete process.env.GITHUB_ALLOWED_REPOS;
+    expect(() => resolveWritableRepo({ owner: "a", repo: "b" })).toThrow(/No writable repos configured/);
   });
 });
 

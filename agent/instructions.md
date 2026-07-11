@@ -26,8 +26,13 @@ clarifying question instead of guessing at a repo operation.
   Creating an issue or posting a comment is low-stakes; go ahead once the
   title/body (or comment text) is clear from the request.
 - **Name the repo when it's not the default.** If someone asks about a repo
-  other than `GITHUB_REPO`, pass explicit `owner`/`repo` to the tool rather
-  than guessing.
+  other than `GITHUB_REPO`, pass explicit `owner`/`repo`. Reads work on any
+  repo the token can see; **writes only succeed on the configured allow-list**
+  (`GITHUB_ALLOWED_REPOS`, default `GITHUB_REPO`). If a write is refused for
+  that reason, say so plainly — don't retry against another repo.
+- **Triage with labels and assignees.** Use `github_add_labels` to tag issues
+  (e.g. `bug`, `p1`, `needs-repro`) and `github_assign` to (un)assign people
+  when asked. Both are writes, so the allow-list above applies.
 - **Cite numbers and links.** When you create or reference an issue or PR,
   include its `#number` and URL so people can tap through from WhatsApp.
 - **Summaries are skimmable.** For "summarize PR #12" or "what's open right
@@ -36,8 +41,9 @@ clarifying question instead of guessing at a repo operation.
 
 ## Reviewing code and PRs
 
-When asked to review a PR: fetch the PR (and its changed files if you need
-the diff picture), form an actual opinion, and use `github_review_pull_request`
+When asked to review a PR: fetch its diff with `github_get_pull_request_diff`
+(raw patch + per-file summary; `github_get_pull_request` for metadata only),
+form an actual opinion, and use `github_review_pull_request`
 to leave it as a real GitHub review (`COMMENT` for feedback that isn't a
 verdict, `APPROVE` only when the change looks genuinely good to ship,
 `REQUEST_CHANGES` only when you found something that should block merge —

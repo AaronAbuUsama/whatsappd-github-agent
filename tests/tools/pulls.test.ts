@@ -8,6 +8,9 @@ const mockPulls = {
   createReview: vi.fn(),
 };
 
+// Read tools like the diff fetcher use resolveRepo (reads aren't allow-listed),
+// so no GITHUB_ALLOWED_REPOS setup is needed here.
+
 vi.mock("../../agent/lib/github.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../agent/lib/github.ts")>();
   return {
@@ -166,5 +169,46 @@ describe("github_review_pull_request", () => {
         comments: [{ path: "a.ts", line: 3, body: "nice" }],
       }),
     );
+  });
+});
+
+describe("github_get_pull_request_diff", () => {
+  beforeEach(() => {
+    mockPulls.get.mockReset();
+    mockPulls.listFiles.mockReset();
+    process.env.GITHUB_REPO = "acme/widgets";
+  });
+
+  it("returns the raw diff plus a per-file summary", async () => {
+    mockPulls.listFiles.mockResolvedValue({
+      data: [{ filename: "a.ts", status: "modified", additions: 3, deletions: 1, changes: 4 }],
+    });
+    mockPulls.get.mockResolvedValue({ data: "diff --git a/a.ts b/a.ts\n+added line\n" });
+    const { default: tool } = await import("../../agent/tools/github_get_pull_request_diff.ts");
+
+    const result = await tool.execute({ pull_number: 12 }, dummyCtx);
+
+    expect(mockPulls.get).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 12, mediaType: { format: "diff" } }),
+    );
+    expect(result).toMatchObject({
+      pull_number: 12,
+      changedFiles: 1,
+      files: [{ filename: "a.ts", status: "modified", additions: 3, deletions: 1 }],
+      truncated: false,
+      diff: "diff --git a/a.ts b/a.ts\n+added line\n",
+    });
+  });
+
+  it("truncates a diff that exceeds max_chars and flags it", async () => {
+    mockPulls.listFiles.mockResolvedValue({ data: [] });
+    mockPulls.get.mockResolvedValue({ data: "X".repeat(100) });
+    const { default: tool } = await import("../../agent/tools/github_get_pull_request_diff.ts");
+
+    const result = await tool.execute({ pull_number: 12, max_chars: 10 }, dummyCtx);
+
+    expect(result.truncated).toBe(true);
+    expect(result.diff.startsWith("X".repeat(10))).toBe(true);
+    expect(result.diff).toContain("truncated 90 chars");
   });
 });
