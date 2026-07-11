@@ -23,7 +23,7 @@
  * LOCAL-DEV ONLY — it fails in deployment (no Codex creds there). Branch on env
  * before shipping.
  */
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Runtime } from "effect";
 import { stepCountIs, streamText, tool } from "ai";
 import { experimental_chatgpt } from "eve/models/openai";
 import { z } from "zod";
@@ -64,50 +64,61 @@ export const aiVoice: Layer.Layer<Conversationalist, never, Outbound | Worker> =
     const model = experimental_chatgpt();
     return {
       turn: (window) =>
-        Effect.tryPromise({
-          try: async (signal) => {
-            let streamError: unknown;
-            const result = streamText({
-              model,
-              system: PERSONA,
-              prompt: renderWindow(window),
-              stopWhen: stepCountIs(6),
-              abortSignal: signal,
-              // consumeStream() swallows+logs stream errors by default; capture the real
-              // cause here and rethrow below so the failure reaches `catch`, not the console.
-              onError: ({ error }) => {
-                streamError = error;
+        // Run each tool's Effect on the turn fiber's OWN runtime (not a bare, detached
+        // `Effect.runPromise`) so log context and — the load-bearing part — interruption
+        // propagate into an in-flight tool, e.g. a long blocking `worker.delegate` that
+        // must be torn down when the loop's scope closes. Same runtime-capture seam
+        // repl.ts uses to bridge stdin into the running program.
+        Effect.runtime<never>().pipe(
+          Effect.flatMap((runtime) =>
+            Effect.tryPromise({
+              try: async (signal) => {
+                const run = <A>(eff: Effect.Effect<A>): Promise<A> => Runtime.runPromise(runtime)(eff, { signal });
+                const chatId = window.chatId;
+                let streamError: unknown;
+                const result = streamText({
+                  model,
+                  system: PERSONA,
+                  prompt: renderWindow(window),
+                  stopWhen: stepCountIs(6),
+                  abortSignal: signal,
+                  // consumeStream() swallows+logs stream errors by default; capture the real
+                  // cause here and rethrow below so the failure reaches `catch`, not the console.
+                  onError: ({ error }) => {
+                    streamError = error;
+                  },
+                  tools: {
+                    reply: tool({
+                      description: "Say something in the group.",
+                      inputSchema: z.object({ text: z.string() }),
+                      execute: ({ text }) => run(outbound.reply(chatId, text)),
+                    }),
+                    set_typing: tool({
+                      description: "Show typing while you work.",
+                      inputSchema: z.object({ on: z.boolean() }),
+                      execute: ({ on }) => run(outbound.setTyping(chatId, on)),
+                    }),
+                    delegate: tool({
+                      description: "Hand real GitHub work to the Worker; returns its result to narrate.",
+                      inputSchema: z.object({ instruction: z.string() }),
+                      // Never let a Worker failure reject the tool mid-turn: fold it into a
+                      // result the model can narrate, exactly as the stub's delegateAndNarrate does.
+                      execute: ({ instruction }) =>
+                        run(
+                          worker.delegate({ chatId, instruction }).pipe(
+                            Effect.catchAll((err) => Effect.succeed({ summary: `couldn't do that: ${String(err)}` })),
+                          ),
+                        ),
+                    }),
+                  },
+                });
+                await result.consumeStream({ onError: () => {} });
+                if (streamError !== undefined) throw streamError;
               },
-              tools: {
-                reply: tool({
-                  description: "Say something in the group.",
-                  inputSchema: z.object({ text: z.string() }),
-                  execute: ({ text }) => Effect.runPromise(outbound.reply(window.chatId, text)),
-                }),
-                set_typing: tool({
-                  description: "Show typing while you work.",
-                  inputSchema: z.object({ on: z.boolean() }),
-                  execute: ({ on }) => Effect.runPromise(outbound.setTyping(window.chatId, on)),
-                }),
-                delegate: tool({
-                  description: "Hand real GitHub work to the Worker; returns its result to narrate.",
-                  inputSchema: z.object({ instruction: z.string() }),
-                  // Never let a Worker failure reject the tool mid-turn: fold it into a
-                  // result the model can narrate, exactly as the stub's delegateAndNarrate does.
-                  execute: ({ instruction }) =>
-                    Effect.runPromise(
-                      worker.delegate({ chatId: window.chatId, instruction }).pipe(
-                        Effect.catchAll((err) => Effect.succeed({ summary: `couldn't do that: ${String(err)}` })),
-                      ),
-                    ),
-                }),
-              },
-            });
-            await result.consumeStream({ onError: () => {} });
-            if (streamError !== undefined) throw streamError;
-          },
-          catch: (cause) => new ConversationError({ cause }),
-        }),
+              catch: (cause) => new ConversationError({ cause }),
+            }),
+          ),
+        ),
     };
   }),
 );
