@@ -45,11 +45,15 @@ This is **already designed**: it is the `agent-niceties` **SPEC** (tickets 00–
 ## 4. What's held / next (in order — user's chosen sequencing)
 
 **STAGE 1 — prove the single-model bot end-to-end on Codex.**
-1. **TASK #1 (biggest unknown): find + wire the Codex provider.** Verify the exact AI-SDK package
-   that authenticates via the ChatGPT/Codex subscription (NOT an OpenAI API key). Candidates to check:
-   an `ai-sdk`/`@ai-sdk` community Codex provider, or bridging the local `codex` CLI's auth. If none
-   is clean, that's the escalation point — surface options, don't silently fall back to an API key.
-   Then edit `agent/agent.ts` to replace `@ai-sdk/anthropic`.
+1. **TASK #1 — Codex provider: ✅ DONE & PROVEN LIVE (2026-07-11).** Wired
+   `ai-sdk-provider-codex-cli@2.1.1` (AI-SDK v7 line, matches our `ai@7.0.22` / `@ai-sdk/provider@2.0.3`).
+   `agent/agent.ts` now uses `codexExec("gpt-5.5", { skipGitRepoCheck: true })`; `@ai-sdk/anthropic`
+   removed. Auth = the user's `~/.codex/auth.json` (from `codex login`, Codex CLI 0.144.1) — **no API key**.
+   Smoke-tested: with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` both unset, a `generateText` returned "hello".
+   Mode = `codexExec` (process-per-call, floor); `createCodexAppServer()` is the Stage-2 upgrade for
+   token streaming / tool-call deltas.
+   ⚠️ **Residual risk to prove in E2E:** confirm our `github_*` tools round-trip as AI-SDK tool calls
+   (model requests → Eve executes via octokit → result back), not executed inside Codex's own sandbox.
 2. **User does the auth/setup** (they will do this live): pair a **fresh** WhatsApp number
    (`npm run whatsapp` → scan QR), set `GITHUB_TOKEN` + `GITHUB_REPO=<sandbox>` + subscription auth.
 3. Verify pairing: `npx tsx scripts/whatsapp-dry-run.ts ./.wa-auth` → expect `status: online`.
@@ -86,8 +90,8 @@ This is **already designed**: it is the `agent-niceties` **SPEC** (tickets 00–
 
 ## 7. Gotchas & risks (will bite if forgotten)
 
-- ⚠️ **Codex provider is UNVERIFIED** — the single biggest risk. Confirm a real subscription-auth
-  AI-SDK path exists before promising it; if not, escalate with options. Do not fall back to an API key.
+- ✅ **Codex provider VERIFIED & PROVEN LIVE** (was the biggest risk). `ai-sdk-provider-codex-cli` rides
+  `~/.codex/auth.json` — no API key. See §4 Task #1. Keep both `*_API_KEY` env vars UNSET on purpose.
 - ⚠️ **Stored WhatsApp creds are DEAD** (`open-harness/whatsapp/.wa-auth-*` both returned
   `logged_out_remote`). A fresh pairing is mandatory before any live run.
 - ⚠️ **Node ≥24 for `eve` CLI** (dev/build/start); the sidecar is fine on Node 22. CI splits the

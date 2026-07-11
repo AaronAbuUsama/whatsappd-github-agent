@@ -64,7 +64,7 @@ Full diagram and explanation in [the tutorial](./docs/TUTORIAL.md#1-what-this-is
 git clone https://github.com/AaronAbuUsama/whatsappd-github-agent.git
 cd whatsappd-github-agent
 npm install
-cp .env.example .env   # fill in GITHUB_TOKEN, GITHUB_REPO, ANTHROPIC_API_KEY, ...
+cp .env.example .env   # fill in GITHUB_TOKEN, GITHUB_REPO, ...  (model = your `codex login`, no API key)
 
 npm run dev             # terminal 1: the Eve agent (needs Node >= 24)
 npm run whatsapp         # terminal 2: the WhatsApp sidecar — scan the QR it prints
@@ -83,7 +83,7 @@ WhatsApp number, and everything else in depth.
 
 ```
 agent/
-├── agent.ts                    # model config (Claude, via @ai-sdk/anthropic)
+├── agent.ts                    # model config (Codex/ChatGPT subscription, via ai-sdk-provider-codex-cli)
 ├── instructions.md              # the GitHub-concierge persona
 ├── channels/whatsapp.ts         # gated WhatsApp ingress (whatsappd's Eve adapter + group gating)
 ├── lib/github.ts                # shared Octokit client + repo resolution
