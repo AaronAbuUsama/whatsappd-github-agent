@@ -19,7 +19,7 @@
  *     rebuilds the session from it each turn, capturing `session.state` afterward
  *     so the next turn resumes the *same* session (spike strategy 2 — proven to
  *     carry memory). `SessionStore` is an interface; an in-memory `Map` serves
- *     this ticket, and #9 swaps in the durable SQLite store with no caller change.
+ *     issue #6, and #8 swaps in the durable SQLite store with no caller change.
  *
  *  2. **`say`-only delivery, by construction (decision G5).** The voice is a
  *     participant, not a reply-bot: its final model text is private working
@@ -38,9 +38,9 @@ import { Conversationalist, ConversationError, Outbound } from "./ports.ts";
 /**
  * Per-chat resume cursor: `chatId → SessionState`. Holding the `SessionState`
  * (not a bare token) is what makes resume actually resume — see the file header.
- * The in-memory implementation below is enough for one always-on process; #9
- * replaces it with a SQLite-backed store so sessions survive a restart, without
- * the doorway voice changing.
+ * The in-memory implementation remains useful to tests and standalone callers;
+ * the gateway injects #8's SQLite-backed store so sessions survive a restart,
+ * without the doorway voice changing.
  *
  * Deliberately a plain injected interface, NOT a Coalescer `Context.Tag` port
  * (contrast `ports.ts`): `SessionStore` and `VoiceModel` are internal to how the
@@ -54,16 +54,40 @@ export interface SessionStore {
   readonly get: (chatId: string) => SessionState | undefined;
   /** Persist the latest cursor (captured from `session.state` after each turn). */
   readonly set: (chatId: string, state: SessionState) => void;
+  /** Serialize the full read -> turn -> write cycle for one chat. */
+  readonly runExclusive: <T>(chatId: string, task: () => Promise<T>) => Promise<T>;
 }
 
-/** In-memory `chatId → SessionState` store. Lost on restart — that's #9's job to fix. */
+export const keyedSessionLock = () => {
+  const tails = new Map<string, Promise<void>>();
+  return async <T>(chatId: string, task: () => Promise<T>): Promise<T> => {
+    const previous = tails.get(chatId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    tails.set(chatId, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (tails.get(chatId) === tail) tails.delete(chatId);
+    }
+  };
+};
+
+/** In-memory `chatId → SessionState` store for tests and non-gateway callers. */
 export const memorySessionStore = (): SessionStore => {
   const states = new Map<string, SessionState>();
+  const runExclusive = keyedSessionLock();
   return {
     get: (chatId) => states.get(chatId),
     set: (chatId, state) => {
       states.set(chatId, state);
     },
+    runExclusive,
   };
 };
 
@@ -131,15 +155,16 @@ const noteFor = (reason: FireReason): string =>
  * `clientContext` (ephemeral, not written to session history).
  */
 export const eveVoiceModel = (client: Client, store: SessionStore): VoiceModel => ({
-  turn: async (chatId, message, reason, signal) => {
-    const session = client.session(store.get(chatId));
-    const response = await session.send({ message, clientContext: noteFor(reason), signal });
-    const result = await response.result();
-    // Persist the resume cursor (now carrying the sessionId) BEFORE returning, so a
-    // memoryless fresh session can never be minted for this chat on the next turn.
-    store.set(chatId, session.state);
-    return { events: result.events, message: result.message, status: result.status };
-  },
+  turn: (chatId, message, reason, signal) =>
+    store.runExclusive(chatId, async () => {
+      const session = client.session(store.get(chatId));
+      const response = await session.send({ message, clientContext: noteFor(reason), signal });
+      const result = await response.result();
+      // Persist the resume cursor (now carrying the sessionId) BEFORE returning, so a
+      // memoryless fresh session can never be minted for this chat on the next turn.
+      store.set(chatId, session.state);
+      return { events: result.events, message: result.message, status: result.status };
+    }),
 });
 
 /** Render a buffered window as the turn's user message: one `sender: text` line per message. */

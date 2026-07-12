@@ -13,8 +13,9 @@
  *
  * The doorway voice resumes each chat's session by `SessionState` (see
  * doorway.ts / the #4 finding), and delivers ONLY the model's `say` output. The
- * `chatId → SessionState` store is in-memory here; #9 swaps in SQLite so sessions
- * survive a restart, with nothing in this file changing.
+ * `chatId → SessionState` store shares the durable SQLite database with the
+ * non-blocking jobs queue, so both pending work and its report-back cursor
+ * survive a restart.
  *
  * Reuses the coalescer's real WhatsApp seams (`openSession`, `whatsappEventSource`,
  * `whatsappOutbound`, `botIdsOf`) and its config/run — unchanged — exactly as
@@ -24,10 +25,12 @@
  */
 import { Duration, Effect, Layer, Schedule } from "effect";
 import { Client } from "eve/client";
+import { GatewayStore } from "./lib/jobs.ts";
 import { makeChatGate } from "../src/coalescer/chat-gate.ts";
 import * as Coalescer from "../src/coalescer/coalescer.ts";
 import { configLayer } from "../src/coalescer/config.ts";
-import { doorwayVoice, eveVoiceModel, memorySessionStore } from "../src/coalescer/doorway.ts";
+import { doorwayVoice, eveVoiceModel } from "../src/coalescer/doorway.ts";
+import { eveJobLoopback, jobRunner } from "../src/gateway/job-runner.ts";
 import { botIdsOf, openSession, whatsappEventSource, whatsappOutbound } from "../src/coalescer/whatsapp.ts";
 
 const STORE_DIR = process.env.WHATSAPP_STORE_DIR ?? "./.wa-auth";
@@ -64,10 +67,12 @@ const waitForHealth = (client: Client): Effect.Effect<void, Error> =>
 export async function startGateway(agentName: string): Promise<void> {
   const host = loopbackHost();
   const client = new Client({ host });
-  const store = memorySessionStore();
+  const store = new GatewayStore();
+  store.reclaimRunning();
   const model = eveVoiceModel(client, store);
 
   const program = Effect.gen(function* () {
+    yield* Effect.addFinalizer(() => Effect.sync(() => store.close()));
     yield* waitForHealth(client).pipe(
       Effect.tapError(() => Effect.logError(`server did not become healthy at ${host}; WhatsApp not started`)),
     );
@@ -84,6 +89,12 @@ export async function startGateway(agentName: string): Promise<void> {
     // in a LID-addressed group, its @lid JID (WHATSAPP_BOT_LID) — see botIdsOf.
     const botIds = botIdsOf(session, process.env.WHATSAPP_BOT_LID);
     yield* Effect.logInfo(`online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
+
+    const jobs = eveJobLoopback(client, async (chatId, text) => {
+      await session.send(chatId, { text });
+    });
+    yield* Effect.forkScoped(jobRunner(store, jobs));
+    yield* Effect.logInfo("non-blocking delegation runner started");
 
     const services = Layer.mergeAll(
       doorwayVoice(model).pipe(Layer.provide(whatsappOutbound(session))),
