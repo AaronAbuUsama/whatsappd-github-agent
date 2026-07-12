@@ -12,7 +12,7 @@
  * as a scoped resource: it's stopped and unsubscribed when the scope closes.
  */
 import { createRequire } from "node:module";
-import { Data, Deferred, Effect, Layer, Queue, Runtime, type Scope, Stream } from "effect";
+import { Data, Effect, Layer, Queue, Runtime, type Scope, Stream } from "effect";
 import {
   createSession,
   fileStore,
@@ -75,9 +75,8 @@ export const openSession = (storeDir: string): Effect.Effect<WhatsAppSession, Wh
     const session = createSession({ store: fileStore(storeDir), auth: qrAuth() });
     yield* Effect.addFinalizer(() => Effect.promise(() => session.stop()).pipe(Effect.ignore));
 
-    const online = yield* Deferred.make<void, WhatsAppError>();
-    const runtime = yield* Effect.runtime<never>();
-    const unsub = session.onStatus((status) => {
+    // Log status transitions + render a QR on first-run pairing, for the session's lifetime.
+    const logUnsub = session.onStatus((status) => {
       if (
         status.phase === "pairing" &&
         status.pairing.step === "challenge_live" &&
@@ -89,16 +88,29 @@ export const openSession = (storeDir: string): Effect.Effect<WhatsAppSession, Wh
       } else {
         console.log(`[wa] ${status.phase}`);
       }
-      if (isOnline(status)) {
-        Runtime.runFork(runtime)(Deferred.succeed(online, undefined));
-      } else if (isTerminal(status)) {
-        Runtime.runFork(runtime)(Deferred.fail(online, new WhatsAppError({ cause: `connection ${status.phase}` })));
-      }
     });
-    yield* Effect.addFinalizer(() => Effect.sync(() => unsub()));
+    yield* Effect.addFinalizer(() => Effect.sync(() => logUnsub()));
 
-    yield* Effect.tryPromise({ try: () => session.start(), catch: (cause) => new WhatsAppError({ cause }) });
-    yield* Deferred.await(online);
+    // Connect and settle once genuinely online (so identity() is readable), or fail
+    // on a terminal status. start() is fired here, NOT awaited separately — it doesn't
+    // resolve until well after online, so we settle on the status callback instead.
+    yield* Effect.async<void, WhatsAppError>((resume) => {
+      const unsub = session.onStatus((status) => {
+        if (isOnline(status)) {
+          unsub();
+          resume(Effect.void);
+        } else if (isTerminal(status)) {
+          unsub();
+          resume(Effect.fail(new WhatsAppError({ cause: `connection ${status.phase}` })));
+        }
+      });
+      session.start().catch((cause: unknown) => {
+        unsub();
+        resume(Effect.fail(new WhatsAppError({ cause })));
+      });
+      return Effect.sync(() => unsub());
+    });
+
     return session;
   });
 
