@@ -18,7 +18,7 @@
 import { Console, Effect, Layer } from "effect";
 import * as Coalescer from "./coalescer.ts";
 import { configLayer } from "./config.ts";
-import { cannedWorker } from "./mocks.ts";
+import { Worker } from "./ports.ts";
 import { aiVoice } from "./voice.ts";
 import { botIdOf, openSession, whatsappEventSource, whatsappOutbound } from "./whatsapp.ts";
 
@@ -42,9 +42,14 @@ const chatAllowed = (chatId: string, isGroup: boolean): boolean =>
   isGroup ? (GROUPS.size > 0 ? GROUPS.has(chatId.toLowerCase()) : ALLOW_ANY_GROUP) : ALLOW_DM;
 
 // Worker: honest stub until Rung 2b wires the real agent/ GitHub agent. It does
-// no GitHub work; it just tells the voice what it *would* delegate, so a live
-// test never claims work it didn't do.
-const stubWorker = cannedWorker((task) => ({ summary: `(worker not wired yet — would handle: ${task.instruction})` }));
+// no GitHub work; it logs the hand-off and tells the voice what it *would* do, so
+// a live test never claims work it didn't do.
+const stubWorker = Layer.succeed(Worker, {
+  delegate: (task) =>
+    Effect.sync(() => console.log(`🛠️  delegate → ${task.instruction}`)).pipe(
+      Effect.as({ summary: `(worker not wired yet — would handle: ${task.instruction})` }),
+    ),
+});
 
 const program = Effect.gen(function* () {
   if (GROUPS.size === 0 && !ALLOW_ANY_GROUP && !ALLOW_DM) {

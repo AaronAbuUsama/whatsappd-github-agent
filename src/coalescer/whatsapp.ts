@@ -49,6 +49,25 @@ const textOf = (msg: WaMessage): string => {
   }
 };
 
+/** `HH:MM:SS` for readable traffic logs. */
+const stamp = (): string => new Date().toTimeString().slice(0, 8);
+
+/** Log one inbound message as it arrives off the wire, with why-it-was-ignored tags. */
+const logInbound = (msg: WaMessage, allowed: boolean): void => {
+  const tags = [
+    msg.fromMe ? "self" : null,
+    !msg.live ? "history" : null,
+    !allowed ? "ignored" : null,
+    msg.context?.quoted ? "quote" : null,
+  ].filter(Boolean);
+  const who = msg.pushName ?? msg.from;
+  // Show raw mention JIDs so a mention-that-should-address-the-bot but doesn't is visible.
+  const mentions = msg.context?.mentions?.length ? `  mentions=${JSON.stringify(msg.context.mentions)}` : "";
+  console.log(
+    `[${stamp()}] 📥 ${who} in ${msg.chatId}: ${JSON.stringify(textOf(msg))}${tags.length ? `  [${tags.join(",")}]` : ""}${mentions}`,
+  );
+};
+
 /** whatsappd's inbound shape → the Coalescer's IncomingMessage (timestamp is already ms). */
 const toIncoming = (msg: WaMessage): IncomingMessage => ({
   id: msg.id,
@@ -114,8 +133,13 @@ export const openSession = (storeDir: string): Effect.Effect<WhatsAppSession, Wh
     return session;
   });
 
-/** The connected account's own JID — the botId `addressesBot` matches against. */
-export const botIdOf = (session: WhatsAppSession): string => session.identity()?.jid ?? "unknown@s.whatsapp.net";
+/**
+ * The connected account's own JID — the botId `addressesBot` matches against.
+ * `identity().jid` carries a `:<device>` suffix (e.g. `2294…:16@s.whatsapp.net`)
+ * that WhatsApp @-mention JIDs do NOT, so strip it or mentions never match.
+ */
+export const botIdOf = (session: WhatsAppSession): string =>
+  (session.identity()?.jid ?? "unknown@s.whatsapp.net").replace(/:\d+(?=@)/, "");
 
 /**
  * EventSource over `session.onMessage`. Messages are pushed onto an unbounded
@@ -133,7 +157,9 @@ export const whatsappEventSource = (
       const queue = yield* Queue.unbounded<IncomingMessage>();
       const runtime = yield* Effect.runtime<never>();
       const unsub = session.onMessage((msg) => {
-        if (!allow(msg.chatId, msg.isGroup)) return;
+        const allowed = allow(msg.chatId, msg.isGroup);
+        logInbound(msg, allowed);
+        if (!allowed) return;
         // Unbounded offer never suspends, so runSync keeps arrival order.
         Runtime.runSync(runtime)(Queue.offer(queue, toIncoming(msg)));
       });
@@ -147,11 +173,14 @@ export const whatsappEventSource = (
 export const whatsappOutbound = (session: WhatsAppSession): Layer.Layer<Outbound> =>
   Layer.succeed(Outbound, {
     reply: (chatId, text) =>
-      Effect.tryPromise(() => session.send(chatId, { text })).pipe(
+      Effect.sync(() => console.log(`[${stamp()}] 📤 → ${chatId}: ${JSON.stringify(text)}`)).pipe(
+        Effect.zipRight(Effect.tryPromise(() => session.send(chatId, { text }))),
         Effect.asVoid,
-        Effect.catchAll((cause) =>
-          Effect.logError("whatsapp send failed").pipe(Effect.annotateLogs({ chatId, cause: String(cause) })),
-        ),
+        Effect.catchAll((cause) => Effect.sync(() => console.error(`[${stamp()}] ⚠️  send failed → ${chatId}: ${String(cause)}`))),
       ),
-    setTyping: (chatId, on) => Effect.tryPromise(() => session.setTyping(chatId, on)).pipe(Effect.ignore),
+    setTyping: (chatId, on) =>
+      Effect.tryPromise(() => session.setTyping(chatId, on)).pipe(
+        Effect.tap(() => Effect.sync(() => console.log(`[${stamp()}] ⌨️  typing ${on ? "on" : "off"} — ${chatId}`))),
+        Effect.ignore,
+      ),
   });
