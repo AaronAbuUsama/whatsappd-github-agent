@@ -41,25 +41,72 @@ export interface RepoInput {
 }
 
 /**
- * Resolve `{ owner, repo }` from explicit tool input, falling back to
- * `GITHUB_REPO` ("owner/repo") when either is omitted. Explicit input always
- * wins per-field, so "review PR #3 in acme/widgets" works even with a
- * different default repo configured.
+ * Env-var *names* (and other placeholders) the model has been seen to echo into
+ * the `owner`/`repo` fields instead of a real value — the F4/F5 failure where
+ * it issued `GET /repos/GITHUB_REPO/GITHUB_REPO/…` (404). Matched
+ * case-insensitively and treated as "not provided" so resolution falls through
+ * to the configured repo rather than trusting the junk string. Deliberately
+ * excludes bare `owner`/`repo`, which are plausible real GitHub names.
  */
-export function resolveRepo(input: RepoInput): RepoRef {
-  if (input.owner && input.repo) return { owner: input.owner, repo: input.repo };
+const PLACEHOLDER_FIELDS: ReadonlySet<string> = new Set([
+  "github_repo",
+  "github_owner",
+  "github_repository",
+  "github_allowed_repos",
+  "owner/repo",
+]);
 
-  const fallback = process.env.GITHUB_REPO;
-  if (!fallback) {
+/**
+ * Normalize a caller-supplied owner/repo field. Trims, then treats empty
+ * strings and known env-var-name echoes as *absent* (`undefined`) so the caller
+ * defaults HARD to the configured repo instead of targeting a bogus one. This
+ * is the empty-string + placeholder half of the F4/F5 fix.
+ */
+function cleanField(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (PLACEHOLDER_FIELDS.has(trimmed.toLowerCase())) return undefined;
+  return trimmed;
+}
+
+/**
+ * Parse the configured default repo from `GITHUB_REPO` ("owner/repo"). This is
+ * the single hard default; it is never derived from model-supplied strings.
+ */
+function configuredRepo(): RepoRef {
+  const raw = process.env.GITHUB_REPO?.trim();
+  if (!raw) {
     throw new Error(
       "No repo specified and GITHUB_REPO is not set. Pass owner/repo explicitly or set GITHUB_REPO=owner/repo.",
     );
   }
-  const [fallbackOwner, fallbackRepo] = fallback.split("/");
-  if (!fallbackOwner || !fallbackRepo) {
-    throw new Error(`GITHUB_REPO must be "owner/repo", got "${fallback}".`);
+  const [owner, repo] = raw.split("/");
+  if (!owner || !repo) {
+    throw new Error(`GITHUB_REPO must be "owner/repo", got "${raw}".`);
   }
-  return { owner: input.owner ?? fallbackOwner, repo: input.repo ?? fallbackRepo };
+  return { owner, repo };
+}
+
+/**
+ * Resolve `{ owner, repo }`, defaulting **hard** to the configured `GITHUB_REPO`.
+ *
+ * Only a *complete, clean* owner+repo pair from the caller overrides the
+ * default — that keeps legitimate cross-repo reads ("review PR #3 in
+ * acme/widgets") working. Anything less resolves to the configured repo:
+ *
+ * - a lone `owner` or `repo` (no per-field mixing — a stray `owner:"foo"` must
+ *   never become `foo/<configured-repo>`, the F4 `ios-design-system/…` vector);
+ * - an empty string (`"" ?? default` used to leak the empty string through);
+ * - an env-var-name echo like `GITHUB_REPO` (the F4 `GITHUB_REPO/GITHUB_REPO`).
+ *
+ * The default is derived only from `GITHUB_REPO`, never from model output.
+ */
+export function resolveRepo(input: RepoInput): RepoRef {
+  const owner = cleanField(input.owner);
+  const repo = cleanField(input.repo);
+  if (owner && repo) return { owner, repo };
+  return configuredRepo();
 }
 
 /**

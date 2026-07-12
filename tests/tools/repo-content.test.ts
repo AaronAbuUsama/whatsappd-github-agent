@@ -131,6 +131,20 @@ describe("github_search_code", () => {
     );
   });
 
+  // F4: the model echoing the env-var *name* into a complete owner/repo pair
+  // must not build a bogus `repo:GITHUB_REPO/GITHUB_REPO` qualifier. Routing
+  // through resolveRepo cleans it and defaults hard to GITHUB_REPO.
+  it("defaults hard when owner/repo are placeholder echoes (F4)", async () => {
+    mockSearch.code.mockResolvedValue({ data: { total_count: 0, items: [] } });
+    const { default: tool } = await import("../../agent/tools/github_search_code.ts");
+
+    await tool.execute({ q: "useEffect", owner: "GITHUB_REPO", repo: "GITHUB_REPO" }, dummyCtx);
+
+    expect(mockSearch.code).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "useEffect repo:acme/widgets" }),
+    );
+  });
+
   it("maps result items to a compact shape", async () => {
     mockSearch.code.mockResolvedValue({
       data: {

@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { getOctokit } from "../lib/github.ts";
+import { getOctokit, resolveRepo } from "../lib/github.ts";
 
 export default defineTool({
   description:
@@ -16,11 +16,14 @@ export default defineTool({
   }),
   async execute(input) {
     let q = input.q;
-    if (input.owner && input.repo) {
-      q += ` repo:${input.owner}/${input.repo}`;
-    } else if (!/\brepo:|(^|\s)org:/i.test(q)) {
-      const fallback = process.env.GITHUB_REPO;
-      if (fallback) q += ` repo:${fallback}`;
+    // An explicit `repo:`/`org:` qualifier in the query itself is the documented
+    // escape hatch for searching outside the default repo — respect it as-is.
+    // Otherwise scope to the resolved repo: this routes owner/repo through the
+    // shared resolver, so placeholder/partial values are cleaned and it defaults
+    // HARD to GITHUB_REPO (F4: no more `repo:GITHUB_REPO/GITHUB_REPO`).
+    if (!/\brepo:|(^|\s)org:/i.test(q)) {
+      const { owner, repo } = resolveRepo(input);
+      q += ` repo:${owner}/${repo}`;
     }
 
     const octokit = getOctokit();
