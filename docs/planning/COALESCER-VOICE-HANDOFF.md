@@ -339,3 +339,73 @@ probe) before testing live. `.env` is gitignored — token never enters git.
 DoD (near-term): a QA tester messages "Tst" (or the real QA group) → voice gathers
 details → worker files an issue in `TheCallApp/ios-design-system` → voice replies with
 the link. Blocked only on the token above.
+
+## 8. Session update — it WORKS (alpha); model on an API key now
+
+State as of the latest session: the loop is **working end-to-end** in the *new* group.
+It's alpha — the **prompts need iteration** — but voice → gather → delegate → file
+issue → reply runs. Blockers from §7 are all cleared. Tip: **`fcd0cf4`** on `main`,
+72 tests green, typecheck clean, tree clean.
+
+### What got fixed/built this session (commits)
+- **`f62c443`** — the voice was going *silent*: the Codex/model answers in plain text
+  but never called the `reply` tool, and `voice.ts` only delivers `reply`-tool text.
+  Fix = a **SPEECH_CONTRACT** appended to every persona ("the group only hears you via
+  the reply tool; prose is discarded; call no tools to stay silent") — verified in a
+  harness (replies on a bug report, stays silent on chatter). Same commit: **decision
+  logging** (`🗣️ voice turn` / `💬 replied` / `🤫 chose to stay silent` / `🛠️ delegated`)
+  so a silent turn is visible, and **`botIds` as a set** so an @-mention under EITHER the
+  phone-number OR the `@lid` scheme matches (LID groups sent the bot's `@lid`, botId was
+  the PN jid → never matched). New env **`WHATSAPP_BOT_LID`** (bare number or `NNN@lid`).
+- **`a51c15b`** — **per-chat memory** (THE big one): the voice was stateless — each turn
+  saw only the buffered delta (usually 1 msg), so it forgot its own question the instant
+  it asked ("15" → blank). Now `voice.ts` keeps a bounded per-chat transcript (`MAX_HISTORY`
+  = 30, incl. the bot's own replies) fed to `streamText` as `messages`. Also: **typing
+  only when it acts** (a `Deferred` latch fires on the first `reply`/`delegate`, so silent
+  turns don't flash "typing…"); **90s turn timeout** (a wedged backend can't hang the chat
+  loop); **real error surfacing** (`❌ voice turn failed — <cause>` — this is how we caught
+  the usage-limit error instead of a silent gap).
+- **`b92ddf3`** — **second-account isolation via `CODEX_HOME`**: eve's `experimental_chatgpt`
+  reads `${CODEX_HOME}/auth.json` (default `~/.codex`) and refreshes tokens itself.
+  `pnpm run login` = `codex login --device-auth` (headless PIN) into project-local
+  `.codex-bot/` (gitignored). **NOTE: currently reverted** — `CODEX_HOME` is NOT set in
+  `.env` (back to default `~/.codex`), because we're using an API key instead (below). The
+  `.codex-bot` login scaffolding stays for later. (Blocked when tried: lost the 2nd
+  account's Google password AND device-auth doesn't auto-select the account without an
+  existing browser session.)
+- **`fcd0cf4`** — **API-key model path** (`src/coalescer/model.ts` → `makeModel()`): if
+  `OPENAI_API_KEY` is set → plain OpenAI via **`@ai-sdk/openai@4.0.11`** (spec v4, matches
+  `ai@7`); else → `experimental_chatgpt()`. Chosen on key *presence*, not `NODE_ENV` — this
+  also **is** the prod/VPS model path. `describeModel()` prints the active source at
+  startup. **Currently: `OPENAI_API_KEY` set + `OPENAI_MODEL=gpt-5.4-nano`** — verified
+  with a real "pong" call. This is what unblocked live testing (main Codex account had
+  hit its usage cap).
+
+### Resolved from §7
+- **GitHub token** — now a **classic `ghp_…` token** with full access to
+  `TheCallApp/ios-design-system` (admin/push, issues R/W confirmed via probe). The old
+  404 was a fine-grained token wrongly scoped to the personal account.
+- **Prod model guard** — solved by `makeModel()` (API key works anywhere).
+- **Group** — `.env` `WHATSAPP_GROUP_ID=120363428464069244@g.us` (the **NEW** group; old
+  "Tst" `…410063306573@g.us` no longer watched). `WHATSAPP_BOT_LID=69158251274313@lid`.
+
+### Issues filed (parked, GitHub `AaronAbuUsama/whatsappd-github-agent`)
+- **#1** — relitigate at v1.0: conversation state / whether to bring Eve back (the
+  in-process memory here is the lightweight stand-in; deeper state is the real question).
+- **#2** — in-process Codex device-auth (drop the global `codex` CLI dep for the VPS).
+- **#3** — bootstrap a proper agent CLI/daemon (login, config, run, status).
+
+### NEXT (in order)
+1. **`/simplify`** — the immediate next task (user asked for it right after this compact).
+   Scope = this session's diff + the long-known target: `demo.ts`/`repl.ts`/`live.ts`
+   triplicate a console `Outbound` + worker stub → consolidate into `mocks.ts`. Also sanity
+   the new `model.ts`/`voice.ts` memory+typing code.
+2. **Prompt iteration** — it's alpha; the QA persona + SPEECH_CONTRACT need tuning (user
+   is sending a live log with specifics). Don't relitigate architecture yet.
+3. Later: issues #1/#2/#3 when moving toward v1.0 / the VPS.
+
+### How to run it
+`pnpm run live` → startup prints `🔑 model: OpenAI API key — gpt-5.4-nano` and the watched
+group → message the new group with a bug → watch `🗣️`/`💬`/`🛠️` + typing. `.env` (gitignored)
+holds `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-5.4-nano`, `GITHUB_TOKEN` (classic), `GITHUB_REPO`,
+`WHATSAPP_GROUP_ID`, `WHATSAPP_BOT_LID`. Model swap = set/unset `OPENAI_API_KEY`.
