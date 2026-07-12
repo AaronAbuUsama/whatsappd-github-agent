@@ -36,6 +36,8 @@
     "coalescer": "tsx src/coalescer/demo.ts",
     "voice": "tsx src/coalescer/repl.ts",
     "live": "tsx src/coalescer/live.ts",
+    "spike:loopback": "tsx scripts/spike-loopback.ts",
+    "spike:resume": "tsx scripts/spike-resume.ts",
     "login": "mkdir -p .codex-bot && CODEX_HOME=.codex-bot codex login --device-auth",
     "login:status": "CODEX_HOME=.codex-bot codex login status",
     "typecheck": "tsc --noEmit",
