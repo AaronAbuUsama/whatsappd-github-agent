@@ -184,6 +184,15 @@ describe("harvestSays", () => {
     expect(harvestSays(events)).toEqual(["hello"]);
   });
 
+  it("keeps the LAST complete text when one call streams incrementally", () => {
+    // Same callId, growing input across events — the complete line must win, not the partial.
+    const events = [
+      actionsRequested([sayAction("stream", "on i")]),
+      actionsRequested([sayAction("stream", "on it — opened #42")]),
+    ];
+    expect(harvestSays(events)).toEqual(["on it — opened #42"]);
+  });
+
   it("returns nothing for a silent turn (no say calls)", () => {
     expect(harvestSays([messageCompleted("thinking, but staying quiet")])).toEqual([]);
   });

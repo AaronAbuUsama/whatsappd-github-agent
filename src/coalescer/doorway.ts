@@ -66,24 +66,24 @@ export const memorySessionStore = (): SessionStore => {
  * prose) and nothing else becomes group output.
  *
  * Tool calls can arrive incrementally across `actions.requested` events and must
- * be correlated by `callId` (per eve's protocol note), so we dedupe on `callId`
- * and keep the first call whose `input.text` is a non-empty string.
+ * be correlated by `callId` (per eve's protocol note), so we group by `callId` and
+ * keep the LATEST non-empty `input.text` for each — a growing/streamed input must
+ * not let an early partial win over the complete line. Delivery order is first-seen.
  */
 export const harvestSays = (events: readonly HandleMessageStreamEvent[]): readonly string[] => {
-  const says: string[] = [];
-  const seen = new Set<string>();
+  const order: string[] = [];
+  const textByCall = new Map<string, string>();
   for (const event of events) {
     if (event.type !== "actions.requested") continue;
     for (const action of event.data.actions) {
-      if (action.kind !== "tool-call" || action.toolName !== "say" || seen.has(action.callId)) continue;
+      if (action.kind !== "tool-call" || action.toolName !== "say") continue;
       const text = action.input["text"];
-      if (typeof text === "string" && text.length > 0) {
-        seen.add(action.callId);
-        says.push(text);
-      }
+      if (typeof text !== "string" || text.length === 0) continue;
+      if (!textByCall.has(action.callId)) order.push(action.callId);
+      textByCall.set(action.callId, text); // last complete input wins
     }
   }
-  return says;
+  return order.map((callId) => textByCall.get(callId)!);
 };
 
 /** The part of an Eve turn the doorway voice consumes. `message` (the private prose) is

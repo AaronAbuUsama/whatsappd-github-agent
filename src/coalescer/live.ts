@@ -16,6 +16,7 @@
  * (default ./.wa-auth), shared with the `pnpm whatsapp` sidecar.
  */
 import { Console, Effect, Layer } from "effect";
+import { makeChatGate } from "./chat-gate.ts";
 import * as Coalescer from "./coalescer.ts";
 import { configLayer } from "./config.ts";
 import { describeModel } from "./model.ts";
@@ -31,16 +32,12 @@ try {
 
 const STORE_DIR = process.env.WHATSAPP_STORE_DIR ?? "./.wa-auth";
 
-// Chat gate — mirrors agent/channels/whatsapp.ts. Fail closed: an unset target
-// silences the bot rather than turning it loose on every chat the number is in.
-const parseSet = (raw: string | undefined): ReadonlySet<string> =>
-  new Set((raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
-const GROUPS = parseSet(process.env.WHATSAPP_GROUP_IDS ?? process.env.WHATSAPP_GROUP_ID);
-const ALLOW_ANY_GROUP = process.env.WHATSAPP_ALLOW_ANY_GROUP === "true";
-const ALLOW_DM = process.env.WHATSAPP_ALLOW_DM === "true";
-
-const chatAllowed = (chatId: string, isGroup: boolean): boolean =>
-  isGroup ? (GROUPS.size > 0 ? GROUPS.has(chatId.toLowerCase()) : ALLOW_ANY_GROUP) : ALLOW_DM;
+// The chat gate — fail closed (see chat-gate.ts, shared with the in-process gateway).
+const gate = makeChatGate({
+  groupIds: process.env.WHATSAPP_GROUP_IDS ?? process.env.WHATSAPP_GROUP_ID,
+  allowAnyGroup: process.env.WHATSAPP_ALLOW_ANY_GROUP,
+  allowDm: process.env.WHATSAPP_ALLOW_DM,
+});
 
 // The voice's persona for this chat: a bug-intake assistant for non-technical QA
 // testers of an iOS app. It gathers the details a good bug report needs, then
@@ -52,7 +49,7 @@ const QA_PERSONA = `You're the bug-intake assistant in a WhatsApp group where no
 - Stay quiet during off-topic chatter. You don't need to be @-mentioned to help.`;
 
 const program = Effect.gen(function* () {
-  if (GROUPS.size === 0 && !ALLOW_ANY_GROUP && !ALLOW_DM) {
+  if (!gate.hasTarget) {
     yield* Console.warn(
       "⚠️  No chat target set — the bot will stay silent. Set WHATSAPP_GROUP_ID=<jid@g.us> " +
         "(or WHATSAPP_ALLOW_DM=true) and re-run.",
@@ -65,16 +62,12 @@ const program = Effect.gen(function* () {
   // The bot's identities to match @-mentions against: its phone-number JID plus,
   // in a LID-addressed group, its `@lid` JID (from WHATSAPP_BOT_LID — see botIdsOf).
   const botIds = botIdsOf(session, process.env.WHATSAPP_BOT_LID);
-  yield* Console.log(
-    `online as ${botIds.join(" / ")} — watching ${
-      GROUPS.size > 0 ? [...GROUPS].join(", ") : ALLOW_ANY_GROUP ? "any group" : ALLOW_DM ? "DMs" : "nothing"
-    }\n`,
-  );
+  yield* Console.log(`online as ${botIds.join(" / ")} — watching ${gate.describe()}\n`);
 
   const services = Layer.mergeAll(
     aiVoice(QA_PERSONA).pipe(Layer.provideMerge(Layer.merge(whatsappOutbound(session), githubWorker))),
     configLayer({ botIds }),
-    whatsappEventSource(session, chatAllowed),
+    whatsappEventSource(session, gate.allowed),
   );
 
   // Runs until the process is killed; the scope's finalizers stop the session.

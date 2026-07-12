@@ -28,5 +28,7 @@ export default defineTool({
   }),
   // Delivery is the gateway's job (it harvests say calls post-turn and posts them
   // to the right chat). Acknowledge so the model knows the line landed.
-  execute: ({ text }) => ({ delivered: true, chars: text.length }),
+  execute(_input) {
+    return { delivered: true };
+  },
 });

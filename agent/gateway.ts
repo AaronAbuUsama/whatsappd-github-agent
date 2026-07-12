@@ -22,8 +22,9 @@
  * The only substitution is the voice: the doorway voice instead of the hand-rolled
  * `aiVoice`.
  */
-import { Effect, Layer } from "effect";
+import { Console, Effect, Layer } from "effect";
 import { Client } from "eve/client";
+import { makeChatGate } from "../src/coalescer/chat-gate.ts";
 import * as Coalescer from "../src/coalescer/coalescer.ts";
 import { configLayer } from "../src/coalescer/config.ts";
 import { doorwayVoice, eveVoiceModel, memorySessionStore } from "../src/coalescer/doorway.ts";
@@ -31,17 +32,12 @@ import { botIdsOf, openSession, whatsappEventSource, whatsappOutbound } from "..
 
 const STORE_DIR = process.env.WHATSAPP_STORE_DIR ?? "./.wa-auth";
 
-/** Comma/space-tolerant set of lower-cased entries, mirroring the coalescer's chat gate. */
-const parseSet = (raw: string | undefined): ReadonlySet<string> =>
-  new Set((raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
-
-const GROUPS = parseSet(process.env.WHATSAPP_GROUP_IDS ?? process.env.WHATSAPP_GROUP_ID);
-const ALLOW_ANY_GROUP = process.env.WHATSAPP_ALLOW_ANY_GROUP === "true";
-const ALLOW_DM = process.env.WHATSAPP_ALLOW_DM === "true";
-
-/** Fail closed: an unset target silences the bot rather than turning it loose on every chat. */
-const chatAllowed = (chatId: string, isGroup: boolean): boolean =>
-  isGroup ? (GROUPS.size > 0 ? GROUPS.has(chatId.toLowerCase()) : ALLOW_ANY_GROUP) : ALLOW_DM;
+// The chat gate — which chats the bot engages. Fail closed (see chat-gate.ts).
+const gate = makeChatGate({
+  groupIds: process.env.WHATSAPP_GROUP_IDS ?? process.env.WHATSAPP_GROUP_ID,
+  allowAnyGroup: process.env.WHATSAPP_ALLOW_ANY_GROUP,
+  allowDm: process.env.WHATSAPP_ALLOW_DM,
+});
 
 /** The loopback host for the doorway — the app's own HTTP front door (#4). */
 const loopbackHost = (): string => {
@@ -79,7 +75,7 @@ export async function startGateway(agentName: string): Promise<void> {
   }
   console.log(`[gateway] server healthy at ${host} (agent=${agentName}); connecting to WhatsApp…`);
 
-  if (GROUPS.size === 0 && !ALLOW_ANY_GROUP && !ALLOW_DM) {
+  if (!gate.hasTarget) {
     console.warn(
       "[gateway] No chat target set — the bot will stay silent. Set WHATSAPP_GROUP_ID=<jid@g.us> " +
         "(or WHATSAPP_ALLOW_DM=true) and restart.",
@@ -94,16 +90,12 @@ export async function startGateway(agentName: string): Promise<void> {
     // The bot's identities for @-mention/quote matching: its phone-number JID plus,
     // in a LID-addressed group, its @lid JID (WHATSAPP_BOT_LID) — see botIdsOf.
     const botIds = botIdsOf(session, process.env.WHATSAPP_BOT_LID);
-    console.log(
-      `[gateway] online as ${botIds.join(" / ")} — watching ${
-        GROUPS.size > 0 ? [...GROUPS].join(", ") : ALLOW_ANY_GROUP ? "any group" : ALLOW_DM ? "DMs" : "nothing"
-      }`,
-    );
+    yield* Console.log(`[gateway] online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
 
     const services = Layer.mergeAll(
       doorwayVoice(model).pipe(Layer.provide(whatsappOutbound(session))),
       configLayer({ botIds }),
-      whatsappEventSource(session, chatAllowed),
+      whatsappEventSource(session, gate.allowed),
     );
 
     // Runs until the process is killed; the scope's finalizers stop the session.
