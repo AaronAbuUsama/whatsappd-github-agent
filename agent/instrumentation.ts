@@ -19,12 +19,15 @@
  * The gateway itself (agent/gateway.ts) reads the WhatsApp store dir, chat gate,
  * bot LID, and loopback port from the environment, mirroring `pnpm run live`.
  */
+import { Effect } from "effect";
 import { defineInstrumentation } from "eve/instrumentation";
 
 export default defineInstrumentation({
   setup({ agentName }) {
     if (process.env.WA_GATEWAY !== "1") return;
-    console.log(`[gateway] instrumentation setup fired in server process (agent=${agentName}); starting gateway`);
+    // setup is a plain lifecycle callback (no Effect runtime yet); route the one boot
+    // line through Effect's logger for a consistent format with the gateway program.
+    Effect.runSync(Effect.logInfo(`gateway boot: instrumentation setup fired (agent=${agentName})`));
     // Detached on purpose: this is the always-on WhatsApp connection, not request work.
     // Imported dynamically so a boot with WA_GATEWAY unset never pulls whatsappd/Baileys
     // (and its native connection machinery) into the process.

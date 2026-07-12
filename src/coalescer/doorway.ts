@@ -135,16 +135,9 @@ export const eveVoiceModel = (client: Client, store: SessionStore): VoiceModel =
   },
 });
 
-/** `HH:MM:SS`, matching the whatsapp/voice traffic logs so turns interleave readably. */
-const stamp = (): string => new Date().toTimeString().slice(0, 8);
-
 /** Render a buffered window as the turn's user message: one `sender: text` line per message. */
 const renderWindow = (window: ConversationWindow): string =>
   window.messages.map((m) => `${m.pushName ?? m.from}: ${m.text}`).join("\n");
-
-/** A readable one-liner from whatever the model/transport threw. */
-const errText = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : typeof cause === "string" ? cause : JSON.stringify(cause);
 
 /**
  * The doorway voice as a `Conversationalist` Layer. Depends only on `Outbound`
@@ -164,22 +157,15 @@ export const doorwayVoice = (model: VoiceModel): Layer.Layer<Conversationalist, 
           Effect.gen(function* () {
             const chatId = window.chatId;
             const addressed = window.reason !== "debounce";
-            yield* Effect.sync(() =>
-              console.log(
-                `[${stamp()}] 🗣️  voice turn — ${addressed ? `addressed (${window.reason})` : "ambient"}, ${window.messages.length} msg → ${chatId}`,
-              ),
+            yield* Effect.logInfo(
+              `🗣️  voice turn — ${addressed ? `addressed (${window.reason})` : "ambient"}, ${window.messages.length} msg → ${chatId}`,
             );
 
             const result = yield* Effect.tryPromise({
               try: (signal) => model.turn(chatId, renderWindow(window), window.reason, signal),
               catch: (cause) => new ConversationError({ cause }),
-            }).pipe(
-              Effect.tapError((err) =>
-                Effect.sync(() =>
-                  console.error(`[${stamp()}] ❌ voice turn failed — ${errText(err.cause)} → ${chatId}`),
-                ),
-              ),
-            );
+              // Log the real cause loudly; the Effect logger carries it as structured context.
+            }).pipe(Effect.tapError((err) => Effect.logError(`❌ voice turn failed → ${chatId}`, err.cause)));
 
             // Deliver ONLY what the model chose to `say`. Its prose (result.message) is
             // deliberately never delivered — say is the sole channel to the group.
@@ -187,10 +173,8 @@ export const doorwayVoice = (model: VoiceModel): Layer.Layer<Conversationalist, 
             for (const text of says) {
               yield* outbound.reply(chatId, text);
             }
-            yield* Effect.sync(() =>
-              console.log(
-                `[${stamp()}] ${says.length > 0 ? `💬 said ${says.length}` : "🤫 chose to stay silent"} — ${chatId}`,
-              ),
+            yield* Effect.logInfo(
+              `${says.length > 0 ? `💬 said ${says.length}` : "🤫 chose to stay silent"} → ${chatId}`,
             );
           }),
       };

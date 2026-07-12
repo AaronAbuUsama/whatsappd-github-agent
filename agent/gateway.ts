@@ -22,7 +22,7 @@
  * The only substitution is the voice: the doorway voice instead of the hand-rolled
  * `aiVoice`.
  */
-import { Console, Effect, Layer } from "effect";
+import { Duration, Effect, Layer, Schedule } from "effect";
 import { Client } from "eve/client";
 import { makeChatGate } from "../src/coalescer/chat-gate.ts";
 import * as Coalescer from "../src/coalescer/coalescer.ts";
@@ -45,20 +45,16 @@ const loopbackHost = (): string => {
   return process.env.EVE_URL ?? `http://127.0.0.1:${port}`;
 };
 
-/** Block until our own HTTP server accepts connections (setup can fire before the listener is ready). */
-async function waitForHealth(client: Client): Promise<boolean> {
-  const MAX_ATTEMPTS = 40;
-  const RETRY_MS = 250;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    try {
-      await client.health();
-      return true;
-    } catch {
-      await new Promise((r) => setTimeout(r, RETRY_MS));
-    }
-  }
-  return false;
-}
+/**
+ * Block until our own HTTP server accepts connections (setup can fire before the
+ * listener is ready): retry `client.health()` up to 40 times, 250ms apart.
+ * Succeeds `void` once healthy; fails if the server never comes up.
+ */
+const waitForHealth = (client: Client): Effect.Effect<void, Error> =>
+  Effect.tryPromise({ try: () => client.health(), catch: () => new Error("server not healthy yet") }).pipe(
+    Effect.retry(Schedule.intersect(Schedule.spaced(Duration.millis(250)), Schedule.recurs(39))),
+    Effect.asVoid,
+  );
 
 /**
  * Launch the gateway. Detached (not awaited) from `instrumentation.setup`, this
@@ -68,29 +64,26 @@ async function waitForHealth(client: Client): Promise<boolean> {
 export async function startGateway(agentName: string): Promise<void> {
   const host = loopbackHost();
   const client = new Client({ host });
-
-  if (!(await waitForHealth(client))) {
-    console.error(`[gateway] FAILED: server did not become healthy at ${host}; WhatsApp not started`);
-    return;
-  }
-  console.log(`[gateway] server healthy at ${host} (agent=${agentName}); connecting to WhatsApp…`);
-
-  if (!gate.hasTarget) {
-    console.warn(
-      "[gateway] No chat target set — the bot will stay silent. Set WHATSAPP_GROUP_ID=<jid@g.us> " +
-        "(or WHATSAPP_ALLOW_DM=true) and restart.",
-    );
-  }
-
   const store = memorySessionStore();
   const model = eveVoiceModel(client, store);
 
   const program = Effect.gen(function* () {
+    yield* waitForHealth(client).pipe(
+      Effect.tapError(() => Effect.logError(`server did not become healthy at ${host}; WhatsApp not started`)),
+    );
+    yield* Effect.logInfo(`server healthy at ${host} (agent=${agentName}); connecting to WhatsApp…`);
+    if (!gate.hasTarget) {
+      yield* Effect.logWarning(
+        "No chat target set — the bot will stay silent. Set WHATSAPP_GROUP_ID=<jid@g.us> " +
+          "(or WHATSAPP_ALLOW_DM=true) and restart.",
+      );
+    }
+
     const session = yield* openSession(STORE_DIR);
     // The bot's identities for @-mention/quote matching: its phone-number JID plus,
     // in a LID-addressed group, its @lid JID (WHATSAPP_BOT_LID) — see botIdsOf.
     const botIds = botIdsOf(session, process.env.WHATSAPP_BOT_LID);
-    yield* Console.log(`[gateway] online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
+    yield* Effect.logInfo(`online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
 
     const services = Layer.mergeAll(
       doorwayVoice(model).pipe(Layer.provide(whatsappOutbound(session))),
@@ -102,7 +95,9 @@ export async function startGateway(agentName: string): Promise<void> {
     yield* Coalescer.run.pipe(Effect.provide(services));
   });
 
+  // Boundary safety net: the program logs its own failures via Effect; this only
+  // catches a defect that escaped the runtime so the detached task can't crash silently.
   await Effect.runPromise(Effect.scoped(program)).catch((err: unknown) => {
-    console.error("[gateway] FAILED:", err instanceof Error ? (err.stack ?? err.message) : err);
+    console.error("[gateway] crashed:", err instanceof Error ? (err.stack ?? err.message) : err);
   });
 }
