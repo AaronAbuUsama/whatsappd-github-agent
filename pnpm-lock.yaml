@@ -41,6 +41,9 @@ importers:
       link-preview-js:
         specifier: ^4.0.4
         version: 4.0.4
+      valibot:
+        specifier: 1.4.2
+        version: 1.4.2(typescript@5.9.3)
       whatsappd:
         specifier: ^0.2.1
         version: 0.2.1(eve@0.22.5(@opentelemetry/api@1.9.0)(ai@7.0.22(zod@4.4.3))(jiti@2.7.0)(just-bash@3.1.0)(lru-cache@11.5.2)(miniflare@4.20260708.1)(rollup@4.62.2)(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0))(wrangler@4.110.0))(link-preview-js@4.0.4)(sharp@0.35.3(@types/node@22.20.1))
