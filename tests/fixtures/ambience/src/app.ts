@@ -23,10 +23,24 @@ import {
 } from "../../../../src/workflows/github-proof.js";
 
 const provider = registerFauxProvider({ provider: "ambience-fixture" });
-const respond = (context: Context) => {
+const heldRecoveryMarkers = new Set<string>();
+const holdAgentRecovery = process.env.AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY === "true";
+const respond = async (context: Context) => {
   const last = context.messages.at(-1);
   const serialized = JSON.stringify(last);
   const transcript = JSON.stringify(context.messages);
+  const recoveryMarker = serialized.match(/HOLD_AGENT_FOR_RESTART:([A-Za-z0-9_-]+)/)?.[1];
+  if (recoveryMarker && holdAgentRecovery) {
+    heldRecoveryMarkers.add(recoveryMarker);
+    await new Promise<never>(() => undefined);
+  }
+  if (recoveryMarker) {
+    return fauxAssistantMessage(
+      transcript.includes(`HOLD_AGENT_FOR_RESTART:${recoveryMarker}`)
+        ? `Recovered canonical context for ${recoveryMarker}.`
+        : `Canonical context was lost for ${recoveryMarker}.`,
+    );
+  }
   if (last?.role === "toolResult") {
     if (serialized.includes("start_github_proof")) {
       const runId = serialized.match(/\"runId\"\s*:\s*\"([^\"]+)\"/)?.[1] ?? "missing-run-id";
@@ -148,9 +162,10 @@ app.post("/test/github/fail-next-create", (context) => {
   return context.body(null, 204);
 });
 app.post("/test/github/timeout-next-create", (context) => {
-  fakeGitHub.timeoutNextCreate({ afterMutation: false });
+  fakeGitHub.timeoutNextCreate({ afterMutation: context.req.query("afterMutation") === "true" });
   return context.body(null, 204);
 });
+app.get("/test/model/recovery-pending", (context) => context.json({ markers: [...heldRecoveryMarkers] }));
 app.get("/test/workflows/pending", async (context) => context.json({ operationIds: await workflowGate.pending() }));
 app.post("/test/workflows/:operationId/release", (context) => {
   workflowGate.release(context.req.param("operationId"));

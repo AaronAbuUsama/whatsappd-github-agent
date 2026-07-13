@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -19,6 +20,65 @@ const databasePath = join(tempRoot, "flue.db");
 
 let server: ChildProcessWithoutNullStreams | undefined;
 let origin: string;
+let serverOutput = "";
+
+async function stopServer(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+  const current = server;
+  if (!current || current.exitCode !== null) return;
+  current.kill(signal);
+  await new Promise<void>((resolve) => current.once("close", () => resolve()));
+  server = undefined;
+}
+
+async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
+  const port = await unusedPort();
+  origin = `http://127.0.0.1:${port}`;
+  server = spawn(process.execPath, [join(outputRoot, "server.mjs")], {
+    cwd: fixtureRoot,
+    env: {
+      ...process.env,
+      FLUE_DB_PATH: databasePath,
+      OPENAI_API_KEY: "",
+      PORT: String(port),
+      ...extraEnv,
+    },
+    stdio: "pipe",
+  });
+  serverOutput = "";
+  server.stdout.on("data", (chunk) => {
+    serverOutput += chunk.toString();
+  });
+  server.stderr.on("data", (chunk) => {
+    serverOutput += chunk.toString();
+  });
+  await waitForServer(origin, server);
+}
+
+function expireRunningAgentLeases(): void {
+  // Simulate the documented 30-second lease expiry directly so the recovery
+  // test is state-driven rather than sleeping on a production timeout.
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec("UPDATE flue_agent_submissions SET lease_expires_at = 1 WHERE status = 'running'");
+  } finally {
+    database.close();
+  }
+}
+
+function inspectAgentSubmissions(chatId: string): unknown[] {
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return database.prepare(
+      `SELECT submission_id, status, attempt_id, input_applied_at, recovery_requested_at,
+              started_at, settled_at, error, attempt_count, lease_expires_at
+         FROM flue_agent_submissions
+        WHERE payload LIKE ?
+        ORDER BY sequence`,
+    ).all(`%${chatId}%`);
+  } finally {
+    database.close();
+  }
+}
 
 async function unusedPort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -78,7 +138,7 @@ async function waitFor(predicate: () => Promise<boolean>, label: string): Promis
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  throw new Error(`Timed out waiting for ${label}\nReplacement server output:\n${serverOutput}`);
 }
 
 let messageSequence = 0;
@@ -131,11 +191,20 @@ async function resetGitHub(): Promise<void> {
   expect(response.status).toBe(204);
 }
 
-async function setNextGitHubCreate(mode: "failure" | "timeout"): Promise<void> {
-  const response = await fetch(`${origin}/test/github/${mode === "failure" ? "fail" : "timeout"}-next-create`, {
+async function setNextGitHubCreate(mode: "failure" | "timeout-before" | "timeout-after"): Promise<void> {
+  const path = mode === "failure"
+    ? "fail-next-create"
+    : `timeout-next-create?afterMutation=${mode === "timeout-after" ? "true" : "false"}`;
+  const response = await fetch(`${origin}/test/github/${path}`, {
     method: "POST",
   });
   expect(response.status).toBe(204);
+}
+
+async function pendingRecoveryMarkers(): Promise<readonly string[]> {
+  const response = await fetch(`${origin}/test/model/recovery-pending`);
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { markers: string[] }).markers;
 }
 
 interface TestRunRecord {
@@ -177,26 +246,11 @@ beforeAll(async () => {
   expect(buildExit, Buffer.concat(buildOutput).toString()).toBe(0);
   expect(existsSync(join(outputRoot, "server.mjs"))).toBe(true);
 
-  const port = await unusedPort();
-  origin = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, [join(outputRoot, "server.mjs")], {
-    cwd: fixtureRoot,
-    env: {
-      ...process.env,
-      FLUE_DB_PATH: databasePath,
-      OPENAI_API_KEY: "",
-      PORT: String(port),
-    },
-    stdio: "pipe",
-  });
-  await waitForServer(origin, server);
+  await startServer();
 }, 60_000);
 
 afterAll(async () => {
-  if (server && server.exitCode === null) {
-    server.kill("SIGTERM");
-    await new Promise((resolve) => server?.once("close", resolve));
-  }
+  await stopServer();
   rmSync(buildRoot, { recursive: true, force: true });
   rmSync(tempRoot, { recursive: true, force: true });
 });
@@ -418,7 +472,7 @@ describe("persisted Ambience doorway", () => {
   it("returns one uncertain input when a timed-out create cannot be observed and never retries", async () => {
     const chatId = "github-uncertain-30@g.us";
     await resetGitHub();
-    await setNextGitHubCreate("timeout");
+    await setNextGitHubCreate("timeout-before");
 
     await coalescerMessage(chatId, "START_GITHUB_PROOF", { mentions: ["bot@s.whatsapp.net"] });
     await waitFor(
@@ -456,4 +510,128 @@ describe("persisted Ambience doorway", () => {
     expect(events.filter((event) => event.kind === "find")).toHaveLength(1);
     expect(events.filter((event) => event.kind === "close")).toHaveLength(0);
   });
+});
+
+describe("restart and uncertainty boundaries", () => {
+  it("recovers an accepted Ambience input into the same canonical chat after a crash", async () => {
+    const chatId = "restart-agent-32@g.us";
+    const marker = "accepted-input-32";
+    await stopServer();
+    await startServer({ AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY: "true" });
+
+    await coalescerMessage(chatId, `HOLD_AGENT_FOR_RESTART:${marker}`);
+    await waitFor(
+      async () => (await pendingRecoveryMarkers()).includes(marker),
+      "the accepted Ambience input to enter its provider call",
+    );
+
+    await stopServer("SIGKILL");
+    expireRunningAgentLeases();
+    await startServer();
+    // The generated Node target materializes an agent instance on ingress;
+    // this later window wakes the same ordered queue and must remain behind
+    // the recovered submission.
+    await coalescerMessage(chatId, "RECOVERY_WAKE_AFTER_RESTART");
+    try {
+      await waitFor(
+        async () => (await historyText(chatId)).includes(`Recovered canonical context for ${marker}.`),
+        "Flue to recover the interrupted Ambience submission",
+      );
+    } catch (error) {
+      throw new Error(
+        `${(error as Error).message}\nSubmission rows:\n${JSON.stringify(inspectAgentSubmissions(chatId), null, 2)}`,
+        { cause: error },
+      );
+    }
+
+    const recovered = await historyText(chatId);
+    expect(recovered).toContain(`HOLD_AGENT_FOR_RESTART:${marker}`);
+    expect(recovered).toContain(`Recovered canonical context for ${marker}.`);
+    expect(recovered).not.toContain(`Canonical context was lost for ${marker}.`);
+  }, 60_000);
+
+  it("keeps an interrupted finite workflow inspectable without replaying it", async () => {
+    const chatId = "restart-workflow-32@g.us";
+    await resetGitHub();
+
+    await coalescerMessage(chatId, "START_GITHUB_PROOF", { mentions: ["bot@s.whatsapp.net"] });
+    await waitFor(
+      async () =>
+        (await pendingWorkflowOperations()).length === 1 &&
+        (await historyText(chatId)).includes("Private workflow admission settled with runId"),
+      "workflow admission before process interruption",
+    );
+    const admittedHistory = await historyText(chatId);
+    const runId = admittedHistory.match(/Private workflow admission settled with runId ([^\s.]+)\./)?.[1];
+    expect(runId).toBeDefined();
+    await expect(getRun(runId!)).resolves.toMatchObject({ status: "active" });
+
+    await stopServer("SIGKILL");
+    await startServer();
+
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      runId,
+      workflowName: "github-proof",
+      status: "active",
+      input: { chatId, repository: { owner: "acme", repo: "widgets" } },
+    });
+    const recoveredHistory = await historyText(chatId);
+    expect(recoveredHistory).toContain("Private workflow admission settled with runId");
+    expect(recoveredHistory).not.toContain("workflow.completed");
+    expect(recoveredHistory).not.toContain("workflow.failed");
+    expect(await pendingWorkflowOperations()).toEqual([]);
+    expect(await githubEvents()).toEqual([]);
+  }, 30_000);
+
+  it("reconciles a timeout by marker once and never replays the observed mutation after restart", async () => {
+    const chatId = "restart-reconciled-32@g.us";
+    await resetGitHub();
+    await setNextGitHubCreate("timeout-after");
+
+    await coalescerMessage(chatId, "START_GITHUB_PROOF", { mentions: ["bot@s.whatsapp.net"] });
+    await waitFor(
+      async () =>
+        (await pendingWorkflowOperations()).length === 1 &&
+        (await historyText(chatId)).includes("Private workflow admission settled with runId"),
+      "reconciled workflow admission",
+    );
+    const admittedHistory = await historyText(chatId);
+    const runId = admittedHistory.match(/Private workflow admission settled with runId ([^\s.]+)\./)?.[1];
+    expect(runId).toBeDefined();
+    const [operationId] = await pendingWorkflowOperations();
+    expect(operationId).toBeDefined();
+
+    await releaseWorkflow(operationId!);
+    await waitFor(
+      async () =>
+        (await getRun(runId!)).status === "completed" &&
+        (await historyText(chatId)).includes("Private GitHub workflow completion input processed"),
+      "marker-reconciled workflow completion",
+    );
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      status: "completed",
+      result: {
+        status: "completed",
+        operationId,
+        creation: "reconciled",
+        closure: "confirmed",
+        issue: { number: 1, state: "closed" },
+      },
+    });
+    expect(await githubEvents()).toEqual([
+      { kind: "create", repository: "acme/widgets", operationId, outcome: "unknown" },
+      { kind: "find", repository: "acme/widgets", operationId, matches: [1] },
+      { kind: "get", repository: "acme/widgets", number: 1, state: "open" },
+      { kind: "close", repository: "acme/widgets", number: 1, outcome: "closed" },
+      { kind: "get", repository: "acme/widgets", number: 1, state: "closed" },
+    ]);
+
+    await stopServer("SIGKILL");
+    await startServer();
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      status: "completed",
+      result: { operationId, creation: "reconciled", issue: { number: 1, state: "closed" } },
+    });
+    expect(await githubEvents()).toEqual([]);
+  }, 30_000);
 });
