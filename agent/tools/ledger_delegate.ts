@@ -1,6 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import type { ToolContext } from "eve/tools";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   actionLedger,
@@ -9,6 +9,7 @@ import {
   removeJob,
   recordStartedJob,
   referencedNumber,
+  referencedKind,
   type LedgerAccess,
 } from "../lib/action-ledger.ts";
 import { GatewayStore } from "../lib/jobs.ts";
@@ -16,21 +17,24 @@ import { GatewayStore } from "../lib/jobs.ts";
 export interface DelegateDependencies {
   readonly ledger: LedgerAccess;
   readonly openStore: () => Pick<GatewayStore, "close" | "enqueue">;
-  readonly newJobId: () => string;
+  readonly newJobId: (ctx: ToolContext) => string;
   readonly now: () => Date;
 }
 
 const dependencies = (): DelegateDependencies => ({
   ledger: actionLedger,
   openStore: () => new GatewayStore(),
-  newJobId: () => randomUUID(),
+  // Eve preserves callId across durable tool replay. A stable queue id makes
+  // the SQLite side effect idempotent if a process dies after enqueue but
+  // before the workflow checkpoint commits the defineState update.
+  newJobId: (ctx) => createHash("sha256").update(`${ctx.session.id}:${ctx.callId}`).digest("hex"),
   now: () => new Date(),
 });
 
 const constrainExistingTarget = (task: string, ledger: LedgerAccess): string => {
   const number = referencedNumber(task);
   if (number === undefined) return task;
-  const item = findLedgerItem(ledger.get(), number);
+  const item = findLedgerItem(ledger.get(), number, referencedKind(task));
   if (item === undefined) return task;
   return (
     `Ledger-verified existing ${item.kind} #${number}. Act on that exact item; do not create a replacement. ` +
@@ -55,7 +59,7 @@ export const executeLedgerDelegate = (
   }
 
   const store = deps.openStore();
-  const jobId = deps.newJobId();
+  const jobId = deps.newJobId(ctx);
   try {
     const task = constrainExistingTarget(input.task, deps.ledger);
     deps.ledger.update((ledger) => recordStartedJob(ledger, { id: jobId, task: input.task, at: deps.now().toISOString() }));

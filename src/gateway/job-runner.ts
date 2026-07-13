@@ -2,6 +2,7 @@ import { Duration, Effect, type Scope } from "effect";
 import { Client, type HandleMessageStreamEvent, type SessionState } from "eve/client";
 import { githubResultSchema, type GithubResult } from "../../agent/subagents/github/lib/output-schema.ts";
 import type { DelegationJob, GatewayStore } from "../../agent/lib/jobs.ts";
+import { githubResultKind } from "../../agent/lib/action-ledger.ts";
 import { harvestSays } from "../coalescer/doorway.ts";
 
 export interface JobLoopback {
@@ -45,14 +46,19 @@ const githubResultFromEvents = (job: DelegationJob, events: readonly HandleMessa
   const completed = events.filter((event) => event.type === "result.completed").at(-1);
   if (completed?.type !== "result.completed") throw new Error(`GitHub worker produced no result for job ${job.id}`);
   const result = githubResultSchema.parse(completed.data.result);
-  const constrained = /Ledger-verified existing (?:issue|pull_request) #(\d+)\./u.exec(job.task);
+  const constrained = /Ledger-verified existing (issue|pull_request) #(\d+)\./u.exec(job.task);
   if (constrained !== null) {
-    const target = Number(constrained[1]);
+    const expectedKind = constrained[1] as "issue" | "pull_request";
+    const target = Number(constrained[2]);
     if (result.action === "create_issue") {
       throw new Error(`Update-constrained job ${job.id} attempted to create a replacement for #${target}`);
     }
     if (result.number !== target) {
       throw new Error(`Update-constrained job ${job.id} returned #${result.number ?? "none"}; expected #${target}`);
+    }
+    const actualKind = githubResultKind(result);
+    if (actualKind !== expectedKind) {
+      throw new Error(`Update-constrained job ${job.id} returned ${actualKind ?? "unknown kind"} #${target}; expected ${expectedKind}`);
     }
   }
   return result;

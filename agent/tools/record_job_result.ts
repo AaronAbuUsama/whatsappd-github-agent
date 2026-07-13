@@ -17,12 +17,14 @@ const dependencies = (): RecordResultDependencies => ({
 
 export const executeRecordJobResult = (
   jobId: string,
+  voiceSessionId: string,
   deps: RecordResultDependencies = dependencies(),
 ): { readonly recorded: true; readonly jobId: string; readonly status: "completed" | "failed" } => {
   const store = deps.openStore();
   try {
     const job = store.getJob(jobId);
     if (job === undefined) throw new Error(`Unknown delegated job ${jobId}`);
+    if (job.voiceSessionId !== voiceSessionId) throw new Error(`Delegated job ${jobId} does not belong to this voice session`);
     if (job.status !== "report_pending" && job.status !== "reporting") {
       throw new Error(`Delegated job ${jobId} is not ready to record (status=${job.status})`);
     }
@@ -41,7 +43,7 @@ export default defineTool({
     "Record the trusted typed result or failure of a completed delegated job in this voice session's durable action ledger. " +
     "On every [worker result] or [worker FAILED] turn, call this exactly once before say.",
   inputSchema: z.object({ jobId: z.string().min(1) }),
-  execute({ jobId }) {
-    return executeRecordJobResult(jobId);
+  execute({ jobId }, ctx) {
+    return executeRecordJobResult(jobId, ctx.session.id);
   },
 });

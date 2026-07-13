@@ -241,13 +241,26 @@ export class GatewayStore implements SessionStore {
 
   enqueue(input: { voiceSessionId: string; kind: "github"; task: string; id?: string }): string {
     const id = input.id ?? randomUUID();
-    this.#db
+    const inserted = this.#db
       .prepare(
-        `INSERT INTO jobs
+        `INSERT OR IGNORE INTO jobs
           (id, voice_session_id, kind, task, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'pending', datetime('now'), datetime('now'))`,
       )
       .run(id, input.voiceSessionId, input.kind, input.task);
+    if (inserted.changes === 0) {
+      const existing = this.#db.prepare("SELECT voice_session_id, kind, task FROM jobs WHERE id = ?").get(id) as
+        | { voice_session_id: string; kind: "github"; task: string }
+        | undefined;
+      if (
+        existing === undefined ||
+        existing.voice_session_id !== input.voiceSessionId ||
+        existing.kind !== input.kind ||
+        existing.task !== input.task
+      ) {
+        throw new Error(`Delegated job id collision for ${id}`);
+      }
+    }
     return id;
   }
 

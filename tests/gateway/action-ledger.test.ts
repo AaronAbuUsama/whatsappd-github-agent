@@ -7,6 +7,7 @@ import type { ToolContext } from "eve/tools";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   emptyActionLedger,
+  findLedgerItem,
   renderLedgerInstructions,
   todayCounts,
   type ActionLedger,
@@ -77,7 +78,7 @@ describe("F1/F7 durable voice-ledger replay", () => {
         return result;
       },
       async deliverVoice(job, state) {
-        executeRecordJobResult(job.id, recordDeps);
+        executeRecordJobResult(job.id, "voice-ledger", recordDeps);
         return { ...state, streamIndex: state.streamIndex + 1 };
       },
     };
@@ -113,7 +114,7 @@ describe("F1/F7 durable voice-ledger replay", () => {
     // delegate guard, which returns the prior result and queues nothing.
     expect(
       executeLedgerDelegate(
-        { kind: "github", task: "Please file Profile blank screen crash after tapping Settings on iPhone 5s." },
+        { kind: "github", task: "Opening Settings makes the Profile disappear on my old Apple phone." },
         ctx,
         delegateDeps,
       ),
@@ -223,5 +224,70 @@ describe("F1/F7 durable voice-ledger replay", () => {
     expect(jobs).toHaveLength(2);
     expect(jobs.map((job) => job.voiceSessionId).sort()).toEqual(["voice-one", "voice-two"]);
     store.close();
+  });
+
+  it("refuses to record another voice session's trusted job result", () => {
+    const path = temporaryDatabase();
+    const store = new GatewayStore(path);
+    const id = store.enqueue({ id: "foreign-job", voiceSessionId: "voice-one", kind: "github", task: "File it." });
+    store.set("one@g.us", { sessionId: "voice-one", streamIndex: 0 });
+    expect(store.claimPending(1)).toHaveLength(1);
+    store.queueResult(id, {
+      action: "create_issue",
+      number: 91,
+      url: "https://github.com/acme/repo/issues/91",
+      summary: "Filed #91.",
+    });
+    store.close();
+    const ledger = memoryLedger();
+
+    expect(() =>
+      executeRecordJobResult(id, "voice-two", {
+        ledger,
+        openStore: () => new GatewayStore(path),
+        now: () => new Date("2026-07-13T12:00:00Z"),
+      }),
+    ).toThrow("does not belong to this voice session");
+    expect(ledger.value).toEqual(emptyActionLedger());
+  });
+
+  it("replays one stable tool call idempotently across a lost state checkpoint", () => {
+    const path = temporaryDatabase();
+    const task = "File the settings crash.";
+    const ctx = { session: { id: "voice-replay" } } as ToolContext;
+    const run = (ledger: LedgerAccess) =>
+      executeLedgerDelegate(
+        { kind: "github", task },
+        ctx,
+        {
+          ledger,
+          openStore: () => new GatewayStore(path),
+          newJobId: () => "stable-call-id",
+          now: () => new Date("2026-07-13T12:00:00Z"),
+        },
+      );
+
+    expect(run(memoryLedger())).toMatchObject({ status: "started", jobId: "stable-call-id" });
+    // Simulate replay from a workflow checkpoint that predates the state write.
+    const replayedLedger = memoryLedger();
+    expect(run(replayedLedger)).toMatchObject({ status: "started", jobId: "stable-call-id" });
+    const store = new GatewayStore(path);
+    expect(store.listJobs()).toHaveLength(1);
+    expect(replayedLedger.value.jobs).toHaveLength(1);
+    store.close();
+  });
+
+  it("treats kind + number as GitHub identity and leaves ambiguous bare #N unresolved", () => {
+    const ledger: ActionLedger = {
+      version: 1,
+      jobs: [],
+      items: [
+        { kind: "issue", number: 77, status: "open", summary: "Issue", at: "2026-07-13", evidence: [] },
+        { kind: "pull_request", number: 77, status: "open", summary: "PR", at: "2026-07-13", evidence: [] },
+      ],
+    };
+    expect(findLedgerItem(ledger, 77)).toBeUndefined();
+    expect(findLedgerItem(ledger, 77, "issue")?.summary).toBe("Issue");
+    expect(findLedgerItem(ledger, 77, "pull_request")?.summary).toBe("PR");
   });
 });

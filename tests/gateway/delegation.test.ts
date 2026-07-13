@@ -167,6 +167,7 @@ describe("gateway job runner", () => {
   it.each([
     ["create_issue", 77, "attempted to create a replacement"],
     ["label", 78, "returned #78; expected #77"],
+    ["get_pr", 77, "returned pull_request #77; expected issue"],
   ] as const)("rejects constrained update result action=%s number=%s", async (action, number, message) => {
     const client = {
       session() {
@@ -186,7 +187,10 @@ describe("gateway job runner", () => {
                         result: {
                           action,
                           number,
-                          url: `https://github.com/acme/repo/issues/${number}`,
+                          url:
+                            action === "get_pr"
+                              ? `https://github.com/acme/repo/pull/${number}`
+                              : `https://github.com/acme/repo/issues/${number}`,
                           summary: "Worker result",
                         },
                       },
