@@ -39,7 +39,7 @@ session.onStatus((s) => {
     void finish(
       0,
       "Reached the pairing gate: whatsappd connected to WhatsApp and requested a device link. " +
-        "These creds are NOT a completed pairing — scan a QR / enter a pairing code to finish (tutorial §5).",
+        "These creds are NOT a completed pairing — run the production process and scan its QR to finish.",
     );
     return;
   }

@@ -1,122 +1,94 @@
-<p align="center">
-  <strong>whatsappd-github-agent</strong><br>
-  A GitHub concierge you talk to from a WhatsApp group — triage issues, review PRs, and summarize code without leaving the chat.
-</p>
+# whatsappd-github-agent
 
-<p align="center">
-  <a href="https://github.com/AaronAbuUsama/whatsappd-github-agent/actions/workflows/ci.yml"><img src="https://github.com/AaronAbuUsama/whatsappd-github-agent/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white" alt="Node version">
-</p>
+A continuing ambient agent for managed WhatsApp chats. Each accepted coalesced
+window is admitted to one canonical Flue Ambience instance keyed by WhatsApp
+`chatId`. Ambience uses Luna 5.6 at low reasoning through Pi's ChatGPT
+subscription OAuth adapter.
 
-`@github-bot open an issue: the export button is broken on Safari` in a WhatsApp
-group chat — and the agent opens it, replies with the issue link, and is ready
-for the next request. Built on [Eve](https://eve.dev) (the agent runtime) and
-[whatsappd](https://github.com/AaronAbuUsama/whatsappd) (the WhatsApp
-channel), with GitHub operations as typed, tested Eve tools over
-[`@octokit/rest`](https://github.com/octokit/rest.js).
+## Production architecture
 
-**Full walkthrough: [docs/TUTORIAL.md](./docs/TUTORIAL.md)** — scaffolding an
-Eve agent, pairing a WhatsApp number, wiring GitHub tools, and running the bot,
-explained from zero.
+```text
+paired whatsappd session
+  -> managed-chat gate
+  -> per-chat Coalescer actor
+  -> Flue dispatch(id = chatId)
+  -> continuing Ambience context
+       |-> read/search bound WhatsApp history
+       |-> say -> whatsappd session.send
+       `-> start bounded GitHub workflow -> later result event -> same Ambience
 
-## What it does
-
-Mention the bot in a watched WhatsApp group and it can:
-
-| Ask it to...                          | It calls...                    |
-| -------------------------------------- | ------------------------------- |
-| "open an issue: title / body"          | `github_create_issue`           |
-| "list open issues" / "what's outstanding" | `github_list_issues`         |
-| "what's issue #42 about"               | `github_get_issue`              |
-| "comment on #42: ..."                  | `github_comment_on_issue`       |
-| "close #42, not planned"               | `github_close_issue`            |
-| "list open PRs"                        | `github_list_pull_requests`     |
-| "summarize PR #12"                     | `github_get_pull_request`       |
-| "show me the diff for PR #12"          | `github_get_pull_request_diff`  |
-| "review PR #12"                        | `github_review_pull_request`    |
-| "label #42 as bug, p1"                 | `github_add_labels`             |
-| "assign #42 to octocat"                | `github_assign`                 |
-| "show me src/index.ts on main"         | `github_get_file_contents`      |
-| "search the codebase for useEffect"    | `github_search_code`            |
-
-All thirteen tools live under [`agent/tools/`](./agent/tools), each a `defineTool()`
-with a Zod input schema, and each has a unit test under
-[`tests/tools/`](./tests/tools) against a mocked Octokit client.
-
-## Architecture
-
-```
-WhatsApp group  ⇄  whatsappd sidecar  ⇄  Eve agent (agent/)  ⇄  GitHub (@octokit/rest)
- (Baileys)          (src/index.ts,        channels/whatsapp.ts
-                      a separate process)   tools/github_*.ts
+verified GitHub webhook -> application routing/deduplication -> same Ambience
 ```
 
-The sidecar owns the WhatsApp socket and forwards inbound events over HTTP;
-the Eve app's `agent/channels/whatsapp.ts` gates them (right group, contains
-the trigger word) before ever starting a session, then the agent answers
-using the GitHub tools and the sidecar delivers the reply back to the group.
-Full diagram and explanation in [the tutorial](./docs/TUTORIAL.md#1-what-this-is).
+The model processes every accepted Coalescer window. Its ordinary assistant
+prose remains private canonical Flue context: the application neither parses nor
+copies that prose. Only the explicit `say` tool can call the WhatsApp send
+boundary.
 
-## Quickstart
+GitHub mutations are available only inside bounded specialist workflows. Root
+Ambience receives no direct GitHub mutation tool. Admission returns a `runId`
+without blocking the chat; completion or failure is dispatched later as new
+input to the same Ambience instance. Mutation recovery verifies observed GitHub
+state by operation identity and never blindly retries an uncertain write.
+
+## Run it
+
+Requirements: Node 22 or 24, pnpm 9, a paired WhatsApp account, a scoped GitHub
+token, and a Pi ChatGPT OAuth login.
 
 ```bash
-git clone https://github.com/AaronAbuUsama/whatsappd-github-agent.git
-cd whatsappd-github-agent
-pnpm install
-cp .env.example .env   # fill in GITHUB_TOKEN, GITHUB_REPO, ...  (model = your `codex login`, no API key)
-
-pnpm run dev             # terminal 1: the Eve agent (needs Node >= 24)
-pnpm run whatsapp         # terminal 2: the WhatsApp sidecar — scan the QR it prints
+pnpm install --frozen-lockfile
+pi /login                    # select ChatGPT and complete OAuth
+cp .env.example .env         # configure GitHub and managed chat values
+pnpm run dev
 ```
 
-Add the bot's number to a WhatsApp group, then send:
+With `AMBIENCE_WHATSAPP=1`, the one Flue process owns the whatsappd session.
+On a new credential store it prints a QR; link it from WhatsApp's Linked devices
+screen. Use `pnpm run whatsapp:dry-run` for a send-nothing credential probe.
 
-```
-@github-bot list open issues
+For a built deployment:
+
+```bash
+pnpm run build
+pnpm run start
 ```
 
-See [docs/TUTORIAL.md](./docs/TUTORIAL.md) for prerequisites, pairing a
-WhatsApp number, and everything else in depth.
+The health endpoint reports the model authentication mode, selected model, and
+WhatsApp runtime phase. No model API-key environment variable is supported.
 
-## Project layout
+## Configuration boundaries
 
-```
-agent/
-├── agent.ts                    # model config (Codex/ChatGPT subscription, via eve's experimental_chatgpt)
-├── instructions.md              # the GitHub-concierge persona
-├── channels/whatsapp.ts         # gated WhatsApp ingress (whatsappd's Eve adapter + group gating)
-├── lib/github.ts                # shared Octokit client + repo resolution
-└── tools/github_*.ts            # the 13 GitHub tools
-src/index.ts                     # whatsappd sidecar launcher (separate process)
-tests/                           # vitest unit tests (mocked Octokit)
-docs/TUTORIAL.md                 # the full walkthrough
-```
+- `GITHUB_ALLOWED_REPOS` limits every bounded workflow write.
+- `GITHUB_WEBHOOK_SECRET` authenticates ingress before payload parsing.
+- `GITHUB_CHAT_ROUTES` keeps repository-to-chat ownership application-owned.
+- `WHATSAPP_GROUP_ID(S)` and `WHATSAPP_ALLOW_DM` keep admission fail-closed.
+- `WHATSAPP_HISTORY_DB` retains full-fidelity history for the chat-bound tools.
+- Pi's `openai-codex` OAuth credential is the only accepted model credential.
+
+See [Ambience recovery](./docs/architecture/ambience-recovery.md) for durable
+ownership and failure semantics. The post-deletion production proof is in
+[docs/proof/ambience-hard-cut-live.md](./docs/proof/ambience-hard-cut-live.md).
+The earlier replacement proof is retained as a historical prerequisite in
+[docs/proof/ambience-replacement-live.md](./docs/proof/ambience-replacement-live.md).
 
 ## Development
 
 ```bash
-pnpm run typecheck   # tsc --noEmit
-pnpm test             # vitest, mocked GitHub API — no network or credentials needed
-pnpm run build        # eve build — compiles agent/ to .eve/ + .output/ (needs Node >= 24)
+pnpm run typecheck
+pnpm test
+GITHUB_WEBHOOK_SECRET=ci-build-only-secret pnpm run build
 ```
 
-CI runs all three on Node 22 and 24 — see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
-The `eve` CLI itself requires Node ≥ 24 to run (`eve build`/`eve dev`/`eve start`
-exit immediately below that), so the build step only runs on the Node 24 leg;
-typecheck and tests run on both. Details in [STATUS.md](./STATUS.md).
+CI runs typecheck, tests, and the Flue build on Node 22 and Node 24. Historical
+planning records under `docs/planning/` are explicitly marked as superseded;
+they are not current operator guidance.
 
-## Safety notes
+## Safety
 
-- **WhatsApp ban risk.** This uses [Baileys](https://github.com/WhiskeySockets/Baileys),
-  an unofficial WhatsApp Web client. Automating a personal number can violate
-  WhatsApp's terms and risks a ban — use a number you can afford to lose.
-- **GitHub write access.** The bot can create/close issues and post PR
-  reviews. `agent/channels/whatsapp.ts` ignores direct messages by default
-  and only answers in the configured group, specifically because "anyone who
-  texts this number" should not be "anyone who can write to this repo." See
-  [docs/TUTORIAL.md](./docs/TUTORIAL.md#group-gating) for how the gate works
-  and its limits.
+whatsappd uses an unofficial WhatsApp Web implementation. Use an account you
+can afford to lose. Keep `.env` and `.wa-auth*/` private. Scope GitHub tokens
+to the smallest repository and issue permissions that satisfy the workflow.
 
 ## License
 

@@ -1,5 +1,7 @@
 # Coalescer + Voice — execution state (handoff)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Single source of truth for the two-tier WhatsApp agent work. If you're resuming
 after a compaction: **read this whole file first**, then confirm status back.
 

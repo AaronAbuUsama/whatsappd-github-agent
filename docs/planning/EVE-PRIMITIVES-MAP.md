@@ -1,5 +1,7 @@
 # Eve primitives map (grounded in `node_modules/eve@0.22.5` d.ts + docs)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Research artifact for the Eve-migration + framework-ization effort. Every claim
 below cites the real `.d.ts` / doc path. Companion to
 [`COALESCER-VOICE-HANDOFF.md`](./COALESCER-VOICE-HANDOFF.md). Read this before the

@@ -3,7 +3,7 @@ import { Effect, Layer } from "effect";
 
 import ambience from "../agents/ambience.ts";
 import type { ConversationWindow } from "../coalescer/events.ts";
-import { Conversationalist, ConversationError } from "../coalescer/ports.ts";
+import { AmbienceAdmissionError, AmbienceDoorway } from "../coalescer/ports.ts";
 import { whatsappWindowInput, type AmbienceInput } from "./events.ts";
 
 export interface AmbienceAdmission {
@@ -18,12 +18,12 @@ export const dispatchAmbience = ({ id, input }: AmbienceAdmission): Promise<Disp
 
 export const makeAmbienceDoorway = (
   admit: AdmitAmbience = dispatchAmbience,
-): Layer.Layer<Conversationalist> =>
-  Layer.succeed(Conversationalist, {
-    turn: (window: ConversationWindow) =>
+): Layer.Layer<AmbienceDoorway> =>
+  Layer.succeed(AmbienceDoorway, {
+    admit: (window: ConversationWindow) =>
       Effect.tryPromise({
         try: () => admit({ id: window.chatId, input: whatsappWindowInput(window) }),
-        catch: (cause) => new ConversationError({ cause }),
+        catch: (cause) => new AmbienceAdmissionError({ cause }),
       }).pipe(Effect.asVoid),
   });
 

@@ -1,5 +1,7 @@
 # Live verification punch-list
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Automated tests and builds are the merge gate. These checks need the paired
 WhatsApp/model/GitHub host and are intentionally deferred to that environment.
 

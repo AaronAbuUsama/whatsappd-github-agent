@@ -19,36 +19,39 @@ import { Clock, Context, Duration, Effect, HashMap, Option, Queue, Ref, type Sco
 import { appendBounded, type BufferBounds } from "./buffer.ts";
 import { addressesBot, type ConversationWindow, type FireReason, type IncomingMessage, reasonOf } from "./events.ts";
 import { CoalescerConfig, type CoalescerConfigValues } from "./config.ts";
-import { Conversationalist, EventSource } from "./ports.ts";
+import { AmbienceDoorway, EventSource } from "./ports.ts";
 
-type ConversationalistService = Context.Tag.Service<typeof Conversationalist>;
+type AmbienceDoorwayService = Context.Tag.Service<typeof AmbienceDoorway>;
 
 /**
- * Fire: hand the buffered window to the voice. A failing turn must not kill the
- * chat's actor loop — one bad turn should never wedge the chat. We swallow-and-log
- * both typed failures (`catchAll`) *and* defects (`catchAllDefect`, e.g. a throw
- * inside the real Eve session), but deliberately let **interruption** through
+ * Admit the buffered window to Ambience. A failed admission must not kill the
+ * chat's actor loop — one bad input should never wedge the chat. We swallow-and-log
+ * both typed failures (`catchAll`) *and* defects (`catchAllDefect`, e.g. an
+ * admission implementation throwing), but deliberately let interruption through
  * untouched so scope shutdown still tears the loop down cleanly. Empty windows
  * never fire (a config edge, e.g. `maxBufferMessages: 0`) — there is nothing to say.
  */
-const logTurnError = (window: ConversationWindow) => (cause: unknown) =>
-  Effect.logError(`conversationalist turn failed for ${window.chatId}`).pipe(
+const logAdmissionError = (window: ConversationWindow) => (cause: unknown) =>
+  Effect.logError(`Ambience admission failed for ${window.chatId}`).pipe(
     Effect.annotateLogs({ cause: String(cause) }),
   );
 
 const fire = (
-  convo: ConversationalistService,
+  doorway: AmbienceDoorwayService,
   window: ConversationWindow,
 ): Effect.Effect<void> =>
   window.messages.length === 0
     ? Effect.void
-    : convo.turn(window).pipe(Effect.catchAll(logTurnError(window)), Effect.catchAllDefect(logTurnError(window)));
+    : doorway.admit(window).pipe(
+        Effect.catchAll(logAdmissionError(window)),
+        Effect.catchAllDefect(logAdmissionError(window)),
+      );
 
 /**
- * Build the per-chat actor loop for a given config + voice. Returns a function
+ * Build the per-chat actor loop for a given config + Ambience doorway. Returns a function
  * that, given a chat's queue, runs its debounce loop forever.
  */
-const makeChatLoop = (config: CoalescerConfigValues, convo: ConversationalistService) => {
+const makeChatLoop = (config: CoalescerConfigValues, doorway: AmbienceDoorwayService) => {
   const bounds: BufferBounds = {
     maxBufferMessages: config.maxBufferMessages,
     maxBufferAgeMillis: config.maxBufferAgeMillis,
@@ -56,9 +59,9 @@ const makeChatLoop = (config: CoalescerConfigValues, convo: ConversationalistSer
   const maxWaitMillis = Duration.toMillis(config.maxWait);
 
   return (chatId: string, queue: Queue.Dequeue<IncomingMessage>): Effect.Effect<never> => {
-    // Flush the buffered window to the voice, then go cold for the next burst.
+    // Admit the buffered window to Ambience, then go cold for the next burst.
     const fireAndReset = (messages: readonly IncomingMessage[], reason: FireReason): Effect.Effect<never> =>
-      fire(convo, { chatId, messages, reason }).pipe(Effect.zipRight(cold));
+      fire(doorway, { chatId, messages, reason }).pipe(Effect.zipRight(cold));
 
     // A message landed: buffer it, and either flush now (bot addressed) or keep
     // waiting. `burstStart` is the clock time of the burst's first message — the
@@ -107,7 +110,7 @@ const makeChatLoop = (config: CoalescerConfigValues, convo: ConversationalistSer
 /**
  * Run the Coalescer: drain the inbound stream, route each message to its chat's
  * actor (lazily creating the queue + fiber on first sight of a `chatId`), and
- * let each actor's debounce loop decide when to fire the voice.
+ * let each actor's debounce loop decide when to admit a window to Ambience.
  *
  * Blocks until the source stream ends, so callers fork it. Chat-actor fibers are
  * `forkScoped` — they live until the enclosing `Scope` closes, giving clean
@@ -116,12 +119,12 @@ const makeChatLoop = (config: CoalescerConfigValues, convo: ConversationalistSer
 export const run: Effect.Effect<
   void,
   never,
-  EventSource | Conversationalist | CoalescerConfig | Scope.Scope
+  EventSource | AmbienceDoorway | CoalescerConfig | Scope.Scope
 > = Effect.gen(function* () {
   const { events } = yield* EventSource;
   const config = yield* CoalescerConfig;
-  const convo = yield* Conversationalist;
-  const chatLoop = makeChatLoop(config, convo);
+  const doorway = yield* AmbienceDoorway;
+  const chatLoop = makeChatLoop(config, doorway);
   const registry = yield* Ref.make(HashMap.empty<string, Queue.Queue<IncomingMessage>>());
 
   const routeTo = (msg: IncomingMessage): Effect.Effect<void, never, Scope.Scope> =>

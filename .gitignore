@@ -4,10 +4,7 @@ node_modules/
 # build output
 dist/
 data/
-.eve/
-.output/
 .vercel/
-.workflow-data/
 
 # env
 .env
@@ -17,7 +14,7 @@ data/
 # whatsapp auth store
 .wa-auth*/
 
-# codex/chatgpt creds for the bot's SEPARATE account (never commit tokens)
+# retired local auth directory; never commit it if one exists from an old checkout
 .codex-bot/
 
 # logs

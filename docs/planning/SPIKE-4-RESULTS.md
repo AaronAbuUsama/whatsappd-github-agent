@@ -1,5 +1,7 @@
 # Spike #4 results — Eve loopback doorway proven (R1/R2)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Durable record of the runtime evidence for issue #4, so the proof travels with the
 repo (not only the GitHub issue comment). Reproduce with the commands at the bottom.
 

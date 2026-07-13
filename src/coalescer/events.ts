@@ -2,15 +2,11 @@
  * The Coalescer's inbound event shape.
  *
  * This mirrors — deliberately, field for field — the *full-fidelity* event
- * whatsappd emits in-process from `createChannelAdapter().subscribe()`:
- * `ChannelEvent = { type: "message"; ref: ConversationRef; message: InboundMessage }`
- * (`whatsappd/dist/types-B8d1OyHV.d.mts:22`; `InboundMessage.Base` at
- * `whatsappd/dist/update-Bi5ZPUjP.d.mts:39-101`). We flatten `{ref, message}`
- * into one record and keep the two `context` fields the *lossy HTTP sidecar*
- * drops but the in-process `subscribe()` keeps — `context.mentions` and
+ * whatsappd emits in-process from `WhatsAppSession.onMessage`. The production
+ * mapper in `whatsapp.ts` flattens that message into this application record
+ * into one record and keep the two addressing fields — `context.mentions` and
  * `context.quoted` (`update-Bi5ZPUjP.d.mts:14-22`). Those are the immediate-fire
- * signal, so mirroring them now is what lets the real `subscribe()` drop in
- * later with no rework.
+ * signal, so the production mapper retains them without an intermediate wire format.
  */
 
 /** One inbound WhatsApp message, flattened from `{ref, message}`. */
@@ -44,8 +40,8 @@ export interface IncomingMessage {
 export type FireReason = "debounce" | "mention" | "quote-reply";
 
 /**
- * The window handed to the Conversationalist on each fire: the messages buffered
- * since the last fire, plus why we fired. This is the Coalescer's entire output.
+ * The window admitted to Ambience on each flush: messages buffered since the
+ * last admission, plus why it fired. This is the Coalescer's entire output.
  */
 export interface ConversationWindow {
   readonly chatId: string;
@@ -57,7 +53,7 @@ export interface ConversationWindow {
  * Does this message directly address the bot — an @-mention or a quote-reply of
  * one of the bot's messages? This is the *only* condition that skips the
  * debounce and fires immediately. It needs the high-fidelity `mentions` /
- * `quotedFrom` fields the sidecar throws away. `botIds` is the set of JIDs that
+ * `quotedFrom` fields. `botIds` is the set of JIDs that
  * mean "the bot" (phone-number and/or `@lid` form) — a match on any one counts.
  */
 export const addressesBot = (msg: IncomingMessage, botIds: readonly string[]): boolean =>

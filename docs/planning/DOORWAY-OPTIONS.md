@@ -1,5 +1,7 @@
 # The doorway, in code — options (so you can judge, not trust me)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 You doubted the "loopback" idea and asked to see it in code with alternatives. Fair.
 Here's every real way the Coalescer's background timer can wake an Eve session, as
 concrete code grounded in the verified Eve APIs, with an honest real-vs-hacky verdict.
