@@ -32,6 +32,9 @@
     "dev": "eve dev",
     "build": "eve build",
     "start": "eve start",
+    "ambience:dev": "flue dev --target node",
+    "ambience:build": "flue build --target node",
+    "ambience:start": "node dist/server.mjs",
     "whatsapp": "tsx src/index.ts",
     "coalescer": "tsx src/coalescer/demo.ts",
     "voice": "tsx src/coalescer/repl.ts",
@@ -46,22 +49,30 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "4.0.11",
+    "@earendil-works/pi-ai": "0.80.2",
+    "@earendil-works/pi-coding-agent": "0.80.2",
+    "@flue/runtime": "1.0.0-beta.9",
     "@octokit/rest": "^22.0.0",
     "ai": "^7.0.0",
     "effect": "^3.21.4",
     "eve": "^0.22.4",
+    "hono": "4.12.30",
     "link-preview-js": "^4.0.4",
     "whatsappd": "^0.2.1",
     "zod": "^4.1.8"
   },
   "devDependencies": {
     "@effect/vitest": "^0.29.0",
+    "@flue/cli": "1.0.0-beta.9",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^3.0.0"
   },
   "pnpm": {
+    "overrides": {
+      "hono": "4.12.30"
+    },
     "onlyBuiltDependencies": [
       "esbuild",
       "baileys",
