@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { actionLedger, recordJobResult, type LedgerAccess } from "../lib/action-ledger.ts";
+import { actionLedger, recordJobResult, recordStartedJob, type LedgerAccess } from "../lib/action-ledger.ts";
 import { GatewayStore } from "../lib/jobs.ts";
 
 export interface RecordResultDependencies {
@@ -29,8 +29,14 @@ export const executeRecordJobResult = (
       throw new Error(`Delegated job ${jobId} is not ready to record (status=${job.status})`);
     }
     if (job.result === undefined && job.error === undefined) throw new Error(`Delegated job ${jobId} has no result or failure evidence`);
+    const at = deps.now().toISOString();
     deps.ledger.update((ledger) =>
-      recordJobResult(ledger, { id: job.id, at: deps.now().toISOString(), result: job.result, error: job.error }),
+      recordJobResult(recordStartedJob(ledger, { id: job.id, task: job.task, at }), {
+        id: job.id,
+        at,
+        result: job.result,
+        error: job.error,
+      }),
     );
     return { recorded: true, jobId, status: job.result === undefined ? "failed" : "completed" };
   } finally {

@@ -141,7 +141,7 @@ describe("F1/F7 durable voice-ledger replay", () => {
     );
   });
 
-  it("does not enqueue when the defineState write fails", () => {
+  it("removes the pending queue row when the defineState write fails synchronously", () => {
     const path = temporaryDatabase();
     const store = new GatewayStore(path);
     let enqueues = 0;
@@ -159,23 +159,24 @@ describe("F1/F7 durable voice-ledger replay", () => {
         {
           ledger,
           openStore: () => ({
+            cancelPending: (id) => store.cancelPending(id),
             enqueue(input) {
               enqueues += 1;
               return store.enqueue(input);
             },
             close() {},
           }),
-          newJobId: () => "job-never-enqueued",
+          newJobId: () => "job-compensated",
           now: () => new Date("2026-07-13T12:00:00Z"),
         },
       ),
     ).toThrow("state unavailable");
-    expect(enqueues).toBe(0);
+    expect(enqueues).toBe(1);
     expect(store.listJobs()).toHaveLength(0);
     store.close();
   });
 
-  it("rolls back the started ledger entry when durable enqueue fails", () => {
+  it("does not write a started ledger entry when durable enqueue fails", () => {
     const ledger = memoryLedger();
     expect(() =>
       executeLedgerDelegate(
@@ -184,6 +185,9 @@ describe("F1/F7 durable voice-ledger replay", () => {
         {
           ledger,
           openStore: () => ({
+            cancelPending() {
+              throw new Error("must not compensate a row that was never inserted");
+            },
             enqueue() {
               throw new Error("sqlite unavailable");
             },
@@ -267,8 +271,13 @@ describe("F1/F7 durable voice-ledger replay", () => {
         },
       );
 
-    expect(run(memoryLedger())).toMatchObject({ status: "started", jobId: "stable-call-id" });
-    // Simulate replay from a workflow checkpoint that predates the state write.
+    // Simulate a process death in the exact enqueue -> defineState window.
+    const crashedStore = new GatewayStore(path);
+    crashedStore.enqueue({ id: "stable-call-id", voiceSessionId: "voice-replay", kind: "github", task });
+    crashedStore.close();
+
+    // Durable tool replay uses the same call-derived id. Enqueue is a no-op,
+    // then the missing state entry is filled.
     const replayedLedger = memoryLedger();
     expect(run(replayedLedger)).toMatchObject({ status: "started", jobId: "stable-call-id" });
     const store = new GatewayStore(path);

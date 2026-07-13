@@ -177,11 +177,6 @@ export const recordStartedJob = (
   };
 };
 
-export const removeJob = (ledger: ActionLedger, id: string): ActionLedger => ({
-  ...ledger,
-  jobs: ledger.jobs.filter((job) => job.id !== id),
-});
-
 export const githubResultKind = (result: GithubResult): LedgerItemKind | undefined => {
   if (result.url?.includes("/pull/") === true) return "pull_request";
   if (result.url?.includes("/issues/") === true) return "issue";

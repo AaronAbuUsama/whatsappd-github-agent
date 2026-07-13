@@ -6,7 +6,6 @@ import {
   actionLedger,
   findDuplicateJob,
   findLedgerItem,
-  removeJob,
   recordStartedJob,
   referencedNumber,
   referencedKind,
@@ -16,7 +15,7 @@ import { GatewayStore } from "../lib/jobs.ts";
 
 export interface DelegateDependencies {
   readonly ledger: LedgerAccess;
-  readonly openStore: () => Pick<GatewayStore, "close" | "enqueue">;
+  readonly openStore: () => Pick<GatewayStore, "cancelPending" | "close" | "enqueue">;
   readonly newJobId: (ctx: ToolContext) => string;
   readonly now: () => Date;
 }
@@ -62,12 +61,18 @@ export const executeLedgerDelegate = (
   const jobId = deps.newJobId(ctx);
   try {
     const task = constrainExistingTarget(input.task, deps.ledger);
-    deps.ledger.update((ledger) => recordStartedJob(ledger, { id: jobId, task: input.task, at: deps.now().toISOString() }));
+    // Queue first. If the process dies immediately afterward, durable tool
+    // replay uses the same call-derived id, enqueue is an idempotent no-op, and
+    // the missing defineState entry is filled below. The reverse ordering can
+    // strand a phantom "started" entry that suppresses the replay forever.
+    store.enqueue({ id: jobId, voiceSessionId: ctx.session.id, kind: input.kind, task });
     try {
-      store.enqueue({ id: jobId, voiceSessionId: ctx.session.id, kind: input.kind, task });
+      deps.ledger.update((ledger) => recordStartedJob(ledger, { id: jobId, task: input.task, at: deps.now().toISOString() }));
     } catch (cause) {
-      // Never leave a phantom dedup entry when durable queue insertion fails.
-      deps.ledger.update((ledger) => removeJob(ledger, jobId));
+      // A synchronous state failure occurs in the same tool tick, before the
+      // runner can claim this row. Delete only pending work; never delete a job
+      // that another actor has already started.
+      store.cancelPending(jobId);
       throw cause;
     }
     return { jobId, status: "started" as const };

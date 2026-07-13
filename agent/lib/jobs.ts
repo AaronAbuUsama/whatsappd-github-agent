@@ -264,6 +264,11 @@ export class GatewayStore implements SessionStore {
     return id;
   }
 
+  /** Compensate a synchronous tool failure only while the runner cannot have claimed the job. */
+  cancelPending(id: string): boolean {
+    return this.#db.prepare("DELETE FROM jobs WHERE id = ? AND status = 'pending'").run(id).changes === 1;
+  }
+
   claimPending(limit: number): readonly DelegationJob[] {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
