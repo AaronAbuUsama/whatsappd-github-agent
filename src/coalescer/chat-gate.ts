@@ -1,10 +1,9 @@
 /**
  * The chat gate — which chats the bot is allowed to engage — shared by every
- * Coalescer wiring (the `pnpm run live` harness and the in-process gateway) so the
- * fail-closed policy lives in ONE place: an unset target silences the bot rather
- * than turning it loose on every chat the number is in. The voice replies for real
- * and engages on relevance (not just @-mentions), so this gate is a real
- * access-control decision. Mirrors the gate in agent/channels/whatsapp.ts.
+ * production whatsappd runtime so the fail-closed policy lives in one place: an
+ * unset target silences Ambience rather than admitting every chat on the account.
+ * Ambience may engage on relevance (not just mentions), so this gate is a real
+ * access-control decision applied before any message reaches the Coalescer.
  */
 
 /** The raw env strings the gate reads (kept as strings so callers pass `process.env.*` directly). */

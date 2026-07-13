@@ -1,5 +1,7 @@
 # Decision spec — WhatsApp-native agent on Eve (one process)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Architecture decision record for moving the hand-rolled two-tier agent onto Eve as a
 **WhatsApp-native agent**. Ratifies the decisions made in the 2026-07-12 planning
 session. Grounded in [`EVE-PRIMITIVES-MAP.md`](./EVE-PRIMITIVES-MAP.md) and

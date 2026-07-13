@@ -38,19 +38,9 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Build (flue build)
-        run: pnpm run ambience:build
+      - name: Build
+        run: pnpm run build
         env:
           # Channel discovery constructs the verifier during build; this value
           # is CI-only and is never a production webhook credential.
           GITHUB_WEBHOOK_SECRET: ci-build-only-secret
-
-      # The `eve` CLI hard-requires Node >=24 at runtime (it exits with a
-      # version-check error below that, independent of what `engines` in
-      # package.json or npm itself enforce). `eve build` compiles agent/
-      # into .eve/ + .output/ with no network or model credential needed,
-      # so it's a real build check — just one only `eve` can run on Node
-      # 24. See docs/TUTORIAL.md and STATUS.md for how this was verified.
-      - name: Build (eve build)
-        if: matrix.node-version == 24
-        run: pnpm run build

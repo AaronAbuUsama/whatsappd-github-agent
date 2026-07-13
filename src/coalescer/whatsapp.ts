@@ -1,15 +1,12 @@
 /**
- * The real WhatsApp seams (Rung 2) — `EventSource` + `Outbound` over an
- * in-process whatsappd session, plus the session bootstrap.
+ * The real WhatsApp event source over an in-process whatsappd session, plus
+ * the session bootstrap.
  *
- * Why in-process (not the HTTP sidecar in src/index.ts): the sidecar's wire
- * format drops `contextInfo.mentionedJid` / quoted, but `addressesBot` needs
- * them. whatsappd's `session.onMessage` keeps the full `context`, which
- * `events.ts` mirrors field-for-field — so this mapper is a straight copy.
+ * The in-process subscription retains `contextInfo.mentionedJid` and quoted
+ * metadata needed by `addressesBot`.
  *
- * These Layers just swap in behind the same `EventSource`/`Outbound` ports the
- * mocks satisfy; the Coalescer and voice don't change. The session is created
- * as a scoped resource: it's stopped and unsubscribed when the scope closes.
+ * The event source swaps in behind the same port the timing tests satisfy. The
+ * session is a scoped resource: it is stopped and unsubscribed on scope close.
  */
 import { createRequire } from "node:module";
 import { Data, Effect, Layer, Queue, Runtime, type Scope, Stream } from "effect";
@@ -23,10 +20,10 @@ import {
   type WhatsAppSession,
 } from "whatsappd";
 import type { IncomingMessage } from "./events.ts";
-import { EventSource, Outbound } from "./ports.ts";
+import { EventSource } from "./ports.ts";
 
-// qrcode-terminal ships no types and is a transitive dep of whatsappd; require it
-// so a first-run pairing prints a scannable QR without adding a typed import.
+// qrcode-terminal ships no types; require it so first-run pairing prints a
+// scannable QR without adding a local declaration file.
 const qr = createRequire(import.meta.url)("qrcode-terminal") as {
   generate(text: string, opts?: { small?: boolean }): void;
 };
@@ -99,7 +96,7 @@ export const openSession = (
   prepare: (session: WhatsAppSession) => SessionPreparation = (session) => ({ session }),
 ): Effect.Effect<WhatsAppSession, WhatsAppError, Scope.Scope> =>
   Effect.gen(function* () {
-    // Preparation runs while the session is inert. The gateway uses this hook
+    // Preparation runs while the session is inert. The production runtime uses this hook
     // to subscribe durable history capture before start() emits initial sync.
     const prepared = prepare(createSession({ store: fileStore(storeDir), auth: qrAuth() }));
     const session = prepared.session;
@@ -169,7 +166,7 @@ export const botIdsOf = (session: WhatsAppSession, rawLid?: string): readonly st
 /**
  * EventSource over `session.onMessage`. Messages are pushed onto an unbounded
  * queue (WhatsApp's inbound rate is low) and surfaced as a Stream; `allow` gates
- * which chats reach the loop, since the voice replies for real. The listener is
+ * which chats reach the loop before Ambience admission. The listener is
  * removed on scope close.
  */
 export const whatsappEventSource = (
@@ -192,20 +189,3 @@ export const whatsappEventSource = (
       return { events: Stream.fromQueue(queue) };
     }),
   );
-
-/** Outbound over `session.send` / `session.setTyping`. Send/typing failures are
- * logged, not raised — a dropped reply must not wedge the chat's loop. */
-export const whatsappOutbound = (session: WhatsAppSession): Layer.Layer<Outbound> =>
-  Layer.succeed(Outbound, {
-    reply: (chatId, text) =>
-      Effect.sync(() => console.log(`[${stamp()}] 📤 → ${chatId}: ${JSON.stringify(text)}`)).pipe(
-        Effect.zipRight(Effect.tryPromise(() => session.send(chatId, { text }))),
-        Effect.asVoid,
-        Effect.catchAll((cause) => Effect.sync(() => console.error(`[${stamp()}] ⚠️  send failed → ${chatId}: ${String(cause)}`))),
-      ),
-    setTyping: (chatId, on) =>
-      Effect.tryPromise(() => session.setTyping(chatId, on)).pipe(
-        Effect.tap(() => Effect.sync(() => console.log(`[${stamp()}] ⌨️  typing ${on ? "on" : "off"} — ${chatId}`))),
-        Effect.ignore,
-      ),
-  });

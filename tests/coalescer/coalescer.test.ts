@@ -16,15 +16,8 @@ import { Duration, Effect, Layer, Queue, Ref, TestClock } from "effect";
 import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { type CoalescerConfigValues, configLayer } from "../../src/coalescer/config.ts";
 import type { ConversationWindow, IncomingMessage } from "../../src/coalescer/events.ts";
-import {
-  cannedWorker,
-  collectingOutbound,
-  type OutboundEvent,
-  queueEventSource,
-  recordingConversationalist,
-  selfGatingConversationalist,
-} from "../../src/coalescer/mocks.ts";
-import { Conversationalist, type WorkerTask } from "../../src/coalescer/ports.ts";
+import { queueEventSource, recordingAmbienceDoorway } from "../../src/coalescer/mocks.ts";
+import { AmbienceDoorway } from "../../src/coalescer/ports.ts";
 
 const BOT = "bot@s.whatsapp.net";
 const CHAT = "team@g.us";
@@ -49,7 +42,7 @@ const mkMsg = (text: string, over: Partial<IncomingMessage> = {}): IncomingMessa
   };
 };
 
-/** Fork the real Coalescer over a test source + recording voice + given config. */
+/** Fork the real Coalescer over a test source + recording Ambience doorway + given config. */
 const startRecording = (
   source: Queue.Dequeue<IncomingMessage>,
   turns: Ref.Ref<readonly ConversationWindow[]>,
@@ -60,26 +53,8 @@ const startRecording = (
       Effect.provide(
         Layer.mergeAll(
           queueEventSource(source),
-          recordingConversationalist(turns),
+          recordingAmbienceDoorway(turns),
           configLayer({ botIds: [BOT], debounceWindow: WINDOW, ...cfg }),
-        ),
-      ),
-    ),
-  );
-
-/** Fork the real Coalescer over a test source + the self-gating voice (collecting outbound + canned worker). */
-const startSelfGating = (
-  source: Queue.Dequeue<IncomingMessage>,
-  outbound: Ref.Ref<readonly OutboundEvent[]>,
-  tasks?: Ref.Ref<readonly WorkerTask[]>,
-) =>
-  Effect.forkScoped(
-    Coalescer.run.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          queueEventSource(source),
-          selfGatingConversationalist.pipe(Layer.provide(Layer.merge(collectingOutbound(outbound), cannedWorker(undefined, tasks)))),
-          configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
         ),
       ),
     ),
@@ -289,41 +264,15 @@ describe("Coalescer", () => {
     }),
   );
 
-  it.scoped("voice: addressed + task-like text delegates to the Worker and narrates (blocking, D1a)", () =>
-    Effect.gen(function* () {
-      const source = yield* Queue.unbounded<IncomingMessage>();
-      const outbound = yield* Ref.make<readonly OutboundEvent[]>([]);
-      const tasks = yield* Ref.make<readonly WorkerTask[]>([]);
-
-      yield* startSelfGating(source, outbound, tasks);
-
-      yield* Queue.offer(source, mkMsg("@bot please review PR 42", { mentions: [BOT] }));
-      yield* TestClock.adjust(Duration.zero);
-
-      // Delegated exactly once, with the addressing message's text.
-      const t = yield* Ref.get(tasks);
-      expect(t).toHaveLength(1);
-      expect(t[0]!.instruction).toBe("@bot please review PR 42");
-
-      // Voice: typing on → reply narrating the worker result → typing off.
-      const o = yield* Ref.get(outbound);
-      expect(o).toEqual([
-        { kind: "typing", chatId: CHAT, on: true },
-        { kind: "reply", chatId: CHAT, text: "on it — handled: @bot please review PR 42" },
-        { kind: "typing", chatId: CHAT, on: false },
-      ]);
-    }),
-  );
-
   it.scoped("resilience: a turn that dies (defect) does not wedge the chat — the next burst still fires", () =>
     Effect.gen(function* () {
       const source = yield* Queue.unbounded<IncomingMessage>();
       const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
       const calls = yield* Ref.make(0);
 
-      // A voice that throws (defect, not a typed error) on its very first turn.
-      const flakyVoice = Layer.succeed(Conversationalist, {
-        turn: (window: ConversationWindow) =>
+      // An Ambience doorway that throws (defect, not a typed error) on its first admission.
+      const flakyDoorway = Layer.succeed(AmbienceDoorway, {
+        admit: (window: ConversationWindow) =>
           Effect.gen(function* () {
             const n = yield* Ref.updateAndGet(calls, (c) => c + 1);
             if (n === 1) return yield* Effect.die(new Error("boom"));
@@ -334,12 +283,12 @@ describe("Coalescer", () => {
       yield* Effect.forkScoped(
         Coalescer.run.pipe(
           Effect.provide(
-            Layer.mergeAll(queueEventSource(source), flakyVoice, configLayer({ botIds: [BOT], debounceWindow: WINDOW })),
+            Layer.mergeAll(queueEventSource(source), flakyDoorway, configLayer({ botIds: [BOT], debounceWindow: WINDOW })),
           ),
         ),
       );
 
-      // First burst fires → the voice dies. The chat's actor must survive it.
+      // First burst fires → admission dies. The chat's actor must survive it.
       yield* Queue.offer(source, mkMsg("first"));
       yield* TestClock.adjust(WINDOW);
       expect(yield* Ref.get(calls)).toBe(1);
@@ -354,18 +303,4 @@ describe("Coalescer", () => {
     }),
   );
 
-  it.scoped("voice: an ambient burst is heard but stays silent (self-gate)", () =>
-    Effect.gen(function* () {
-      const source = yield* Queue.unbounded<IncomingMessage>();
-      const outbound = yield* Ref.make<readonly OutboundEvent[]>([]);
-
-      yield* startSelfGating(source, outbound);
-
-      yield* Queue.offer(source, mkMsg("just chatting"));
-      yield* TestClock.adjust(WINDOW);
-
-      // It fired (ambient debounce) but the voice chose silence — no outbound at all.
-      expect(yield* Ref.get(outbound)).toHaveLength(0);
-    }),
-  );
 });

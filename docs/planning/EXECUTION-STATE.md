@@ -1,5 +1,7 @@
 # whatsappd-github-agent — Execution State (session handoff)
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Single source of truth across a `/compact` boundary. Read this first on resume.
 
 Last updated: 2026-07-11.

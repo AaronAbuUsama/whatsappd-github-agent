@@ -14,7 +14,7 @@ describe("Ambience admission boundary", () => {
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { scripts?: Record<string, string> };
 
-    expect(packageJson.scripts?.["ambience:start"]).toBe(
+    expect(packageJson.scripts?.["start"]).toBe(
       "node --env-file-if-exists=.env dist/server.mjs",
     );
   });

@@ -1,5 +1,7 @@
 # State (the world model) + failure modes from the live log
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 Companion to [`EVE-PRIMITIVES-MAP.md`](./EVE-PRIMITIVES-MAP.md). Captures (1) the
 state design the agent is missing, grounded in Eve's real state primitives, and
 (2) the failure modes observed in the 2026-07-12 live run, each mapped to a root

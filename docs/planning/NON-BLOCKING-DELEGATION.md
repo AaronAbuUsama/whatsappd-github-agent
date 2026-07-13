@@ -1,5 +1,7 @@
 # Non-blocking delegation — in code, with the implications
 
+> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+
 You asked to see the non-blocking pattern (Q3 Option B) in real code before deciding.
 Here it is, grounded in the verified Eve APIs, with every implication spelled out — the
 good and the cost.

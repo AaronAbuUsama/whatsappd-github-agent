@@ -1,5 +1,7 @@
 # Ambience live replacement receipt
 
+> Historical prerequisite proof captured before the #34 hard cut. It proves the replacement path that authorized deletion; the #34 issue and PR contain the post-deletion rerun.
+
 Date: 2026-07-13
 
 Ticket: #33
