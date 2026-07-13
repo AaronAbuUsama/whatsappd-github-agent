@@ -159,10 +159,23 @@ export const eveVoiceModel = (client: Client, store: SessionStore): VoiceModel =
     store.runExclusive(chatId, async () => {
       const session = client.session(store.get(chatId));
       const response = await session.send({ message, clientContext: noteFor(reason), signal });
+      // A newly-created session receives its id as soon as the POST returns,
+      // before its tool-call stream is consumed. Bind it now so tools can
+      // securely resolve ctx.session.id -> chatId even on the first turn.
+      store.set(chatId, {
+        ...session.state,
+        sessionId: response.sessionId ?? session.state.sessionId,
+        continuationToken: response.continuationToken ?? session.state.continuationToken,
+      });
       const result = await response.result();
       // Persist the resume cursor (now carrying the sessionId) BEFORE returning, so a
       // memoryless fresh session can never be minted for this chat on the next turn.
-      store.set(chatId, session.state);
+      const bound = store.get(chatId);
+      store.set(chatId, {
+        ...bound,
+        ...session.state,
+        sessionId: session.state.sessionId ?? bound?.sessionId,
+      });
       return { events: result.events, message: result.message, status: result.status };
     }),
 });

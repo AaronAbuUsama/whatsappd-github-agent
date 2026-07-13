@@ -89,9 +89,21 @@ const toIncoming = (msg: WaMessage): IncomingMessage => ({
  * connection reaches a terminal state (e.g. logged out) without coming online.
  * Scoped: the session is stopped and its listener removed on scope close.
  */
-export const openSession = (storeDir: string): Effect.Effect<WhatsAppSession, WhatsAppError, Scope.Scope> =>
+interface SessionPreparation {
+  readonly session: WhatsAppSession;
+  readonly finalize?: () => void;
+}
+
+export const openSession = (
+  storeDir: string,
+  prepare: (session: WhatsAppSession) => SessionPreparation = (session) => ({ session }),
+): Effect.Effect<WhatsAppSession, WhatsAppError, Scope.Scope> =>
   Effect.gen(function* () {
-    const session = createSession({ store: fileStore(storeDir), auth: qrAuth() });
+    // Preparation runs while the session is inert. The gateway uses this hook
+    // to subscribe durable history capture before start() emits initial sync.
+    const prepared = prepare(createSession({ store: fileStore(storeDir), auth: qrAuth() }));
+    const session = prepared.session;
+    if (prepared.finalize !== undefined) yield* Effect.addFinalizer(() => Effect.sync(prepared.finalize!));
     yield* Effect.addFinalizer(() => Effect.promise(() => session.stop()).pipe(Effect.ignore));
 
     // Log status transitions + render a QR on first-run pairing, for the session's lifetime.

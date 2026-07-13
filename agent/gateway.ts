@@ -26,6 +26,7 @@
 import { Duration, Effect, Layer, Schedule } from "effect";
 import { Client } from "eve/client";
 import { GatewayStore } from "./lib/jobs.ts";
+import { persistWhatsAppMessages } from "./lib/whatsapp-messages.ts";
 import { makeChatGate } from "../src/coalescer/chat-gate.ts";
 import * as Coalescer from "../src/coalescer/coalescer.ts";
 import { configLayer } from "../src/coalescer/config.ts";
@@ -84,7 +85,10 @@ export async function startGateway(agentName: string): Promise<void> {
       );
     }
 
-    const session = yield* openSession(STORE_DIR);
+    const session = yield* openSession(STORE_DIR, (rawSession) => {
+      const persisted = persistWhatsAppMessages(rawSession, store);
+      return { session: persisted.session, finalize: persisted.unsubscribe };
+    });
     // The bot's identities for @-mention/quote matching: its phone-number JID plus,
     // in a LID-addressed group, its @lid JID (WHATSAPP_BOT_LID) — see botIdsOf.
     const botIds = botIdsOf(session, process.env.WHATSAPP_BOT_LID);

@@ -238,4 +238,37 @@ describe("eveVoiceModel — resumes the SAME session by SessionState (the #4 cor
     expect(sels[1]).toEqual({ sessionId: "sess-1", streamIndex: 1 });
     expect(store.get(CHAT)?.sessionId).toBe("sess-1");
   });
+
+  it("binds a newly-created session to its chat before tools run", async () => {
+    let releaseResult!: () => void;
+    const resultStarted = new Promise<void>((resolve) => {
+      releaseResult = resolve;
+    });
+    const fakeClient = {
+      session() {
+        const state = { streamIndex: 0 };
+        return {
+          get state() {
+            return state;
+          },
+          async send() {
+            return {
+              sessionId: "sess-first-turn",
+              continuationToken: "opaque",
+              async result() {
+                await resultStarted;
+                return { events: [], message: "prose", status: "waiting" };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as Client;
+    const store = memorySessionStore();
+    const turn = eveVoiceModel(fakeClient, store).turn(CHAT, "look back", "mention");
+
+    await expect.poll(() => store.get(CHAT)?.sessionId).toBe("sess-first-turn");
+    releaseResult();
+    await turn;
+  });
 });

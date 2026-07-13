@@ -21,6 +21,30 @@ export interface DelegationJob {
   readonly error?: string;
 }
 
+export type MessageDirection = "inbound" | "outbound";
+
+export interface StoredWhatsAppMessage {
+  readonly id: string;
+  readonly chatId: string;
+  readonly direction: MessageDirection;
+  readonly senderId?: string;
+  readonly senderName?: string;
+  readonly kind: string;
+  readonly text: string;
+  readonly timestamp: number;
+}
+
+interface MessageRow {
+  message_id: string;
+  chat_id: string;
+  direction: MessageDirection;
+  sender_id: string | null;
+  sender_name: string | null;
+  kind: string;
+  text: string;
+  timestamp_ms: number;
+}
+
 interface JobRow {
   id: string;
   voice_session_id: string;
@@ -46,6 +70,19 @@ const decodeJob = (row: JobRow): DelegationJob => ({
   ...(row.result_json === null ? {} : { result: JSON.parse(row.result_json) as GithubResult }),
   ...(row.error === null ? {} : { error: row.error }),
 });
+
+const decodeMessage = (row: MessageRow): StoredWhatsAppMessage => ({
+  id: row.message_id,
+  chatId: row.chat_id,
+  direction: row.direction,
+  ...(row.sender_id === null ? {} : { senderId: row.sender_id }),
+  ...(row.sender_name === null ? {} : { senderName: row.sender_name }),
+  kind: row.kind,
+  text: row.text,
+  timestamp: row.timestamp_ms,
+});
+
+const escapeLike = (query: string): string => query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 
 export const gatewayDatabasePath = (): string =>
   process.env.WA_GATEWAY_DB ?? join(process.env.WHATSAPP_STORE_DIR ?? ".wa-auth", "gateway.sqlite");
@@ -81,7 +118,20 @@ export class GatewayStore implements SessionStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS messages (
+        chat_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+        sender_id TEXT,
+        sender_name TEXT,
+        kind TEXT NOT NULL,
+        text TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id)
+      );
       CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status, created_at);
+      CREATE INDEX IF NOT EXISTS messages_chat_time_idx ON messages(chat_id, timestamp_ms, message_id);
     `);
     const columns = this.#db.prepare("PRAGMA table_info(jobs)").all() as unknown as Array<{ name: string }>;
     if (!columns.some(({ name }) => name === "worker_state_json")) {
@@ -126,6 +176,67 @@ export class GatewayStore implements SessionStore {
            updated_at = excluded.updated_at`,
       )
       .run(chatId, state.sessionId, JSON.stringify(state));
+  }
+
+  chatIdForVoiceSession(sessionId: string): string | undefined {
+    const row = this.#db.prepare("SELECT chat_id FROM voice_sessions WHERE session_id = ?").get(sessionId) as
+      | { chat_id: string }
+      | undefined;
+    return row?.chat_id;
+  }
+
+  persistMessage(message: StoredWhatsAppMessage): void {
+    this.#db
+      .prepare(
+        `INSERT INTO messages
+          (chat_id, message_id, direction, sender_id, sender_name, kind, text, timestamp_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(chat_id, message_id) DO UPDATE SET
+           direction = excluded.direction,
+           sender_id = COALESCE(excluded.sender_id, messages.sender_id),
+           sender_name = COALESCE(excluded.sender_name, messages.sender_name),
+           kind = excluded.kind,
+           text = CASE WHEN excluded.text <> '' THEN excluded.text ELSE messages.text END,
+           timestamp_ms = MIN(messages.timestamp_ms, excluded.timestamp_ms)`,
+      )
+      .run(
+        message.chatId,
+        message.id,
+        message.direction,
+        message.senderId ?? null,
+        message.senderName ?? null,
+        message.kind,
+        message.text,
+        message.timestamp,
+      );
+  }
+
+  searchMessages(chatId: string, query: string, limit = 50): readonly StoredWhatsAppMessage[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM messages
+            WHERE chat_id = ? AND text LIKE ? ESCAPE '\\' COLLATE NOCASE
+            ORDER BY timestamp_ms DESC, message_id DESC
+            LIMIT ?
+         ) ORDER BY timestamp_ms, message_id`,
+      )
+      .all(chatId, `%${escapeLike(query)}%`, Math.max(1, Math.min(limit, 100))) as unknown as MessageRow[];
+    return rows.map(decodeMessage);
+  }
+
+  readThread(chatId: string, limit = 30): readonly StoredWhatsAppMessage[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM messages
+            WHERE chat_id = ?
+            ORDER BY timestamp_ms DESC, message_id DESC
+            LIMIT ?
+         ) ORDER BY timestamp_ms, message_id`,
+      )
+      .all(chatId, Math.max(1, Math.min(limit, 100))) as unknown as MessageRow[];
+    return rows.map(decodeMessage);
   }
 
   enqueue(input: { voiceSessionId: string; kind: "github"; task: string }): string {
