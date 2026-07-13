@@ -199,6 +199,42 @@ describe("harvestSays", () => {
 });
 
 describe("eveVoiceModel — resumes the SAME session by SessionState (the #4 correction)", () => {
+  it("rejects an Eve turn failure instead of misreporting it as chosen silence", async () => {
+    const fakeClient = {
+      session() {
+        return {
+          state: { sessionId: "sess-failed", streamIndex: 0 },
+          async send() {
+            return {
+              async result() {
+                return {
+                  events: [
+                    {
+                      type: "turn.failed",
+                      data: {
+                        code: "MODEL_CALL_FAILED",
+                        message: "The model did not return a response.",
+                        sequence: 0,
+                        turnId: "turn_0",
+                      },
+                    },
+                    { type: "session.waiting", data: { sequence: 1 } },
+                  ],
+                  status: "waiting",
+                };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as Client;
+
+    const model = eveVoiceModel(fakeClient, memorySessionStore());
+    await expect(model.turn(CHAT, "hello", "mention")).rejects.toThrow(
+      "Eve turn failed (MODEL_CALL_FAILED): The model did not return a response.",
+    );
+  });
+
   it("opens fresh on the first turn, then resumes from the captured SessionState", async () => {
     const sels: unknown[] = [];
     let counter = 0;

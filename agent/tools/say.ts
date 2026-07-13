@@ -31,4 +31,13 @@ export default defineTool({
   execute(_input) {
     return { delivered: true };
   },
+  // Eve requires a non-empty terminal assistant step after an ordinary tool
+  // result. Give the model Eve's intentional no-delivery marker so `say` can
+  // remain the only group-visible output without producing an empty-response
+  // failure at the end of an otherwise successful turn.
+  toModelOutput: () => ({
+    type: "text",
+    value:
+      "The WhatsApp message was accepted. If you have no more messages to send, finish now with exactly <eve-empty-delivery/> and no other text.",
+  }),
 });

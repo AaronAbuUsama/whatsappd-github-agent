@@ -176,6 +176,10 @@ export const eveVoiceModel = (client: Client, store: SessionStore): VoiceModel =
         ...session.state,
         sessionId: session.state.sessionId ?? bound?.sessionId,
       });
+      const failure = result.events.find((event) => event.type === "turn.failed");
+      if (failure) {
+        throw new Error(`Eve turn failed (${failure.data.code}): ${failure.data.message}`);
+      }
       return { events: result.events, message: result.message, status: result.status };
     }),
 });
