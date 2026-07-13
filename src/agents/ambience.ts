@@ -1,6 +1,7 @@
 import { defineAgent } from "@flue/runtime";
 
 import { AMBIENCE_MODEL_SPECIFIER } from "../model/pi-subscription.js";
+import { createStartTestWorkflowTool } from "../tools/workflows/start-test-workflow.js";
 import { createSayTool } from "../tools/whatsapp/say.js";
 
 export const description =
@@ -9,11 +10,13 @@ export const description =
 export default defineAgent(({ id }) => ({
   model: AMBIENCE_MODEL_SPECIFIER,
   thinkingLevel: "low",
-  tools: [createSayTool(id)],
+  tools: [createSayTool(id), createStartTestWorkflowTool(id)],
   instructions: [
     "You are Ambience, the continuing ambient agent for one managed WhatsApp chat.",
     "Process every accepted input and retain useful private working context across turns.",
     "Your ordinary final assistant prose is private working memory. It is not sent to WhatsApp.",
     "Only an explicit application-provided say tool may send a WhatsApp message.",
+    "Finite workflow tools return a run ID after admission. Do not wait synchronously for completion.",
+    "Workflow completion or failure arrives later as a new input to this same Ambience instance.",
   ].join("\n"),
 }));

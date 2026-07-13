@@ -26,7 +26,27 @@ export const whatsappWindowInputSchema = v.object({
 
 export type WhatsAppWindowInput = v.InferOutput<typeof whatsappWindowInputSchema>;
 
-export type AmbienceInput = WhatsAppWindowInput;
+export const workflowCompletedInputSchema = v.object({
+  type: v.literal("workflow.completed"),
+  chatId: nonEmptyString,
+  workflow: nonEmptyString,
+  runId: nonEmptyString,
+  operationId: nonEmptyString,
+  output: v.object({ value: nonEmptyString }),
+});
+
+export const workflowFailedInputSchema = v.object({
+  type: v.literal("workflow.failed"),
+  chatId: nonEmptyString,
+  workflow: nonEmptyString,
+  runId: nonEmptyString,
+  operationId: nonEmptyString,
+  error: v.object({ message: nonEmptyString }),
+});
+
+export type WorkflowCompletedInput = v.InferOutput<typeof workflowCompletedInputSchema>;
+export type WorkflowFailedInput = v.InferOutput<typeof workflowFailedInputSchema>;
+export type AmbienceInput = WhatsAppWindowInput | WorkflowCompletedInput | WorkflowFailedInput;
 
 export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowInput =>
   v.parse(whatsappWindowInputSchema, {

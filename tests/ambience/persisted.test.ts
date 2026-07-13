@@ -119,6 +119,32 @@ async function resetWhatsApp(): Promise<void> {
   expect(response.status).toBe(204);
 }
 
+interface TestRunRecord {
+  runId: string;
+  workflowName: string;
+  status: "active" | "completed" | "errored";
+  input?: unknown;
+  result?: unknown;
+  error?: unknown;
+}
+
+async function pendingWorkflowOperations(): Promise<readonly string[]> {
+  const response = await fetch(`${origin}/test/workflows/pending`);
+  expect(response.status).toBe(200);
+  return ((await response.json()) as { operationIds: string[] }).operationIds;
+}
+
+async function releaseWorkflow(operationId: string): Promise<void> {
+  const response = await fetch(`${origin}/test/workflows/${operationId}/release`, { method: "POST" });
+  expect(response.status, await response.text()).toBe(204);
+}
+
+async function getRun(runId: string): Promise<TestRunRecord> {
+  const response = await fetch(`${origin}/test/runs/${runId}`);
+  if (response.status !== 200) throw new Error(`Run lookup failed with ${response.status}: ${await response.text()}`);
+  return (await response.json()) as TestRunRecord;
+}
+
 beforeAll(async () => {
   const build = spawn(
     "pnpm",
@@ -270,5 +296,85 @@ describe("persisted Ambience doorway", () => {
     expect(b).toContain("Chat B remained isolated from Chat A.");
     expect(b).not.toContain("A_FIRST");
     expect(b).not.toContain("A_SECOND");
+  });
+
+  it("admits a finite workflow non-blockingly, stays responsive, then processes one validated completion", async () => {
+    const chatId = "workflow-success-28@g.us";
+
+    await coalescerMessage(chatId, "START_WORKFLOW_SUCCESS", { mentions: ["bot@s.whatsapp.net"] });
+    await waitFor(
+      async () =>
+        (await pendingWorkflowOperations()).length === 1 &&
+        (await historyText(chatId)).includes("Private workflow admission settled with runId"),
+      "successful workflow admission and initiating turn settlement",
+    );
+
+    const admittedHistory = await historyText(chatId);
+    const runId = admittedHistory.match(/Private workflow admission settled with runId ([^\s.]+)\./)?.[1];
+    expect(runId).toBeDefined();
+    const [operationId] = await pendingWorkflowOperations();
+    expect(operationId).toBeDefined();
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      runId,
+      workflowName: "test-task",
+      status: "active",
+      input: { chatId, operationId, value: "validated-success", shouldFail: false },
+    });
+
+    await coalescerMessage(chatId, "WHILE_WORKFLOW_HELD");
+    await waitFor(
+      async () => (await historyText(chatId)).includes("Private Ambience turn settled while the workflow remained active."),
+      "another Ambience turn while workflow is active",
+    );
+    await expect(getRun(runId!)).resolves.toMatchObject({ status: "active" });
+
+    await releaseWorkflow(operationId!);
+    await waitFor(
+      async () =>
+        (await historyText(chatId)).includes("Private workflow completion input processed by the same Ambience instance.") &&
+        (await getRun(runId!)).status === "completed",
+      "validated workflow completion input and terminal run record",
+    );
+
+    const finalHistory = await historyText(chatId);
+    expect(finalHistory.match(/workflow\.completed/g)).toHaveLength(1);
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      status: "completed",
+      result: { operationId, value: "validated-success" },
+    });
+  });
+
+  it("turns deterministic workflow failure into one normalized failure input", async () => {
+    const chatId = "workflow-failure-28@g.us";
+
+    await coalescerMessage(chatId, "START_WORKFLOW_FAILURE", { mentions: ["bot@s.whatsapp.net"] });
+    await waitFor(
+      async () =>
+        (await pendingWorkflowOperations()).length === 1 &&
+        (await historyText(chatId)).includes("Private workflow admission settled with runId"),
+      "failing workflow admission and initiating turn settlement",
+    );
+
+    const admittedHistory = await historyText(chatId);
+    const runId = admittedHistory.match(/Private workflow admission settled with runId ([^\s.]+)\./)?.[1];
+    expect(runId).toBeDefined();
+    const [operationId] = await pendingWorkflowOperations();
+    expect(operationId).toBeDefined();
+
+    await releaseWorkflow(operationId!);
+    await waitFor(
+      async () =>
+        (await historyText(chatId)).includes("Private workflow failure input processed by the same Ambience instance.") &&
+        (await getRun(runId!)).status === "errored",
+      "normalized workflow failure input and terminal run record",
+    );
+
+    const finalHistory = await historyText(chatId);
+    expect(finalHistory.match(/workflow\.failed/g)).toHaveLength(1);
+    expect(finalHistory).not.toContain("secret stack");
+    await expect(getRun(runId!)).resolves.toMatchObject({
+      status: "errored",
+      error: expect.objectContaining({ message: "Deterministic test workflow failure" }),
+    });
   });
 });
