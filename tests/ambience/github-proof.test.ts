@@ -241,7 +241,7 @@ describe("bounded GitHub proof operation", () => {
 });
 
 describe("root Ambience capability boundary", () => {
-  it("has only say and workflow admission, never a GitHub mutation tool", async () => {
+  it("has only communication, bound history reads, and workflow admission, never a GitHub mutation tool", async () => {
     configureWhatsAppHost(createFakeWhatsAppHost());
     configureGitHubProofRuntime({
       host: createFakeGitHubProofHost(),
@@ -249,7 +249,12 @@ describe("root Ambience capability boundary", () => {
     });
     const config = await ambience.initialize({ id: CHAT } as never);
 
-    expect(config.tools?.map((tool) => tool.name)).toEqual(["say", "start_github_proof"]);
+    expect(config.tools?.map((tool) => tool.name)).toEqual([
+      "say",
+      "whatsapp_read_thread",
+      "whatsapp_search",
+      "start_github_proof",
+    ]);
     expect(config.tools?.some((tool) => tool.name.includes("create_issue") || tool.name.includes("close_issue"))).toBe(false);
   });
 });
