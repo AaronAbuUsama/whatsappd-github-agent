@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Build (flue build)
+        run: pnpm run ambience:build
+
       # The `eve` CLI hard-requires Node >=24 at runtime (it exits with a
       # version-check error below that, independent of what `engines` in
       # package.json or npm itself enforce). `eve build` compiles agent/
