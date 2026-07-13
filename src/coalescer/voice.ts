@@ -26,7 +26,7 @@
 import { Deferred, Duration, Effect, HashMap, Layer, Option, Ref, Runtime } from "effect";
 import { type ModelMessage, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
-import { subscriptionModel } from "../model/subscription.ts";
+import { subscriptionModelSettings } from "../model/subscription.ts";
 import type { FireReason } from "./events.ts";
 import { Conversationalist, ConversationError, Outbound, Worker } from "./ports.ts";
 
@@ -86,7 +86,7 @@ export const aiVoice = (persona: string = DEFAULT_PERSONA): Layer.Layer<Conversa
       const worker = yield* Worker;
       // Build the model once — it's pure allocation (credentials are read lazily, per
       // request), so there's nothing per-turn to gain by rebuilding it.
-      const model = subscriptionModel();
+      const modelSettings = subscriptionModelSettings();
       // Per-chat rolling transcript — the voice's memory across fires. One Coalescer
       // fiber per chat means a chat's turns are sequential, so the read-then-update below
       // never races itself; Ref.update keeps writes for different chats independent.
@@ -129,7 +129,7 @@ export const aiVoice = (persona: string = DEFAULT_PERSONA): Layer.Layer<Conversa
                 let delegated = false;
                 let streamError: unknown;
                 const result = streamText({
-                  model,
+                  ...modelSettings,
                   // Persona + the reply contract + a one-line note on why we woke. The
                   // conversation itself (incl. the bot's own past replies) rides in `messages`.
                   system: `${persona}${SPEECH_CONTRACT}\n\n(${noteFor(window.reason)})`,

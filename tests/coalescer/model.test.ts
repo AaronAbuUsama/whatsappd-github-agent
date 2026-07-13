@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   describeSubscriptionModel,
-  subscriptionModel,
+  subscriptionModelSettings,
 } from "../../src/model/subscription.ts";
 
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -32,9 +32,11 @@ describe("subscription-only model selection", () => {
   it("ignores OPENAI_API_KEY and keeps the Codex subscription provider", () => {
     process.env.OPENAI_API_KEY = "sk-deliberate-sentinel";
 
-    const model = subscriptionModel();
+    const settings = subscriptionModelSettings();
 
-    expect((model as { provider?: string }).provider).toBe("codex.responses");
+    expect((settings.model as { provider?: string }).provider).toBe("codex.responses");
+    expect((settings.model as { modelId?: string }).modelId).toBe("gpt-5.6-sol");
+    expect(settings.reasoning).toBe("low");
     expect(describeSubscriptionModel()).toContain("ChatGPT subscription");
     expect(describeSubscriptionModel()).not.toContain("OpenAI API key");
   });
@@ -48,6 +50,8 @@ describe("subscription-only model selection", () => {
 
     for (const agent of [rootAgent, githubAgent]) {
       expect((agent.model as { provider?: string }).provider).toBe("codex.responses");
+      expect((agent.model as { modelId?: string }).modelId).toBe("gpt-5.6-sol");
+      expect(agent.reasoning).toBe("low");
     }
   });
 
@@ -57,6 +61,6 @@ describe("subscription-only model selection", () => {
       JSON.stringify({ auth_mode: "api-key", OPENAI_API_KEY: "sk-deliberate-sentinel" }),
     );
 
-    expect(() => subscriptionModel()).toThrow(/ChatGPT subscription login/);
+    expect(() => subscriptionModelSettings()).toThrow(/ChatGPT subscription login/);
   });
 });

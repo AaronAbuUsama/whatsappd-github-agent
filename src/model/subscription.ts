@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import { experimental_chatgpt } from "eve/models/openai";
 
+const SUBSCRIPTION_REASONING = "low" as const;
+
 type CodexAuth = {
   auth_mode?: unknown;
   tokens?: {
@@ -43,10 +45,16 @@ const assertChatGptSubscriptionLogin = (): string => {
   return authPath;
 };
 
-export const subscriptionModel = (slug?: string): LanguageModel => {
+const subscriptionModel = (slug?: string): LanguageModel => {
   assertChatGptSubscriptionLogin();
   return slug ? experimental_chatgpt(slug) : experimental_chatgpt();
 };
+
+/** Keep the model and its required inference policy atomic at every call site. */
+export const subscriptionModelSettings = (slug?: string) => ({
+  model: subscriptionModel(slug),
+  reasoning: SUBSCRIPTION_REASONING,
+});
 
 export const describeSubscriptionModel = (): string => {
   try {

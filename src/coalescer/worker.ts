@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { Effect, Layer } from "effect";
 import { stepCountIs, streamText, tool } from "ai";
-import { subscriptionModel } from "../model/subscription.ts";
+import { subscriptionModelSettings } from "../model/subscription.ts";
 import { Worker, WorkerError } from "./ports.ts";
 // agent/ GitHub tools — reused unchanged (imported, never modified).
 import addLabels from "../../agent/tools/github_add_labels.ts";
@@ -80,7 +80,7 @@ explicitly names a different one; otherwise leave it unspecified.`;
 export const githubWorker: Layer.Layer<Worker> = Layer.effect(
   Worker,
   Effect.gen(function* () {
-    const model = subscriptionModel();
+    const modelSettings = subscriptionModelSettings();
     return {
       delegate: (task) =>
         Effect.tryPromise({
@@ -88,7 +88,7 @@ export const githubWorker: Layer.Layer<Worker> = Layer.effect(
             console.log(`🛠️  worker → ${task.instruction}`);
             let streamError: unknown;
             const result = streamText({
-              model,
+              ...modelSettings,
               system: INSTRUCTIONS,
               prompt: task.instruction,
               tools: TOOLS,
