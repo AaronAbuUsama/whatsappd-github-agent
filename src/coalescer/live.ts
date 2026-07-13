@@ -19,7 +19,7 @@ import { Console, Effect, Layer } from "effect";
 import { makeChatGate } from "./chat-gate.ts";
 import * as Coalescer from "./coalescer.ts";
 import { configLayer } from "./config.ts";
-import { describeModel } from "./model.ts";
+import { describeSubscriptionModel } from "../model/subscription.ts";
 import { aiVoice } from "./voice.ts";
 import { botIdsOf, openSession, whatsappEventSource, whatsappOutbound } from "./whatsapp.ts";
 import { githubWorker } from "./worker.ts";
@@ -55,7 +55,7 @@ const program = Effect.gen(function* () {
         "(or WHATSAPP_ALLOW_DM=true) and re-run.",
     );
   }
-  yield* Console.log(describeModel());
+  yield* Console.log(describeSubscriptionModel());
   yield* Console.log(`connecting to WhatsApp (store: ${STORE_DIR})…`);
 
   const session = yield* openSession(STORE_DIR);

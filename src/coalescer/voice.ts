@@ -21,14 +21,12 @@
  * captured stream error so a failed turn becomes a `ConversationError`, never a
  * silent no-op.
  *
- * The model comes from `makeModel()` (model.ts): an OpenAI API key when
- * `OPENAI_API_KEY` is set (works anywhere, incl. the VPS), otherwise the local
- * ChatGPT/Codex subscription via `experimental_chatgpt()` (local-dev only).
+ * The model comes from the shared subscription-only policy.
  */
 import { Deferred, Duration, Effect, HashMap, Layer, Option, Ref, Runtime } from "effect";
 import { type ModelMessage, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
-import { makeModel } from "./model.ts";
+import { subscriptionModel } from "../model/subscription.ts";
 import type { FireReason } from "./events.ts";
 import { Conversationalist, ConversationError, Outbound, Worker } from "./ports.ts";
 
@@ -87,9 +85,8 @@ export const aiVoice = (persona: string = DEFAULT_PERSONA): Layer.Layer<Conversa
       const outbound = yield* Outbound;
       const worker = yield* Worker;
       // Build the model once — it's pure allocation (credentials are read lazily, per
-      // request), so there's nothing per-turn to gain by rebuilding it. makeModel() picks
-      // the API-key path or the ChatGPT subscription based on OPENAI_API_KEY (see model.ts).
-      const model = makeModel();
+      // request), so there's nothing per-turn to gain by rebuilding it.
+      const model = subscriptionModel();
       // Per-chat rolling transcript — the voice's memory across fires. One Coalescer
       // fiber per chat means a chat's turns are sequential, so the read-then-update below
       // never races itself; Ref.update keeps writes for different chats independent.

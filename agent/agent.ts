@@ -13,14 +13,14 @@
  * why `modelContextWindowTokens` is still set explicitly below.
  */
 import { defineAgent } from "eve";
-import { experimental_chatgpt } from "eve/models/openai";
+import { subscriptionModel } from "../src/model/subscription.ts";
 
 // Optional model-slug override (defaults to eve's current ChatGPT-subscription
 // model). Set EVE_MODEL_ID to pin a different OpenAI slug without editing code.
 const slug = process.env.EVE_MODEL_ID;
 
 export default defineAgent({
-  model: slug ? experimental_chatgpt(slug) : experimental_chatgpt(),
+  model: subscriptionModel(slug),
   // Non-gateway model → declare the window so compaction has a threshold.
   modelContextWindowTokens: 200_000,
   // Keep the loop tight for a chat surface: a runaway tool-call chain in a

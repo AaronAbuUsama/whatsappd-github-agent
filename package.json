@@ -38,14 +38,13 @@
     "live": "tsx src/coalescer/live.ts",
     "spike:loopback": "tsx scripts/spike-loopback.ts",
     "spike:resume": "tsx scripts/spike-resume.ts",
-    "login": "mkdir -p .codex-bot && CODEX_HOME=.codex-bot codex login --device-auth",
-    "login:status": "CODEX_HOME=.codex-bot codex login status",
+    "login": "codex login --device-auth",
+    "login:status": "codex login status",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ai-sdk/openai": "4.0.11",
     "@octokit/rest": "^22.0.0",
     "ai": "^7.0.0",
     "effect": "^3.21.4",
