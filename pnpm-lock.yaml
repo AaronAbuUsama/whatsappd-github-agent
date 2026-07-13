@@ -44,6 +44,9 @@ importers:
       link-preview-js:
         specifier: ^4.0.4
         version: 4.0.4
+      qrcode-terminal:
+        specifier: 0.12.0
+        version: 0.12.0
       valibot:
         specifier: 1.4.2
         version: 1.4.2(typescript@5.9.3)

@@ -12,6 +12,7 @@ import { createGitHubIngress, loadGitHubIngressSettings } from "./github/ingress
 import { configureGitHubIngressRuntime } from "./github/ingress-runtime.js";
 import { createGitHubIngressStore } from "./github/ingress-store.js";
 import { createOctokitGitHubProofHost } from "./host/github-proof-host.js";
+import { getWhatsAppRuntimeStatus, startWhatsAppRuntime } from "./host/whatsapp-runtime.js";
 import { connectPiChatGptSubscription } from "./model/pi-subscription.js";
 import {
   configureGitHubProofResultSink,
@@ -44,7 +45,18 @@ configureGitHubProofResultSink(async (chatId, input) => {
 installGitHubProofResultDelivery();
 
 const app = new Hono();
-app.get("/health", (context) => context.json({ ok: true, ...subscription }));
+app.get("/health", (context) => context.json({ ok: true, ...subscription, whatsapp: getWhatsAppRuntimeStatus() }));
 app.route("/", flue());
+
+const whatsapp = startWhatsAppRuntime();
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  const shutdown = () => {
+    void whatsapp.stop().finally(() => {
+      process.removeListener(signal, shutdown);
+      process.kill(process.pid, signal);
+    });
+  };
+  process.once(signal, shutdown);
+}
 
 export default app;

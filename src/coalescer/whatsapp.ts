@@ -89,7 +89,7 @@ const toIncoming = (msg: WaMessage): IncomingMessage => ({
  * connection reaches a terminal state (e.g. logged out) without coming online.
  * Scoped: the session is stopped and its listener removed on scope close.
  */
-interface SessionPreparation {
+export interface SessionPreparation {
   readonly session: WhatsAppSession;
   readonly finalize?: () => void;
 }
