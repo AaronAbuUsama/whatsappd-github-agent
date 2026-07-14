@@ -145,7 +145,8 @@ function lunaApi(delegate: ProviderStreams): ApiRegistration {
 export async function connectPiChatGptSubscription(
   options: PiSubscriptionConnectorOptions = {},
 ): Promise<PiSubscriptionReceipt> {
-  const authStorage = options.authStorage ?? AuthStorage.create();
+  const authStorage =
+    options.authStorage ?? AuthStorage.create(process.env.AMBIENCE_PI_AUTH_PATH?.trim() || undefined);
   const credential = authStorage.get(PROVIDER_ID);
   if (!credential || credential.type !== "oauth") {
     throw new Error(

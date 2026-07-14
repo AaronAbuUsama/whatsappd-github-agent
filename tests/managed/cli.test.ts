@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -62,6 +62,87 @@ describe("managed CLI", () => {
     ).toBe(0);
     expect(starts).toEqual([managedPaths({ dataDirectory: paths.data })]);
     expect(cli.stderr()).toBe("");
+  });
+
+  it("loads managed configuration and the optional .env before importing the generated runtime", async () => {
+    const paths = await files();
+    const init = harness();
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+          "--github-token-file",
+          paths.token,
+          "--pi-auth-file",
+          paths.auth,
+        ],
+        init,
+      ),
+    ).toBe(0);
+    await writeFile(join(paths.data, ".env"), "GITHUB_WEBHOOK_SECRET=dotenv-webhook-secret\nPORT=7777\n");
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const expectedDirectory = await realpath(paths.data);
+    const keys = [
+      "AMBIENCE_PI_AUTH_PATH",
+      "AMBIENCE_WHATSAPP",
+      "GITHUB_ALLOWED_REPOS",
+      "GITHUB_INGRESS_DB_PATH",
+      "GITHUB_REPO",
+      "GITHUB_TOKEN",
+      "GITHUB_WEBHOOK_SECRET",
+      "PORT",
+      "WHATSAPP_GROUP_ID",
+      "WHATSAPP_GROUP_IDS",
+      "WHATSAPP_HISTORY_DB",
+      "WHATSAPP_STORE_DIR",
+    ] as const;
+    const previousDirectory = process.cwd();
+    const previousEnvironment = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    process.env.PORT = "8888";
+
+    try {
+      const cli = harness();
+      let imports = 0;
+      const exitCode = await runCli(["--data-dir", paths.data, "start"], {
+        ...cli,
+        importRuntime: async () => {
+          imports += 1;
+          expect(process.cwd()).toBe(expectedDirectory);
+          expect(process.env).toMatchObject({
+            AMBIENCE_PI_AUTH_PATH: managed.piAuthCredential,
+            AMBIENCE_WHATSAPP: "1",
+            GITHUB_ALLOWED_REPOS: "owner/repo",
+            GITHUB_INGRESS_DB_PATH: managed.applicationDatabase,
+            GITHUB_REPO: "owner/repo",
+            GITHUB_TOKEN: "github-secret-token",
+            GITHUB_WEBHOOK_SECRET: "dotenv-webhook-secret",
+            PORT: "8888",
+            WHATSAPP_GROUP_ID: "120363000@g.us",
+            WHATSAPP_GROUP_IDS: "120363000@g.us",
+            WHATSAPP_HISTORY_DB: managed.applicationDatabase,
+            WHATSAPP_STORE_DIR: managed.whatsapp,
+          });
+        },
+      });
+      expect(exitCode, cli.stderr()).toBe(0);
+      expect(imports).toBe(1);
+      expect(cli.stderr()).toBe("");
+    } finally {
+      process.chdir(previousDirectory);
+      for (const key of keys) {
+        const value = previousEnvironment[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("supports a fully scripted setup and deterministic status", async () => {

@@ -1,5 +1,8 @@
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import type { ProviderStreams } from "@earendil-works/pi-ai";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -20,6 +23,47 @@ const oauthStorage = () =>
   });
 
 describe("connectPiChatGptSubscription", () => {
+  it("loads the managed Pi credential selected by the runtime environment", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-agent-pi-auth-"));
+    const authPath = join(root, "pi-auth.json");
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "openai-codex": {
+          type: "oauth",
+          access: "managed-access-token",
+          refresh: "managed-refresh-token",
+          expires: 2_000_000_000_000,
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const previous = process.env.AMBIENCE_PI_AUTH_PATH;
+    process.env.AMBIENCE_PI_AUTH_PATH = authPath;
+    const registerProvider = vi.fn();
+    const codexApi: ProviderStreams = {
+      stream: vi.fn(() => ({}) as ReturnType<ProviderStreams["stream"]>),
+      streamSimple: vi.fn(() => ({}) as ReturnType<ProviderStreams["streamSimple"]>),
+    };
+
+    try {
+      await connectPiChatGptSubscription({
+        codexApi,
+        registerApiProvider: vi.fn(),
+        registerProvider,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.AMBIENCE_PI_AUTH_PATH;
+      else process.env.AMBIENCE_PI_AUTH_PATH = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+
+    expect(registerProvider).toHaveBeenCalledWith(
+      "openai-codex",
+      expect.objectContaining({ apiKey: "managed-access-token" }),
+    );
+  });
+
   it("ignores OPENAI_API_KEY and registers only the Pi OAuth token", async () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "must-not-be-used";
