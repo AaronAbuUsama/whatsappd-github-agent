@@ -17,7 +17,7 @@ chat is never told an outcome the store cannot back.
 
 Long-run visibility is deliberately split across three surfaces:
 
-1. **Terminal outcome** — the bridge (push, once, durable-gated).
+1. **Terminal outcome** — the bridge (push, durable-gated).
 2. **On-demand status** — a chat-bound read tool over the run record (pull).
 3. **Milestones** — rare `workflow.progress` inputs a workflow explicitly
    dispatches at domain-significant moments.
@@ -26,6 +26,15 @@ Long-run visibility is deliberately split across three surfaces:
 contract — subscribers run synchronously on the emission path, returned
 promises are not awaited, failures are logged and dropped — makes it a tap,
 not a delivery mechanism.
+
+Bounded Workflows are autonomous. They do not suspend for human input or hold a
+conversation open while waiting for an answer. If work cannot continue, the run
+returns a terminal failure or blocked outcome to Ambience, which owns any later
+conversation. Segmented continuation runs and durable human-in-the-loop
+orchestration are outside this decision.
+
+The bridge must not claim exactly-once delivery unless duplicate prevention is
+backed by a durable application receipt or an idempotent dispatch interface.
 
 ## Considered options
 

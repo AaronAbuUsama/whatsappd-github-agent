@@ -50,8 +50,12 @@ The agent's identity and standing constraints — who it is. Short and stable.
 A named, versionable packet of process and policy — how the agent approaches a kind of work (when to speak, how to run an intake). Skills guide; they grant no new abilities.
 _Avoid_: Prompt, persona file
 
+**Action**:
+A reusable, validated finite operation owned by a Capability. The Ambient Agent can invoke an Action directly, and a Bounded Workflow can bind the same Action when the work needs an independent run.
+_Avoid_: Workflow (when no independent run is needed), Tool (when the operation owns a multi-step result)
+
 **Tool**:
-A typed, executable capability the agent can act with. Tools do; they carry no judgment.
+A typed direct operation the agent can act with. Tools do; they carry no judgment or process.
 
 **Chat-bound Tool**:
 A Tool permanently scoped to one Managed Chat at construction, so it cannot reach another chat regardless of what the model asks.
@@ -59,8 +63,8 @@ A Tool permanently scoped to one Managed Chat at construction, so it cannot reac
 ### Work execution
 
 **Bounded Workflow**:
-A finite unit of work with validated input, its own run record, and a terminal result. The only place external mutations happen.
-_Avoid_: Job, background task, long-running process
+A finite, autonomous unit of work with validated input, its own run record, and a terminal result. It does not pause for human conversation; results, failures, and rare Milestones return to the Ambient Agent.
+_Avoid_: Interactive workflow, suspended conversation
 
 **Specialist**:
 The narrowly-instructed agent that works inside one Bounded Workflow.
