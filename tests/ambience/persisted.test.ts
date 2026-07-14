@@ -17,7 +17,7 @@ const fixtureRoot = join(repoRoot, "tests/fixtures/ambience");
 const tempRoot = mkdtempSync(join(tmpdir(), "ambience-flue-"));
 const buildRoot = mkdtempSync(join(fixtureRoot, ".test-build-"));
 const outputRoot = join(buildRoot, "dist");
-const databasePath = join(tempRoot, "flue.db");
+const databasePath = join(tempRoot, "flue.sqlite");
 const githubIngressDatabasePath = join(tempRoot, "github-ingress.db");
 const githubWebhookSecret = "fixture-github-webhook-secret";
 
@@ -37,10 +37,9 @@ async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
   const port = await unusedPort();
   origin = `http://127.0.0.1:${port}`;
   server = spawn(process.execPath, [join(outputRoot, "server.mjs")], {
-    cwd: fixtureRoot,
+    cwd: tempRoot,
     env: {
       ...process.env,
-      FLUE_DB_PATH: databasePath,
       GITHUB_WEBHOOK_SECRET: githubWebhookSecret,
       GITHUB_CHAT_ROUTES: "acme/widgets=github-ingress-29@g.us",
       GITHUB_INGRESS_DB_PATH: githubIngressDatabasePath,
@@ -127,6 +126,18 @@ async function prompt(chatId: string, message: string) {
     body: JSON.stringify({ message }),
   });
   expect(response.status, await response.text()).toBe(200);
+}
+
+async function admitPrompt(chatId: string, message: string): Promise<void> {
+  const response = await fetch(`${origin}/agents/ambience/${chatId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  const body = await response.text();
+  expect(response.status, body).toBe(202);
+  const receipt = JSON.parse(body) as { submissionId?: string };
+  expect(receipt.submissionId).toBeTruthy();
 }
 
 async function historyText(chatId: string): Promise<string> {
@@ -698,17 +709,18 @@ describe("persisted Ambience admission", () => {
 });
 
 describe("restart and uncertainty boundaries", () => {
-  it("recovers an accepted Ambience input into the same canonical chat after a crash", async () => {
+  it("recovers an input admitted through the production Agent route into the same canonical chat", async () => {
     const chatId = "restart-agent-32@g.us";
     const marker = "accepted-input-32";
     await stopServer();
     await startServer({ AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY: "true" });
 
-    await coalescerMessage(chatId, `HOLD_AGENT_FOR_RESTART:${marker}`);
+    await admitPrompt(chatId, `HOLD_AGENT_FOR_RESTART:${marker}`);
     await waitFor(
       async () => (await pendingRecoveryMarkers()).includes(marker),
       "the accepted Ambience input to enter its provider call",
     );
+    expect(await historyText(chatId)).not.toContain(`Recovered canonical context for ${marker}.`);
 
     await stopServer("SIGKILL");
     expireRunningAgentLeases();
@@ -716,7 +728,7 @@ describe("restart and uncertainty boundaries", () => {
     // The generated Node target materializes an agent instance on ingress;
     // this later window wakes the same ordered queue and must remain behind
     // the recovered submission.
-    await coalescerMessage(chatId, "RECOVERY_WAKE_AFTER_RESTART");
+    await admitPrompt(chatId, "RECOVERY_WAKE_AFTER_RESTART");
     try {
       await waitFor(
         async () => (await historyText(chatId)).includes(`Recovered canonical context for ${marker}.`),
