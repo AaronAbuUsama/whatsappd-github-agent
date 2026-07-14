@@ -76,12 +76,12 @@ describe("the post-Eve production cut", () => {
     ).resolves.toEqual(deletedPaths.map(() => false));
   });
 
-  it("keeps the canonical Coalescer-to-Ambience doorway free of API-key fallback", async () => {
+  it("keeps the canonical Coalescer-to-Ambience admission free of API-key fallback", async () => {
     const runtime = await readFile(
       path.join(root, "src/host/whatsapp-runtime.ts"),
       "utf8",
     );
-    expect(runtime).toContain("makeAmbienceDoorway");
+    expect(runtime).toContain("makeAmbienceAdmission");
 
     const files = await sourceFiles("src");
     const productionSource = await Promise.all(

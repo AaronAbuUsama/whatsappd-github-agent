@@ -1,9 +1,9 @@
 # whatsappd-github-agent
 
 A continuing ambient agent for managed WhatsApp chats. Each accepted coalesced
-window is admitted to one canonical Flue Ambience instance keyed by WhatsApp
-`chatId`. Ambience uses Luna 5.6 at low reasoning through Pi's ChatGPT
-subscription OAuth adapter.
+window is admitted to one canonical instance of Ambience — this application's
+Flue agent — keyed by WhatsApp `chatId`. Ambience uses Luna 5.6 at low
+reasoning through Pi's ChatGPT subscription OAuth adapter.
 
 ## Production architecture
 

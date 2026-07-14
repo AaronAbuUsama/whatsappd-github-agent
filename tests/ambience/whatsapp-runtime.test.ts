@@ -11,7 +11,7 @@ import type {
 } from "whatsappd";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { AmbienceAdmission } from "../../src/ambience/doorway.ts";
+import type { AmbienceAdmissionRequest } from "../../src/ambience/admission.ts";
 import { makeChatGate } from "../../src/coalescer/chat-gate.ts";
 import { createWhatsAppHistory, persistWhatsAppMessages } from "../../src/host/whatsapp-history.ts";
 import { createWhatsAppHost, runWhatsAppSession } from "../../src/host/whatsapp-runtime.ts";
@@ -89,7 +89,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     const history = temporaryHistory();
     const fake = fakeSession();
     const persisted = persistWhatsAppMessages(fake.session, history);
-    const admissions: AmbienceAdmission[] = [];
+    const admissions: AmbienceAdmissionRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(

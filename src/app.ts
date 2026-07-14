@@ -2,7 +2,7 @@ import { getRun } from "@flue/runtime";
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 
-import { dispatchAmbience } from "./ambience/doorway.js";
+import { dispatchAmbience } from "./ambience/admission.js";
 import {
   createGitHubProofPolicy,
   configureGitHubProofRuntime,

@@ -1,7 +1,7 @@
 import { Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { WhatsAppSession } from "whatsappd";
 
-import { makeAmbienceDoorway, type AdmitAmbience } from "../ambience/doorway.js";
+import { makeAmbienceAdmission, type AdmitAmbience } from "../ambience/admission.js";
 import { makeChatGate, type ChatGate } from "../coalescer/chat-gate.js";
 import * as Coalescer from "../coalescer/coalescer.js";
 import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js";
@@ -81,7 +81,7 @@ export interface WhatsAppSessionRuntimeOptions {
   readonly botLid?: string;
 }
 
-/** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Ambience doorway. */
+/** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Ambience admission. */
 export const runWhatsAppSession = (
   session: WhatsAppSession,
   options: WhatsAppSessionRuntimeOptions,
@@ -93,7 +93,7 @@ export const runWhatsAppSession = (
     Effect.provide(
       Layer.mergeAll(
         whatsappEventSource(session, options.gate.allowed),
-        makeAmbienceDoorway(options.admit),
+        makeAmbienceAdmission(options.admit),
         configLayer({ ...options.coalescer, botIds }),
       ),
     ),

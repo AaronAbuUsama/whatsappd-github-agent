@@ -310,7 +310,7 @@ afterAll(async () => {
   rmSync(tempRoot, { recursive: true, force: true });
 });
 
-describe("persisted Ambience doorway", () => {
+describe("persisted Ambience admission", () => {
   it("verifies, normalizes, deduplicates, and routes GitHub ingress without implying speech", async () => {
     const chatId = "github-ingress-29@g.us";
     const deliveryId = "29-valid-signed-delivery";

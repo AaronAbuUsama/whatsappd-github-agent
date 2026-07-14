@@ -8,16 +8,16 @@
 import { Context, Data, type Effect, type Stream } from "effect";
 import type { ConversationWindow, IncomingMessage } from "./events.ts";
 
-// ── Ambience doorway ────────────────────────────────────────────────────────
-// The Coalescer's sole output. Production provides the Ambience doorway, which
+// ── Ambience admission ────────────────────────────────────────────────────────
+// The Coalescer's sole output. Production provides the Ambience admission, which
 // admits every accepted window to the continuing Flue agent keyed by chatId.
 
 export class AmbienceAdmissionError extends Data.TaggedError("AmbienceAdmissionError")<{
   readonly cause: unknown;
 }> {}
 
-export class AmbienceDoorway extends Context.Tag("AmbienceDoorway")<
-  AmbienceDoorway,
+export class AmbienceAdmission extends Context.Tag("AmbienceAdmission")<
+  AmbienceAdmission,
   {
     /** Admit one accepted buffered window to the continuing Ambience instance. */
     readonly admit: (window: ConversationWindow) => Effect.Effect<void, AmbienceAdmissionError>;

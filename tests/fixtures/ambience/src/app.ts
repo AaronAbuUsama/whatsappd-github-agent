@@ -9,7 +9,7 @@ import * as Coalescer from "../../../../src/coalescer/coalescer.js";
 import { configLayer } from "../../../../src/coalescer/config.js";
 import type { IncomingMessage } from "../../../../src/coalescer/events.js";
 import { queueEventSource } from "../../../../src/coalescer/mocks.js";
-import { ambienceDoorway, dispatchAmbience } from "../../../../src/ambience/doorway.js";
+import { ambienceAdmission, dispatchAmbience } from "../../../../src/ambience/admission.js";
 import { createGitHubIngress, loadGitHubIngressSettings } from "../../../../src/github/ingress.js";
 import { configureGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
 import { createGitHubIngressStore } from "../../../../src/github/ingress-store.js";
@@ -143,7 +143,7 @@ Effect.runFork(
       Effect.provide(
         Layer.mergeAll(
           queueEventSource(source),
-          ambienceDoorway,
+          ambienceAdmission,
           configLayer({ botIds: ["bot@s.whatsapp.net"], debounceWindow: Duration.millis(25) }),
         ),
       ),

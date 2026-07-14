@@ -16,8 +16,8 @@ import { Duration, Effect, Layer, Queue, Ref, TestClock } from "effect";
 import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { type CoalescerConfigValues, configLayer } from "../../src/coalescer/config.ts";
 import type { ConversationWindow, IncomingMessage } from "../../src/coalescer/events.ts";
-import { queueEventSource, recordingAmbienceDoorway } from "../../src/coalescer/mocks.ts";
-import { AmbienceDoorway } from "../../src/coalescer/ports.ts";
+import { queueEventSource, recordingAmbienceAdmission } from "../../src/coalescer/mocks.ts";
+import { AmbienceAdmission } from "../../src/coalescer/ports.ts";
 
 const BOT = "bot@s.whatsapp.net";
 const CHAT = "team@g.us";
@@ -42,7 +42,7 @@ const mkMsg = (text: string, over: Partial<IncomingMessage> = {}): IncomingMessa
   };
 };
 
-/** Fork the real Coalescer over a test source + recording Ambience doorway + given config. */
+/** Fork the real Coalescer over a test source + recording Ambience admission + given config. */
 const startRecording = (
   source: Queue.Dequeue<IncomingMessage>,
   turns: Ref.Ref<readonly ConversationWindow[]>,
@@ -53,7 +53,7 @@ const startRecording = (
       Effect.provide(
         Layer.mergeAll(
           queueEventSource(source),
-          recordingAmbienceDoorway(turns),
+          recordingAmbienceAdmission(turns),
           configLayer({ botIds: [BOT], debounceWindow: WINDOW, ...cfg }),
         ),
       ),
@@ -270,8 +270,8 @@ describe("Coalescer", () => {
       const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
       const calls = yield* Ref.make(0);
 
-      // An Ambience doorway that throws (defect, not a typed error) on its first admission.
-      const flakyDoorway = Layer.succeed(AmbienceDoorway, {
+      // An Ambience admission that throws (defect, not a typed error) on its first admission.
+      const flakyAdmission = Layer.succeed(AmbienceAdmission, {
         admit: (window: ConversationWindow) =>
           Effect.gen(function* () {
             const n = yield* Ref.updateAndGet(calls, (c) => c + 1);
@@ -283,7 +283,7 @@ describe("Coalescer", () => {
       yield* Effect.forkScoped(
         Coalescer.run.pipe(
           Effect.provide(
-            Layer.mergeAll(queueEventSource(source), flakyDoorway, configLayer({ botIds: [BOT], debounceWindow: WINDOW })),
+            Layer.mergeAll(queueEventSource(source), flakyAdmission, configLayer({ botIds: [BOT], debounceWindow: WINDOW })),
           ),
         ),
       );

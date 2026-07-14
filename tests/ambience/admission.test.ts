@@ -6,7 +6,7 @@ import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { configLayer } from "../../src/coalescer/config.ts";
 import type { IncomingMessage } from "../../src/coalescer/events.ts";
 import { queueEventSource } from "../../src/coalescer/mocks.ts";
-import { makeAmbienceDoorway, type AmbienceAdmission } from "../../src/ambience/doorway.ts";
+import { makeAmbienceAdmission, type AmbienceAdmissionRequest } from "../../src/ambience/admission.ts";
 import { createFakeWhatsAppHost } from "../../src/host/fake-whatsapp-host.ts";
 import type { WhatsAppHost } from "../../src/host/whatsapp-host.ts";
 import { createSayTool } from "../../src/tools/whatsapp/say.ts";
@@ -36,14 +36,14 @@ const awaitRef = <A>(ref: Ref.Ref<A>, predicate: (value: A) => boolean) =>
     Effect.timeoutFail({ duration: Duration.seconds(5), onTimeout: () => new Error("condition never held") }),
   );
 
-describe("production Coalescer-to-Ambience doorway", () => {
+describe("production Coalescer-to-Ambience admission", () => {
   it("admits one complete coalesced window to the continuing instance identified by chatId", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const source = yield* Queue.unbounded<IncomingMessage>();
-          const admissions = yield* Ref.make<readonly AmbienceAdmission[]>([]);
-          const admit = async (admission: AmbienceAdmission) => {
+          const admissions = yield* Ref.make<readonly AmbienceAdmissionRequest[]>([]);
+          const admit = async (admission: AmbienceAdmissionRequest) => {
             await Effect.runPromise(Ref.update(admissions, (current) => [...current, admission]));
             return { dispatchId: "dispatch-27", acceptedAt: "2026-07-13T00:00:00.000Z" };
           };
@@ -53,7 +53,7 @@ describe("production Coalescer-to-Ambience doorway", () => {
               Effect.provide(
                 Layer.mergeAll(
                   queueEventSource(source),
-                  makeAmbienceDoorway(admit),
+                  makeAmbienceAdmission(admit),
                   configLayer({ botIds: [BOT], debounceWindow: Duration.millis(25) }),
                 ),
               ),

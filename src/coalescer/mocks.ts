@@ -4,20 +4,20 @@
  */
 import { Layer, Queue, Ref, Stream } from "effect";
 import type { ConversationWindow, IncomingMessage } from "./events.ts";
-import { AmbienceDoorway, EventSource } from "./ports.ts";
+import { AmbienceAdmission, EventSource } from "./ports.ts";
 
 // ── EventSource: a Stream fed from a Queue the test controls ─────────────────
 
 export const queueEventSource = (queue: Queue.Dequeue<IncomingMessage>): Layer.Layer<EventSource> =>
   Layer.succeed(EventSource, { events: Stream.fromQueue(queue) });
 
-// ── Ambience doorway: record every admission (for timing tests) ─────────────
+// ── Ambience admission: record every admission (for timing tests) ─────────────
 // The pure timing behaviour is observable here — one entry per Coalescer fire,
 // with the buffered window and the reason.
 
-export const recordingAmbienceDoorway = (
+export const recordingAmbienceAdmission = (
   turns: Ref.Ref<readonly ConversationWindow[]>,
-): Layer.Layer<AmbienceDoorway> =>
-  Layer.succeed(AmbienceDoorway, {
+): Layer.Layer<AmbienceAdmission> =>
+  Layer.succeed(AmbienceAdmission, {
     admit: (window) => Ref.update(turns, (t) => [...t, window]),
   });

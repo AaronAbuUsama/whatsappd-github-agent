@@ -19,9 +19,9 @@ import { Clock, Context, Duration, Effect, HashMap, Option, Queue, Ref, type Sco
 import { appendBounded, type BufferBounds } from "./buffer.ts";
 import { addressesBot, type ConversationWindow, type FireReason, type IncomingMessage, reasonOf } from "./events.ts";
 import { CoalescerConfig, type CoalescerConfigValues } from "./config.ts";
-import { AmbienceDoorway, EventSource } from "./ports.ts";
+import { AmbienceAdmission, EventSource } from "./ports.ts";
 
-type AmbienceDoorwayService = Context.Tag.Service<typeof AmbienceDoorway>;
+type AmbienceAdmissionService = Context.Tag.Service<typeof AmbienceAdmission>;
 
 /**
  * Admit the buffered window to Ambience. A failed admission must not kill the
@@ -37,21 +37,21 @@ const logAdmissionError = (window: ConversationWindow) => (cause: unknown) =>
   );
 
 const fire = (
-  doorway: AmbienceDoorwayService,
+  admission: AmbienceAdmissionService,
   window: ConversationWindow,
 ): Effect.Effect<void> =>
   window.messages.length === 0
     ? Effect.void
-    : doorway.admit(window).pipe(
+    : admission.admit(window).pipe(
         Effect.catchAll(logAdmissionError(window)),
         Effect.catchAllDefect(logAdmissionError(window)),
       );
 
 /**
- * Build the per-chat actor loop for a given config + Ambience doorway. Returns a function
+ * Build the per-chat actor loop for a given config + Ambience admission. Returns a function
  * that, given a chat's queue, runs its debounce loop forever.
  */
-const makeChatLoop = (config: CoalescerConfigValues, doorway: AmbienceDoorwayService) => {
+const makeChatLoop = (config: CoalescerConfigValues, admission: AmbienceAdmissionService) => {
   const bounds: BufferBounds = {
     maxBufferMessages: config.maxBufferMessages,
     maxBufferAgeMillis: config.maxBufferAgeMillis,
@@ -61,7 +61,7 @@ const makeChatLoop = (config: CoalescerConfigValues, doorway: AmbienceDoorwaySer
   return (chatId: string, queue: Queue.Dequeue<IncomingMessage>): Effect.Effect<never> => {
     // Admit the buffered window to Ambience, then go cold for the next burst.
     const fireAndReset = (messages: readonly IncomingMessage[], reason: FireReason): Effect.Effect<never> =>
-      fire(doorway, { chatId, messages, reason }).pipe(Effect.zipRight(cold));
+      fire(admission, { chatId, messages, reason }).pipe(Effect.zipRight(cold));
 
     // A message landed: buffer it, and either flush now (bot addressed) or keep
     // waiting. `burstStart` is the clock time of the burst's first message — the
@@ -119,12 +119,12 @@ const makeChatLoop = (config: CoalescerConfigValues, doorway: AmbienceDoorwaySer
 export const run: Effect.Effect<
   void,
   never,
-  EventSource | AmbienceDoorway | CoalescerConfig | Scope.Scope
+  EventSource | AmbienceAdmission | CoalescerConfig | Scope.Scope
 > = Effect.gen(function* () {
   const { events } = yield* EventSource;
   const config = yield* CoalescerConfig;
-  const doorway = yield* AmbienceDoorway;
-  const chatLoop = makeChatLoop(config, doorway);
+  const admission = yield* AmbienceAdmission;
+  const chatLoop = makeChatLoop(config, admission);
   const registry = yield* Ref.make(HashMap.empty<string, Queue.Queue<IncomingMessage>>());
 
   const routeTo = (msg: IncomingMessage): Effect.Effect<void, never, Scope.Scope> =>

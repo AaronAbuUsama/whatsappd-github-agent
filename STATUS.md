@@ -1,6 +1,6 @@
 # Current production status
 
-Milestone 3 replaced the legacy harness with one Flue Ambience production path.
+Milestone 3 replaced the legacy harness with one production path: the Ambience agent running on Flue.
 
 - One continuing Ambience instance is keyed by each managed WhatsApp `chatId`.
 - Pi ChatGPT subscription OAuth selects `openai-codex/gpt-5.6-luna` with low reasoning.

@@ -2,7 +2,7 @@
   "name": "whatsappd-github-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "A continuing Flue Ambience agent for managed WhatsApp chats, with bounded GitHub workflows.",
+  "description": "Ambience: a continuing ambient agent on Flue for managed WhatsApp chats, with bounded GitHub workflows.",
   "keywords": [
     "ai-agents",
     "flue",

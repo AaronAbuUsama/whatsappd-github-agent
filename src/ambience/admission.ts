@@ -3,23 +3,23 @@ import { Effect, Layer } from "effect";
 
 import ambience from "../agents/ambience.ts";
 import type { ConversationWindow } from "../coalescer/events.ts";
-import { AmbienceAdmissionError, AmbienceDoorway } from "../coalescer/ports.ts";
+import { AmbienceAdmissionError, AmbienceAdmission } from "../coalescer/ports.ts";
 import { whatsappWindowInput, type AmbienceInput } from "./events.ts";
 
-export interface AmbienceAdmission {
+export interface AmbienceAdmissionRequest {
   readonly id: string;
   readonly input: AmbienceInput;
 }
 
-export type AdmitAmbience = (admission: AmbienceAdmission) => Promise<DispatchReceipt>;
+export type AdmitAmbience = (admission: AmbienceAdmissionRequest) => Promise<DispatchReceipt>;
 
-export const dispatchAmbience = ({ id, input }: AmbienceAdmission): Promise<DispatchReceipt> =>
+export const dispatchAmbience = ({ id, input }: AmbienceAdmissionRequest): Promise<DispatchReceipt> =>
   dispatch(ambience, { id, input });
 
-export const makeAmbienceDoorway = (
+export const makeAmbienceAdmission = (
   admit: AdmitAmbience = dispatchAmbience,
-): Layer.Layer<AmbienceDoorway> =>
-  Layer.succeed(AmbienceDoorway, {
+): Layer.Layer<AmbienceAdmission> =>
+  Layer.succeed(AmbienceAdmission, {
     admit: (window: ConversationWindow) =>
       Effect.tryPromise({
         try: () => admit({ id: window.chatId, input: whatsappWindowInput(window) }),
@@ -27,4 +27,4 @@ export const makeAmbienceDoorway = (
       }).pipe(Effect.asVoid),
   });
 
-export const ambienceDoorway = makeAmbienceDoorway();
+export const ambienceAdmission = makeAmbienceAdmission();
