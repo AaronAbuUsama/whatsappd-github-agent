@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { runCli, type CliOutput } from "../../src/cli/program.ts";
 import { takeManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
-import type { ChatGptOAuthAdapter } from "../../src/model/chatgpt-authentication.ts";
+import {
+  createManagedChatGptCredentialStore,
+  type ChatGptOAuthAdapter,
+} from "../../src/model/chatgpt-authentication.ts";
 import { ChatGptReadinessError } from "../../src/model/pi-subscription.ts";
 
 const roots: string[] = [];
@@ -276,6 +279,64 @@ describe("managed CLI", () => {
     const refreshed = harness();
     expect(await runCli(["--data-dir", paths.data, "doctor", "--refresh", "--json"], refreshed)).toBe(0);
     expect(JSON.parse(refreshed.stdout())).toMatchObject({ modelAuthentication: { state: "ready" } });
+  });
+
+  it("preserves a typed timeout when doctor refresh exceeds its deadline", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const expired = JSON.parse(await readFile(managed.chatGptOAuthCredential, "utf8")) as Parameters<
+      ChatGptOAuthAdapter["refresh"]
+    >[0];
+    expired.expires = 1;
+    await writeFile(managed.chatGptOAuthCredential, JSON.stringify(expired), { mode: 0o600 });
+    let finishRefresh!: (value: Parameters<ChatGptOAuthAdapter["refresh"]>[0]) => void;
+    const pendingRefresh = new Promise<Parameters<ChatGptOAuthAdapter["refresh"]>[0]>((resolve) => {
+      finishRefresh = resolve;
+    });
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    const cli = harness();
+    cli.chatGptOAuth.refresh = async () => {
+      markRefreshStarted();
+      return await pendingRefresh;
+    };
+
+    const doctor = runCli(["--data-dir", paths.data, "doctor", "--refresh", "--json"], {
+      ...cli,
+      readinessTimeoutMillis: 100,
+    });
+    await refreshStarted;
+    const result = await doctor;
+
+    expect(result).toBe(1);
+    expect(cli.stderr()).toMatch(/timed out/i);
+    expect(cli.stderr()).not.toContain("run doctor --refresh");
+    finishRefresh({
+      ...expired,
+      access: "post-timeout-access",
+      refresh: "post-timeout-refresh",
+      expires: 2_000_000_000_000,
+    });
+    await createManagedChatGptCredentialStore({ path: managed.chatGptOAuthCredential }).modify(
+      "openai-codex",
+      async () => undefined,
+    );
   });
 
   it("gates a real readiness request behind doctor --live", async () => {

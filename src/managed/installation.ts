@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
@@ -19,7 +19,6 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_MANAGED_JSON_BYTES = 1024 * 1024;
 const SETUP_LOCK_OWNER = "owner.json";
-const SETUP_LOCK_RELEASE = "releasing.json";
 const SETUP_LOCK_MAX_AGE_MILLIS = 10 * 60 * 1000;
 const SETUP_LOCK_HEARTBEAT_MILLIS = 30 * 1000;
 const CONFIG_ISSUE_PATHS = new Set([
@@ -72,6 +71,9 @@ export interface InstallManagedDataInput extends ManagedPathEnvironment {
   readonly setupLockHeartbeatBeforeWrite?: () => Promise<void>;
   readonly setupLockHeartbeatAfterWrite?: () => Promise<void>;
   readonly beforeStaleSetupLockQuarantine?: (lockPath: string) => Promise<void>;
+  readonly afterStaleSetupLockQuarantine?: (quarantinePath: string, lockPath: string) => Promise<void>;
+  readonly afterSetupLockDirectoryCreate?: (lockPath: string) => Promise<void>;
+  readonly beforeSetupLockReleaseClaim?: (lockPath: string) => Promise<void>;
 }
 
 export interface InstallManagedDataResult {
@@ -380,7 +382,9 @@ const readSetupLockOwner = async (lockPath: string): Promise<SetupLockOwner | un
     handle = await open(ownerPath, constants.O_RDONLY | noFollow | nonBlocking);
     if (!(await handle.stat()).isFile()) return undefined;
     const value = JSON.parse(await readBoundedUtf8(handle)) as Record<string, unknown>;
-    return typeof value.pid === "number" && typeof value.createdAt === "string" && typeof value.token === "string"
+    return typeof value.pid === "number" &&
+      typeof value.createdAt === "string" &&
+      typeof value.token === "string"
       ? {
           pid: value.pid,
           createdAt: value.createdAt,
@@ -442,7 +446,7 @@ const inspectSetupLock = async (
       ),
     ];
   }
-  if (owner?.token === ignoredOwnerToken) return [];
+  if (ignoredOwnerToken !== undefined && owner?.token === ignoredOwnerToken) return [];
   if (owner && setupLockIsStale(owner)) {
     return [
       diagnostic(
@@ -540,27 +544,84 @@ const quarantineLock = async (lockPath: string, reason: string): Promise<string 
   }
 };
 
-const restoreSetupLock = async (quarantinePath: string, lockPath: string): Promise<void> => {
+const sameDirectoryGeneration = async (
+  path: string,
+  candidate: Awaited<ReturnType<typeof lstat>>,
+): Promise<boolean> => {
   try {
-    await rename(quarantinePath, lockPath);
-  } catch {
-    // Preserve the quarantined lock if another owner acquired the canonical path.
+    const current = await lstat(path);
+    return current.dev === candidate.dev && current.ino === candidate.ino;
+  } catch (cause) {
+    if (errorCode(cause) === "ENOENT") return false;
+    throw cause;
+  }
+};
+
+const restoreSetupLock = async (quarantinePath: string, lockPath: string): Promise<boolean> => {
+  let claim: Awaited<ReturnType<typeof lstat>>;
+  try {
+    await mkdir(lockPath, { mode: DIRECTORY_MODE });
+    claim = await lstat(lockPath);
+    await chmod(lockPath, DIRECTORY_MODE);
+  } catch (cause) {
+    if (errorCode(cause) === "EEXIST") return false;
+    throw cause;
+  }
+
+  let ownerPublished = false;
+  try {
+    await rename(join(quarantinePath, SETUP_LOCK_OWNER), join(lockPath, SETUP_LOCK_OWNER));
+    ownerPublished = true;
+    await rm(quarantinePath, { recursive: true, force: true });
+    return true;
+  } catch (cause) {
+    if (!ownerPublished && (await sameDirectoryGeneration(lockPath, claim))) {
+      await rm(join(lockPath, SETUP_LOCK_OWNER), { force: true });
+      try {
+        await rmdir(lockPath);
+      } catch (cleanupCause) {
+        if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(cleanupCause) ?? "")) throw cleanupCause;
+      }
+    }
+    throw cause;
+  }
+};
+
+const recoverQuarantinedSetupLocks = async (root: string, lockPath: string): Promise<void> => {
+  const parent = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.stale-`;
+  const entries = await readdir(parent, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const quarantinePath = join(parent, entry.name);
+    const owner = await readSetupLockOwner(quarantinePath).catch(() => undefined);
+    if (owner === undefined) continue;
+    if (setupLockIsStale(owner)) {
+      await reconcileStaleStaging(root, owner);
+      await rm(quarantinePath, { recursive: true, force: true });
+      continue;
+    }
+    await restoreSetupLock(quarantinePath, lockPath);
   }
 };
 
 const acquireSetupLock = async (
   root: string,
-  beforeStaleQuarantine?: (lockPath: string) => Promise<void>,
+  hooks: Pick<
+    InstallManagedDataInput,
+    "beforeStaleSetupLockQuarantine" | "afterStaleSetupLockQuarantine" | "afterSetupLockDirectoryCreate"
+  > = {},
 ): Promise<AcquiredSetupLock> => {
   const lockPath = setupLockPath(root);
   const token = randomUUID();
   const stagingRoot = setupStagingPath(root, token);
   const create = async () => {
-    let created = false;
+    let created: Awaited<ReturnType<typeof lstat>> | undefined;
     try {
       await mkdir(lockPath, { mode: DIRECTORY_MODE });
-      created = true;
+      created = await lstat(lockPath);
       await chmod(lockPath, DIRECTORY_MODE);
+      await hooks.afterSetupLockDirectoryCreate?.(lockPath);
       await writeSecureFile(
         join(lockPath, SETUP_LOCK_OWNER),
         json({
@@ -572,10 +633,21 @@ const acquireSetupLock = async (
         }),
       );
     } catch (cause) {
-      if (created) await rm(lockPath, { recursive: true, force: true });
+      if (created && (await sameDirectoryGeneration(lockPath, created))) {
+        const owner = await readSetupLockOwner(lockPath).catch(() => undefined);
+        if (owner === undefined || owner.token === token) {
+          await rm(join(lockPath, SETUP_LOCK_OWNER), { force: true });
+          try {
+            await rmdir(lockPath);
+          } catch (cleanupCause) {
+            if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(cleanupCause) ?? "")) throw cleanupCause;
+          }
+        }
+      }
       throw cause;
     }
   };
+  await recoverQuarantinedSetupLocks(root, lockPath);
   try {
     await create();
     return { path: lockPath, token, stagingRoot };
@@ -585,9 +657,10 @@ const acquireSetupLock = async (
 
   const owner = await readSetupLockOwner(lockPath);
   if (owner && setupLockIsStale(owner)) {
-    await beforeStaleQuarantine?.(lockPath);
+    await hooks.beforeStaleSetupLockQuarantine?.(lockPath);
     const quarantinePath = await quarantineLock(lockPath, "stale");
     if (quarantinePath) {
+      await hooks.afterStaleSetupLockQuarantine?.(quarantinePath, lockPath);
       const movedOwner = await readSetupLockOwner(quarantinePath);
       if (movedOwner?.token !== owner.token || !setupLockIsStale(movedOwner)) {
         await restoreSetupLock(quarantinePath, lockPath);
@@ -610,7 +683,10 @@ const acquireSetupLock = async (
   );
 };
 
-const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
+const releaseSetupLock = async (
+  lock: AcquiredSetupLock,
+  beforeClaim?: (lockPath: string) => Promise<void>,
+): Promise<void> => {
   let candidate;
   try {
     candidate = await lstat(lock.path);
@@ -620,7 +696,8 @@ const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
   }
   const owner = await readSetupLockOwner(lock.path);
   if (owner?.token !== lock.token) return;
-  const releasePath = join(lock.path, SETUP_LOCK_RELEASE);
+  await beforeClaim?.(lock.path);
+  const releasePath = join(lock.path, `releasing-${lock.token}.json`);
   let release;
   try {
     release = await open(releasePath, "wx", FILE_MODE);
@@ -638,12 +715,7 @@ const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
     if ((await readSetupLockOwner(lock.path))?.token !== lock.token) return;
     await rm(lock.path, { recursive: true, force: true });
   } finally {
-    try {
-      const current = await lstat(lock.path);
-      if (current.dev === candidate.dev && current.ino === candidate.ino) await rm(releasePath, { force: true });
-    } catch (cause) {
-      if (errorCode(cause) !== "ENOENT") throw cause;
-    }
+    await rm(releasePath, { force: true });
   }
 };
 
@@ -878,7 +950,7 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
   });
   if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
   await mkdir(dirname(targetPaths.root), { recursive: true, mode: DIRECTORY_MODE });
-  const lock = await acquireSetupLock(targetPaths.root, input.beforeStaleSetupLockQuarantine);
+  const lock = await acquireSetupLock(targetPaths.root, input);
   const heartbeat = startSetupLockHeartbeat(
     lock,
     input.setupLockHeartbeatMillis,
@@ -909,7 +981,7 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
       try {
         await rm(stagingRoot, { recursive: true, force: true });
       } finally {
-        await releaseSetupLock(lock);
+        await releaseSetupLock(lock, input.beforeSetupLockReleaseClaim);
       }
     }
   }
