@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, rename, rm, rmdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { CredentialStore, ModelAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import {
@@ -73,7 +73,6 @@ export interface ManagedChatGptCredentialStoreOptions {
   readonly onLegacyMigration?: () => Promise<void>;
   readonly beforeCommit?: (temporaryPath: string, targetPath: string) => Promise<void>;
   readonly beforeStaleLockClaim?: (lockPath: string) => Promise<void>;
-  readonly afterLockOwnerPublished?: (lockPath: string) => Promise<void>;
 }
 
 export interface ChatGptCredentialStore extends CredentialStore {
@@ -95,7 +94,7 @@ const LOCK_TIMEOUT_MILLIS = 20 * 60 * 1_000;
 const STALE_LOCK_MILLIS = 30_000;
 const LOCK_OWNER_FILE = "owner.json";
 const LOCK_RECLAIM_FILE = "reclaiming.json";
-const MAX_PLATFORM_PID = 0x7fffffff;
+const LOCK_RELEASE_FILE = "releasing.json";
 
 interface CredentialLockOwner {
   readonly pid: number;
@@ -114,30 +113,21 @@ const throwIfAborted = (signal?: AbortSignal): void => {
 };
 
 const abortable = async <T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  throwIfAborted(signal);
   if (signal === undefined) return await operation;
   return await new Promise<T>((resolveOperation, rejectOperation) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      rejectOperation(abortError(signal));
-    };
+    const onAbort = () => rejectOperation(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
     void operation.then(
       (value) => {
-        if (settled) return;
-        settled = true;
         signal.removeEventListener("abort", onAbort);
         resolveOperation(value);
       },
       (cause: unknown) => {
-        if (settled) return;
-        settled = true;
         signal.removeEventListener("abort", onAbort);
         rejectOperation(cause);
       },
     );
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) onAbort();
   });
 };
 
@@ -261,15 +251,11 @@ const atomicWriteCredential = async (
   const directory = dirname(path);
   await ensurePrivateDirectory(directory, managedRoot);
   await assertReplaceableCredentialPath(path);
-  const serialized = `${JSON.stringify(credential, null, 2)}\n`;
-  if (Buffer.byteLength(serialized, "utf8") > MAX_CREDENTIAL_BYTES) {
-    throw new Error("The managed ChatGPT credential exceeds the 1 MiB storage limit.");
-  }
   const temporary = `${path}.${randomUUID()}.tmp`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(temporary, "wx", FILE_MODE);
-    await handle.writeFile(serialized, "utf8");
+    await handle.writeFile(`${JSON.stringify(credential, null, 2)}\n`, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -292,14 +278,8 @@ const atomicWriteCredential = async (
 const parseCredentialLockOwner = (value: unknown): CredentialLockOwner | undefined => {
   if (typeof value !== "object" || value === null) return undefined;
   const owner = value as Record<string, unknown>;
-  const pid = owner.pid;
-  return typeof pid === "number" &&
-    Number.isSafeInteger(pid) &&
-    pid > 0 &&
-    pid <= MAX_PLATFORM_PID &&
-    typeof owner.createdAt === "string" &&
-    typeof owner.token === "string"
-    ? { pid, createdAt: owner.createdAt, token: owner.token }
+  return typeof owner.pid === "number" && typeof owner.createdAt === "string" && typeof owner.token === "string"
+    ? { pid: owner.pid, createdAt: owner.createdAt, token: owner.token }
     : undefined;
 };
 
@@ -317,29 +297,6 @@ const removeOwnedMarker = async (markerPath: string, token: string): Promise<voi
   }
 };
 
-const cleanupFailedCredentialLockPublication = async (
-  lockPath: string,
-  candidate: Awaited<ReturnType<typeof lstat>>,
-  token: string,
-): Promise<void> => {
-  let current;
-  try {
-    current = await lstat(lockPath);
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") return;
-    throw cause;
-  }
-  if (current.dev !== candidate.dev || current.ino !== candidate.ino) return;
-  const owner = await readCredentialLockOwner(lockPath).catch(() => undefined);
-  if (owner !== undefined && owner.token !== token) return;
-  await rm(join(lockPath, LOCK_OWNER_FILE), { force: true });
-  try {
-    await rmdir(lockPath);
-  } catch (cause) {
-    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(errorCode(cause) ?? "")) throw cause;
-  }
-};
-
 const releaseCredentialLock = async (lockPath: string, token: string): Promise<void> => {
   let candidate;
   try {
@@ -350,12 +307,11 @@ const releaseCredentialLock = async (lockPath: string, token: string): Promise<v
   }
   const owner = await readCredentialLockOwner(lockPath);
   if (owner?.token !== token) return;
-  const releasePath = join(lockPath, `releasing-${token}.json`);
+  const releasePath = join(lockPath, LOCK_RELEASE_FILE);
   let release;
   try {
     release = await open(releasePath, "wx", FILE_MODE);
     await release.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
-    await release.chmod(FILE_MODE);
     await release.sync();
   } catch (cause) {
     if (["ENOENT", "EEXIST", "EINVAL"].includes(errorCode(cause) ?? "")) return;
@@ -376,10 +332,7 @@ const releaseCredentialLock = async (lockPath: string, token: string): Promise<v
 const acquireCredentialLock = async (
   path: string,
   signal?: AbortSignal,
-  options: Pick<
-    ManagedChatGptCredentialStoreOptions,
-    "managedRoot" | "beforeStaleLockClaim" | "afterLockOwnerPublished"
-  > = {},
+  options: Pick<ManagedChatGptCredentialStoreOptions, "managedRoot" | "beforeStaleLockClaim"> = {},
 ): Promise<() => Promise<void>> => {
   const lockPath = `${path}.lock`;
   const started = Date.now();
@@ -388,27 +341,22 @@ const acquireCredentialLock = async (
   while (true) {
     throwIfAborted(signal);
     try {
-      let candidate: Awaited<ReturnType<typeof lstat>> | undefined;
-      let owner: Awaited<ReturnType<typeof open>> | undefined;
+      await mkdir(lockPath, { mode: DIRECTORY_MODE });
+      await chmod(lockPath, DIRECTORY_MODE);
+      const owner = await open(join(lockPath, LOCK_OWNER_FILE), "wx", FILE_MODE);
       try {
-        await mkdir(lockPath, { mode: DIRECTORY_MODE });
-        candidate = await lstat(lockPath);
-        await chmod(lockPath, DIRECTORY_MODE);
-        owner = await open(join(lockPath, LOCK_OWNER_FILE), "wx", FILE_MODE);
         await owner.writeFile(
           JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), token }),
           "utf8",
         );
-        await owner.chmod(FILE_MODE);
         await owner.sync();
-        await owner.close();
-        owner = undefined;
-        await options.afterLockOwnerPublished?.(lockPath);
       } catch (cause) {
-        await owner?.close().catch(() => undefined);
-        if (candidate !== undefined) await cleanupFailedCredentialLockPublication(lockPath, candidate, token);
+        await rm(lockPath, { recursive: true, force: true });
         throw cause;
+      } finally {
+        await owner.close();
       }
+      await chmod(join(lockPath, LOCK_OWNER_FILE), FILE_MODE);
       return async () => await releaseCredentialLock(lockPath, token);
     } catch (cause) {
       if (errorCode(cause) !== "EEXIST") throw cause;
@@ -431,7 +379,6 @@ const acquireCredentialLock = async (
           try {
             reclaim = await open(reclaimPath, "wx", FILE_MODE);
             await reclaim.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
-            await reclaim.chmod(FILE_MODE);
             await reclaim.sync();
           } catch (claimCause) {
             if (["ENOENT", "EEXIST", "EINVAL"].includes(errorCode(claimCause) ?? "")) continue;
@@ -537,6 +484,7 @@ export const createManagedChatGptCredentialStore = (
         if (next === undefined) return current;
         if (next.type !== "oauth") throw new Error("Only a ChatGPT OAuth credential may be stored.");
         const credential = validateChatGptOAuthCredential(next);
+        throwIfAborted(signal);
         await atomicWriteCredential(options.path, credential, options.beforeCommit, options.managedRoot);
         await finishLegacyMigration();
         return credential;
@@ -557,7 +505,6 @@ export const createManagedChatGptCredentialStore = (
     async delete(providerId, signal) {
       assertProvider(providerId);
       await locked(async () => {
-        await finishLegacyMigration();
         await rm(options.path, { force: true });
       }, signal);
     },
@@ -722,22 +669,17 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
           let refreshFailed = false;
           let refreshed;
           try {
-            const refreshOperation = store.modify(
-              CHATGPT_PROVIDER_ID,
-              async (latest) => {
-                if (latest === undefined) return undefined;
-                const validated = validateChatGptOAuthCredential(latest);
-                if (validated.expires > now()) return undefined;
-                try {
-                  return validateChatGptOAuthCredential(await oauth.refresh(validated, signal));
-                } catch (cause) {
-                  refreshFailed = true;
-                  throw cause;
-                }
-              },
-              signal,
-            );
-            refreshed = await abortable(refreshOperation, signal);
+            refreshed = await store.modify(CHATGPT_PROVIDER_ID, async (latest) => {
+              if (latest === undefined) return undefined;
+              const validated = validateChatGptOAuthCredential(latest);
+              if (validated.expires > now()) return undefined;
+              try {
+                return validateChatGptOAuthCredential(await abortable(oauth.refresh(validated, signal), signal));
+              } catch (cause) {
+                refreshFailed = true;
+                throw cause;
+              }
+            }, signal);
           } catch (cause) {
             if (signal?.aborted) throw loginFailure(cause, signal);
             throw new ChatGptAuthenticationError(

@@ -10,7 +10,6 @@ import { managedPaths, type ManagedPaths } from "../managed/paths.js";
 import { loadManagedRuntimeEnvironment } from "../managed/runtime-environment.js";
 import { installManagedRuntimeDependencies } from "../managed/runtime-dependencies.js";
 import {
-  ChatGptAuthenticationError,
   type ChatGptOAuthAdapter,
   type ChatGptAuthentication,
   type ChatGptAuthenticationStatus,
@@ -254,13 +253,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (refresh && authenticationStatus.state === "expired-refreshable") {
       try {
         await authentication!.authorization(readinessSignal());
-      } catch (cause) {
-        if (
-          cause instanceof ChatGptAuthenticationError &&
-          (cause.code === "timeout" || cause.code === "cancelled")
-        ) {
-          throw cause;
-        }
+      } catch {
         // inspect() reports the sanitized unusable state from the same service instance.
       }
       authenticationStatus = await authentication!.inspect();

@@ -8,7 +8,7 @@ import {
   registerApiProvider as flueRegisterApiProvider,
   registerProvider as flueRegisterProvider,
 } from "@flue/runtime";
-import { ChatGptAuthenticationError, type ChatGptAuthentication } from "./chatgpt-authentication.js";
+import type { ChatGptAuthentication } from "./chatgpt-authentication.js";
 import type { ModelAuthorization } from "./chatgpt-authentication.js";
 
 export const AMBIENCE_MODEL_ID = "gpt-5.6-luna";
@@ -211,12 +211,6 @@ const requestChatGptReadiness = async (authorization: ModelAuthorization, signal
 
 const readinessFailure = (cause: unknown, signal?: AbortSignal): ChatGptReadinessError => {
   if (cause instanceof ChatGptReadinessError) return cause;
-  if (
-    cause instanceof ChatGptAuthenticationError &&
-    (cause.code === "timeout" || cause.code === "cancelled")
-  ) {
-    return new ChatGptReadinessError(cause.code, cause.message, { cause });
-  }
   if (signal?.aborted) {
     const timeout = signal.reason instanceof Error && signal.reason.name === "TimeoutError";
     return new ChatGptReadinessError(
@@ -236,8 +230,8 @@ export const runChatGptReadinessCheck = async (
   authentication: ChatGptAuthentication,
   options: ChatGptReadinessCheckOptions = {},
 ): Promise<ChatGptReadinessReceipt> => {
+  const authorization = await authentication.authorization(options.signal);
   try {
-    const authorization = await authentication.authorization(options.signal);
     await (options.request ?? requestChatGptReadiness)(authorization, options.signal);
   } catch (cause) {
     throw readinessFailure(cause, options.signal);

@@ -10,7 +10,6 @@ import {
   runChatGptReadinessCheck,
 } from "../../src/model/pi-subscription.js";
 import {
-  ChatGptAuthenticationError,
   createChatGptAuthentication,
   createManagedChatGptCredentialStore,
   type ChatGptAuthentication,
@@ -218,26 +217,6 @@ describe("connectPiChatGptSubscription", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "credential-rejected" });
-  });
-
-  it("classifies timeout and cancellation raised during readiness authorization", async () => {
-    const timedOut = authentication();
-    vi.mocked(timedOut.authorization).mockRejectedValue(
-      new ChatGptAuthenticationError("timeout", "ChatGPT authentication timed out."),
-    );
-    await expect(runChatGptReadinessCheck(timedOut)).rejects.toMatchObject({
-      name: "ChatGptReadinessError",
-      code: "timeout",
-    });
-
-    const cancelled = authentication();
-    vi.mocked(cancelled.authorization).mockRejectedValue(
-      new ChatGptAuthenticationError("cancelled", "ChatGPT authentication was cancelled."),
-    );
-    await expect(runChatGptReadinessCheck(cancelled)).rejects.toMatchObject({
-      name: "ChatGptReadinessError",
-      code: "cancelled",
-    });
   });
 
   it.runIf(process.env.AMBIENT_AGENT_LIVE_CHATGPT === "1")(
