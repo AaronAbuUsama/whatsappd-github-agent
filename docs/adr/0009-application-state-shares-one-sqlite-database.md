@@ -1,0 +1,3 @@
+# Application state shares one SQLite database
+
+All durable state owned by Ambient Agent—including Conversation Events and projections, Managed Chat Inbox and Window state, admission receipts, GitHub ingress, and provider-operation receipts—shares one application-owned SQLite database so related changes can commit atomically. Flue retains exclusive ownership of its own database and `whatsappd` retains exclusive ownership of WhatsApp credentials, but the executable places all three under one managed data directory; individual database-path environment variables are not part of the normal configuration interface.

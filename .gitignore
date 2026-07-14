@@ -5,6 +5,7 @@ node_modules/
 dist/
 data/
 .vercel/
+.workflow-data/
 
 # env
 .env

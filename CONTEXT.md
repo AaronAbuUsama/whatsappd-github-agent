@@ -1,41 +1,53 @@
-# Ambient Code Factory
+# Ambient Agent
 
-An ambient participant in group conversation that helps a team turn software-development intent into durable, coordinated work. It begins with issue management and grows by adding capabilities.
+An ambient participant in group conversation that helps a team turn software-development intent into durable, coordinated work. It begins with issue management and grows by adding capabilities toward broader software delivery.
 
 ## Language
 
 **Ambient Agent**:
-An agent that participates in an ongoing group conversation, processes the shared context, and decides when speaking or acting would help without requiring a direct invocation.
+The product and the architectural pattern it embodies: an agent that participates in ongoing group conversation, processes the shared context, and decides when speaking or acting would help without requiring a direct invocation.
 _Avoid_: Bot, chatbot, one-to-one assistant
 
 **Ambience**:
 The proper name of this project's Ambient Agent — one continuing instance per Managed Chat. It is an application-defined agent, not a framework primitive.
 _Avoid_: "Flue Ambience" (implies Ambience is part of Flue), the voice
 
-**Code Factory**:
-The system that coordinates software work from expressed intent through planning, implementation, review, and delivery.
-_Avoid_: Coding bot, issue bot
-
 **Capability**:
-A cohesive kind of work the Ambient Agent can perform for the group. Capabilities are the canonical way the Code Factory grows.
+A cohesive kind of work the Ambient Agent can perform for the group. Capabilities are the canonical way the product grows.
 _Avoid_: Feature module, plugin
 
 **Issue Management**:
-The capability that turns bug reports and feature requests into well-formed, maintained GitHub issues.
-_Avoid_: Issue proof, GitHub proof
+The capability that turns bug reports and feature requests into well-formed, maintained GitHub issues and their discussion. It may assign existing labels, assignees, and milestones; creating or administering those structures belongs to Planning.
+_Avoid_: Issue proof, GitHub proof, proof-only issue path
+
+**WhatsApp Participation**:
+The capability through which Ambience participates in Managed Chats. Its Skill guides group-chat behavior, while its Chat-bound Tools provide conversation history and Say.
+_Avoid_: Channel plumbing, WhatsApp bot
 
 ### Conversation surface
+
+**Conversation Archive**:
+The append-only journal of Conversation Events observed by or sent through a configured WhatsApp account, across all chats whether or not Ambience currently participates in them. Stable WhatsApp identity keeps those events available for later cross-chat and cross-thread capabilities.
+_Avoid_: Managed-chat history, mutable transcript, listener log
+
+**Conversation Event**:
+An immutable, normalized fact about a WhatsApp message: its arrival, edit, revocation, reaction, or delivery receipt. Later facts supersede earlier state in projections but never erase the original fact.
+_Avoid_: Database row, raw provider event, message snapshot
 
 **Managed Chat**:
 A WhatsApp chat the Ambient Agent is explicitly configured to participate in. All other chats are ignored, fail-closed.
 _Avoid_: Allowed group, whitelisted chat
 
 **Window**:
-A group of consecutive chat messages coalesced into one reading, so a busy chat becomes a sequence of digestible readings instead of per-message interruptions.
+A lossless group of consecutive chat messages coalesced into one reading, so a busy chat becomes a sequence of digestible readings instead of per-message interruptions. Every accepted live message belongs to exactly one Window.
 _Avoid_: Batch, buffer flush, message dump
 
 **Coalescer**:
 The per-chat actor that gathers incoming messages into Windows and decides when a Window is ready.
+
+**Managed Chat Inbox**:
+The durable processing state for Conversation Events accepted from Managed Chats and awaiting inclusion in a Window. An accepted event remains pending for Ambience until its Window is admitted and the admission receipt is recorded.
+_Avoid_: Best-effort listener, live queue
 
 **Say**:
 The single explicit act of sending a message to a Managed Chat. Anything the agent produces without Saying it is private working context.
@@ -51,14 +63,18 @@ A named, versionable packet of process and policy — how the agent approaches a
 _Avoid_: Prompt, persona file
 
 **Action**:
-A reusable, validated finite operation owned by a Capability. The Ambient Agent can invoke an Action directly, and a Bounded Workflow can bind the same Action when the work needs an independent run.
-_Avoid_: Workflow (when no independent run is needed), Tool (when the operation owns a multi-step result)
+A reusable, validated, agent-backed operation that a Capability may expose to the Ambient Agent or bind into a Bounded Workflow. An Action runs with its own child harness; direct application functions remain Tools.
+_Avoid_: Workflow (when no independent run is needed), Tool (when agent-backed work is required)
 
 **Tool**:
-A typed direct operation the agent can act with. Tools do; they carry no judgment or process.
+A typed direct application function the agent can act with. Tools do; they carry no judgment or agent-backed process.
 
 **Chat-bound Tool**:
 A Tool permanently scoped to one Managed Chat at construction, so it cannot reach another chat regardless of what the model asks.
+
+**Evaluation Scenario**:
+A repeatable Managed Chat situation with controlled provider state and observable expected effects, used to measure the Ambient Agent's judgment and Capability use across changes.
+_Avoid_: Prompt test, golden response, vibe check
 
 ### Work execution
 

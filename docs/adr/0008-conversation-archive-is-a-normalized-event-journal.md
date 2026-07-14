@@ -1,0 +1,3 @@
+# Conversation Archive is a normalized event journal
+
+The Conversation Archive appends every normalized WhatsApp message and message-update fact—including arrivals, edits, revocations, reactions, and receipts—rather than mutating one flattened message row. Thread state, search, and the Managed Chat Inbox are projections derived from that journal; the journal stores the stable public `whatsappd` contract rather than raw Baileys payloads, preserving auditability and future cross-chat use without coupling the application to provider internals. Media events retain normalized metadata, but this rollout neither downloads media bytes by default nor injects attachments into agent context; agent-directed retrieval and blob storage require a later `whatsappd` design round.

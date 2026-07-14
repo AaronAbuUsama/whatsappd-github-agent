@@ -1,5 +1,7 @@
 # Ambience recovery boundaries
 
+> Historical baseline: this document describes the shipped hard-cut recovery surface before the Ambient Agent stable-base rollout. The target replaces the best-effort pre-dispatch gap with the durable Managed Chat Inbox and Admission Relay in [ambient-agent.md](./ambient-agent.md) and ADR 0006; the proof below remains evidence for the Flue and GitHub behavior already demonstrated.
+
 Ambience uses Flue's canonical conversation stream and submission coordinator;
 it does not maintain an application transcript, cursor, queue, or replay loop.
 Finite workflows use Flue run records, while GitHub mutation integrity remains

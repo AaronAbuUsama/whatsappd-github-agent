@@ -1,5 +1,7 @@
 # whatsappd-github-agent
 
+> This README describes the currently shipped hard-cut baseline. The ratified next production architecture renames the product and package to **Ambient Agent** and is specified in [docs/architecture/ambient-agent.md](./docs/architecture/ambient-agent.md). Until that rollout lands, do not treat the target CLI, durable intake, or production Issue Management module as shipped behavior.
+
 A continuing ambient agent for managed WhatsApp chats. Each accepted coalesced
 window is admitted to one canonical instance of Ambience — this application's
 Flue agent — keyed by WhatsApp `chatId`. Ambience uses Luna 5.6 at low
