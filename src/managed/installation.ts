@@ -19,6 +19,7 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_MANAGED_JSON_BYTES = 1024 * 1024;
 const SETUP_LOCK_OWNER = "owner.json";
+const SETUP_LOCK_RELEASE = "releasing.json";
 const SETUP_LOCK_MAX_AGE_MILLIS = 10 * 60 * 1000;
 const SETUP_LOCK_HEARTBEAT_MILLIS = 30 * 1000;
 const CONFIG_ISSUE_PATHS = new Set([
@@ -68,6 +69,9 @@ export interface InstallManagedDataInput extends ManagedPathEnvironment {
   readonly githubToken: string;
   readonly authenticateChatGpt: (paths: ManagedPaths) => Promise<void>;
   readonly setupLockHeartbeatMillis?: number;
+  readonly setupLockHeartbeatBeforeWrite?: () => Promise<void>;
+  readonly setupLockHeartbeatAfterWrite?: () => Promise<void>;
+  readonly beforeStaleSetupLockQuarantine?: (lockPath: string) => Promise<void>;
 }
 
 export interface InstallManagedDataResult {
@@ -536,7 +540,18 @@ const quarantineLock = async (lockPath: string, reason: string): Promise<string 
   }
 };
 
-const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
+const restoreSetupLock = async (quarantinePath: string, lockPath: string): Promise<void> => {
+  try {
+    await rename(quarantinePath, lockPath);
+  } catch {
+    // Preserve the quarantined lock if another owner acquired the canonical path.
+  }
+};
+
+const acquireSetupLock = async (
+  root: string,
+  beforeStaleQuarantine?: (lockPath: string) => Promise<void>,
+): Promise<AcquiredSetupLock> => {
   const lockPath = setupLockPath(root);
   const token = randomUUID();
   const stagingRoot = setupStagingPath(root, token);
@@ -570,22 +585,15 @@ const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
 
   const owner = await readSetupLockOwner(lockPath);
   if (owner && setupLockIsStale(owner)) {
-    await reconcileStaleStaging(root, owner);
-    const reconciledOwner = await readSetupLockOwner(lockPath);
-    if (reconciledOwner?.token !== owner.token) {
-      throw new Error(`Setup lock ownership changed while recovering ${lockPath}; retry after inspection.`);
-    }
+    await beforeStaleQuarantine?.(lockPath);
     const quarantinePath = await quarantineLock(lockPath, "stale");
     if (quarantinePath) {
       const movedOwner = await readSetupLockOwner(quarantinePath);
-      if (movedOwner?.token !== owner.token) {
-        try {
-          await rename(quarantinePath, lockPath);
-        } catch {
-          // Preserve the quarantined lock when its ownership changed; never delete it.
-        }
+      if (movedOwner?.token !== owner.token || !setupLockIsStale(movedOwner)) {
+        await restoreSetupLock(quarantinePath, lockPath);
         throw new Error(`Setup lock ownership changed while recovering ${lockPath}; retry after inspection.`);
       }
+      await reconcileStaleStaging(root, movedOwner);
       await rm(quarantinePath, { recursive: true, force: true });
     }
     try {
@@ -603,55 +611,80 @@ const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
 };
 
 const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
+  let candidate;
+  try {
+    candidate = await lstat(lock.path);
+  } catch (cause) {
+    if (errorCode(cause) === "ENOENT") return;
+    throw cause;
+  }
   const owner = await readSetupLockOwner(lock.path);
   if (owner?.token !== lock.token) return;
-  const quarantinePath = await quarantineLock(lock.path, `release-${lock.token}`);
-  if (!quarantinePath) return;
-  const movedOwner = await readSetupLockOwner(quarantinePath);
-  if (movedOwner?.token === lock.token) {
-    await rm(quarantinePath, { recursive: true, force: true });
-    return;
+  const releasePath = join(lock.path, SETUP_LOCK_RELEASE);
+  let release;
+  try {
+    release = await open(releasePath, "wx", FILE_MODE);
+    await release.writeFile(json({ pid: process.pid, token: lock.token }), "utf8");
+    await release.sync();
+  } catch (cause) {
+    if (["ENOENT", "EEXIST", "EINVAL"].includes(errorCode(cause) ?? "")) return;
+    throw cause;
+  } finally {
+    await release?.close();
   }
   try {
-    await rename(quarantinePath, lock.path);
-  } catch {
-    // Never delete a lock whose ownership changed during release.
+    const claimed = await lstat(lock.path);
+    if (claimed.dev !== candidate.dev || claimed.ino !== candidate.ino) return;
+    if ((await readSetupLockOwner(lock.path))?.token !== lock.token) return;
+    await rm(lock.path, { recursive: true, force: true });
+  } finally {
+    try {
+      const current = await lstat(lock.path);
+      if (current.dev === candidate.dev && current.ino === candidate.ino) await rm(releasePath, { force: true });
+    } catch (cause) {
+      if (errorCode(cause) !== "ENOENT") throw cause;
+    }
   }
 };
 
 interface SetupLockHeartbeat {
-  readonly assertHealthy: () => Promise<void>;
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 }
 
 const startSetupLockHeartbeat = (
   lock: AcquiredSetupLock,
   intervalMillis: number = SETUP_LOCK_HEARTBEAT_MILLIS,
+  beforeWrite?: () => Promise<void>,
+  afterWrite?: () => Promise<void>,
 ): SetupLockHeartbeat => {
   let failure: unknown;
   let update = Promise.resolve();
+  let stopped = false;
   const timer = setInterval(() => {
     update = update
       .then(async () => {
         const owner = await readSetupLockOwner(lock.path);
         if (owner?.token !== lock.token) throw new Error("Setup lock ownership changed during authentication.");
+        await beforeWrite?.();
         const temporary = join(lock.path, `${SETUP_LOCK_OWNER}.${randomUUID()}.tmp`);
         await writeSecureFile(temporary, json({ ...owner, heartbeatAt: new Date().toISOString() }));
         await rename(temporary, join(lock.path, SETUP_LOCK_OWNER));
+        await afterWrite?.();
       })
       .catch((cause: unknown) => {
         failure ??= cause;
       });
   }, intervalMillis);
   return {
-    async assertHealthy() {
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+      }
       await update;
       if (failure !== undefined) {
         throw new Error("Could not maintain the setup lock during authentication.", { cause: failure });
       }
-    },
-    stop() {
-      clearInterval(timer);
     },
   };
 };
@@ -845,8 +878,13 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
   });
   if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
   await mkdir(dirname(targetPaths.root), { recursive: true, mode: DIRECTORY_MODE });
-  const lock = await acquireSetupLock(targetPaths.root);
-  const heartbeat = startSetupLockHeartbeat(lock, input.setupLockHeartbeatMillis);
+  const lock = await acquireSetupLock(targetPaths.root, input.beforeStaleSetupLockQuarantine);
+  const heartbeat = startSetupLockHeartbeat(
+    lock,
+    input.setupLockHeartbeatMillis,
+    input.setupLockHeartbeatBeforeWrite,
+    input.setupLockHeartbeatAfterWrite,
+  );
 
   const stagingRoot = lock.stagingRoot;
   try {
@@ -858,16 +896,22 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
     const stagingPaths = managedPaths({ dataDirectory: stagingRoot });
     await createSkeleton(stagingPaths, configResult.output, githubResult.output);
     await input.authenticateChatGpt(stagingPaths);
-    await heartbeat.assertHealthy();
+    await heartbeat.stop();
     const stagingInspection = await inspectManagedData({ dataDirectory: stagingRoot });
     if (stagingInspection.state !== "configured") {
       throw new Error("Managed staging verification failed; setup did not commit any files.");
     }
     await rename(stagingRoot, targetPaths.root);
   } finally {
-    heartbeat.stop();
-    await rm(stagingRoot, { recursive: true, force: true });
-    await releaseSetupLock(lock);
+    try {
+      await heartbeat.stop();
+    } finally {
+      try {
+        await rm(stagingRoot, { recursive: true, force: true });
+      } finally {
+        await releaseSetupLock(lock);
+      }
+    }
   }
 
   const inspection = await inspectManagedData(input);

@@ -130,7 +130,12 @@ const renderInspection = (
     lines.push("  Fix: Run ambient-agent doctor --refresh to rotate the managed credential.");
   }
   if (authentication.state === "unusable")
-    lines.push(`  ${authentication.message}`, "  Fix: Run ambient-agent auth to authenticate again.");
+    lines.push(
+      `  ${authentication.message}`,
+      inspection.state === "damaged"
+        ? "  Fix: Run ambient-agent doctor and repair the managed installation."
+        : "  Fix: Run ambient-agent auth to authenticate again.",
+    );
   if (liveCheck !== undefined) {
     lines.push(
       `ChatGPT live readiness: ${liveCheck.request}${liveCheck.reason === undefined ? "" : ` (${liveCheck.reason})`}`,
@@ -190,7 +195,17 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   const credentialDamageOnly = (inspection: InstallationInspection, paths: ManagedPaths): boolean => {
     if (inspection.state !== "damaged" || inspection.diagnostics.length === 0) return false;
     const credentialPaths = new Set([paths.chatGptOAuthCredential, paths.legacyPiAuthCredential]);
-    return inspection.diagnostics.every((item) => credentialPaths.has(item.path));
+    const repairableCodes = new Set([
+      "path.missing-file",
+      "permissions.file",
+      "json.invalid",
+      "schema.invalid",
+      "file.too-large",
+      "file.changed-during-read",
+    ]);
+    return inspection.diagnostics.every(
+      (item) => credentialPaths.has(item.path) && repairableCodes.has(item.code),
+    );
   };
   const deviceCodeCallbacks: DeviceCodeCallbacks = {
     onDeviceCode: (info) => {
@@ -237,7 +252,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           : await authentication!.inspect();
     if (refresh && authenticationStatus.state === "expired-refreshable") {
       try {
-        await authentication!.authorization();
+        await authentication!.authorization(readinessSignal());
       } catch {
         // inspect() reports the sanitized unusable state from the same service instance.
       }
@@ -343,7 +358,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .command("start")
     .description("start the generated Flue server in the foreground")
     .action(async () => {
-      await startRuntime(managedPaths({ dataDirectory: program.opts().dataDir }));
+      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
+      const inspection = await inspectManagedData({ dataDirectory: paths.root });
+      if (inspection.state !== "configured") {
+        throw new Error(
+          inspection.state === "unconfigured"
+            ? "Ambient Agent is not configured; run ambient-agent init first."
+            : `Refusing to start damaged managed data at ${paths.root}; run ambient-agent doctor.`,
+        );
+      }
+      await startRuntime(paths);
     });
 
   program

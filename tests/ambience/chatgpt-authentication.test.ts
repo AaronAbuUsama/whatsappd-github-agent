@@ -1,5 +1,5 @@
 import { InMemoryCredentialStore, type CredentialStore, type OAuthCredential } from "@earendil-works/pi-ai";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -208,7 +208,7 @@ describe("ChatGPT authentication", () => {
     expect((await readdir(directory)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
   });
 
-  it("migrates only the provisional managed Pi credential into the application-owned file", async () => {
+  it("keeps inspection read-only and migrates the provisional credential only on an explicit write", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-migration-"));
     roots.push(root);
     const paths = managedPaths({ dataDirectory: root });
@@ -231,14 +231,48 @@ describe("ChatGPT authentication", () => {
     );
     await writeFile(paths.legacyPiAuthCredential, JSON.stringify({ "openai-codex": credential() }), { mode: 0o600 });
     const authentication = createManagedChatGptAuthentication(paths, adapter());
+    const beforeEntries = await readdir(credentials);
+    const beforeConfig = await readFile(paths.config, "utf8");
+    const beforeLegacy = await readFile(paths.legacyPiAuthCredential, "utf8");
 
     await expect(authentication.inspect()).resolves.toEqual({ state: "ready" });
+    expect(await readdir(credentials)).toEqual(beforeEntries);
+    expect(await readFile(paths.config, "utf8")).toBe(beforeConfig);
+    expect(await readFile(paths.legacyPiAuthCredential, "utf8")).toBe(beforeLegacy);
+    await expect(lstat(paths.legacyPiAuthCredential)).resolves.toBeDefined();
+    await expect(lstat(paths.chatGptOAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(paths.config, "utf8"))).toMatchObject({
+      model: { provider: "openai-codex", credential: "pi-auth" },
+    });
+
+    await authentication.authenticate({ onDeviceCode: vi.fn() });
+
     await expect(lstat(paths.legacyPiAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
     expect(JSON.parse(await readFile(paths.chatGptOAuthCredential, "utf8"))).toEqual(credential());
     expect(JSON.parse(await readFile(paths.config, "utf8"))).toMatchObject({
       model: { provider: "openai-codex", credential: "chatgpt-oauth" },
     });
     expect((await lstat(paths.config)).mode & 0o777).toBe(0o600);
+  });
+
+  it("refuses a symlinked managed credential directory inside the store boundary", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-boundary-"));
+    roots.push(parent);
+    const root = join(parent, "managed");
+    const outside = join(parent, "outside");
+    await mkdir(root, { mode: 0o700 });
+    await mkdir(outside, { mode: 0o755 });
+    await writeFile(join(outside, "pi-auth.json"), JSON.stringify({ "openai-codex": credential() }), {
+      mode: 0o600,
+    });
+    await symlink(outside, join(root, "credentials"));
+    const paths = managedPaths({ dataDirectory: root });
+    const authentication = createManagedChatGptAuthentication(paths, adapter());
+
+    await expect(authentication.authorization()).rejects.toMatchObject({ code: "persistence-failed" });
+    expect((await lstat(outside)).mode & 0o777).toBe(0o755);
+    await expect(lstat(join(outside, "chatgpt-oauth.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(join(outside, "pi-auth.json"))).resolves.toBeDefined();
   });
 
   it("keeps the legacy credential reference valid when config normalization fails", async () => {
@@ -257,7 +291,7 @@ describe("ChatGPT authentication", () => {
       },
     });
 
-    await expect(store.read("openai-codex")).rejects.toThrow("injected config write failure");
+    await expect(store.replace("openai-codex", credential())).rejects.toThrow("injected config write failure");
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual(credential());
     expect(JSON.parse(await readFile(legacyPath, "utf8"))).toEqual({ "openai-codex": credential() });
 
@@ -266,7 +300,7 @@ describe("ChatGPT authentication", () => {
       legacyPath,
       onLegacyMigration: async () => undefined,
     });
-    await expect(recovered.read("openai-codex")).resolves.toEqual(credential());
+    await expect(recovered.replace("openai-codex", credential())).resolves.toBeUndefined();
     await expect(lstat(legacyPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -337,6 +371,77 @@ describe("ChatGPT authentication", () => {
     expect(oauth.refresh).toHaveBeenCalledTimes(1);
   }, 8_000);
 
+  it("honors cancellation while waiting for a credential lock", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-lock-cancel-"));
+    roots.push(root);
+    const path = join(root, "credentials", "chatgpt-oauth.json");
+    await createManagedChatGptCredentialStore({ path }).modify(
+      "openai-codex",
+      async () => credential({ expires: 1 }),
+    );
+    const lockPath = `${path}.lock`;
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(
+      join(lockPath, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), token: "live-owner" }),
+      { mode: 0o600 },
+    );
+    const authentication = createChatGptAuthentication({
+      store: createManagedChatGptCredentialStore({ path }),
+      oauth: adapter(),
+      now: () => 2_000,
+    });
+
+    const started = Date.now();
+    await expect(authentication.authorization(AbortSignal.timeout(20))).rejects.toMatchObject({ code: "timeout" });
+    expect(Date.now() - started).toBeLessThan(500);
+    await expect(authentication.inspect()).resolves.toEqual({ state: "expired-refreshable" });
+    await rm(lockPath, { recursive: true });
+  });
+
+  it("reports cancellation while persisting a completed login as cancellation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-login-lock-cancel-"));
+    roots.push(root);
+    const path = join(root, "credentials", "chatgpt-oauth.json");
+    const directory = join(root, "credentials");
+    const lockPath = `${path}.lock`;
+    await mkdir(directory, { mode: 0o700 });
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(
+      join(lockPath, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), token: "live-owner" }),
+      { mode: 0o600 },
+    );
+    const authentication = createChatGptAuthentication({
+      store: createManagedChatGptCredentialStore({ path }),
+      oauth: adapter(),
+    });
+
+    await expect(
+      authentication.authenticate({ onDeviceCode: vi.fn() }, AbortSignal.timeout(20)),
+    ).rejects.toMatchObject({ code: "timeout" });
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await rm(lockPath, { recursive: true });
+  });
+
+  it("releases the credential lock when cancellation interrupts refresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-refresh-cancel-"));
+    roots.push(root);
+    const path = join(root, "credentials", "chatgpt-oauth.json");
+    const expired = credential({ expires: 1 });
+    await createManagedChatGptCredentialStore({ path }).modify("openai-codex", async () => expired);
+    const authentication = createChatGptAuthentication({
+      store: createManagedChatGptCredentialStore({ path }),
+      oauth: adapter({ refresh: async () => await new Promise<OAuthCredential>(() => undefined) }),
+      now: () => 2_000,
+    });
+
+    await expect(authentication.authorization(AbortSignal.timeout(20))).rejects.toMatchObject({ code: "timeout" });
+    await expect(authentication.inspect()).resolves.toEqual({ state: "expired-refreshable" });
+    await expect(createManagedChatGptCredentialStore({ path }).read("openai-codex")).resolves.toEqual(expired);
+    await expect(lstat(`${path}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("reclaims one stale credential lock safely across concurrent contenders", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-stale-lock-"));
     roots.push(root);
@@ -353,11 +458,47 @@ describe("ChatGPT authentication", () => {
 
     const first = createManagedChatGptCredentialStore({ path });
     const second = createManagedChatGptCredentialStore({ path });
-    await expect(Promise.all([first.read("openai-codex"), second.read("openai-codex")])).resolves.toEqual([
-      credential(),
-      credential(),
-    ]);
+    await expect(
+      Promise.all([
+        first.modify("openai-codex", async () => undefined),
+        second.modify("openai-codex", async () => undefined),
+      ]),
+    ).resolves.toEqual([credential(), credential()]);
     await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readdir(join(root, "credentials"))).filter((entry) => entry.includes(".stale-"))).toEqual([]);
+  });
+
+  it("never claims a successor directory from a stale lock snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-agent-chatgpt-stale-successor-"));
+    roots.push(root);
+    const path = join(root, "credentials", "chatgpt-oauth.json");
+    await createManagedChatGptCredentialStore({ path }).modify("openai-codex", async () => credential());
+    const lockPath = `${path}.lock`;
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(
+      join(lockPath, "owner.json"),
+      JSON.stringify({ pid: 2_147_483_647, createdAt: new Date(0).toISOString(), token: "stale-owner" }),
+      { mode: 0o600 },
+    );
+    let swapped = false;
+    const store = createManagedChatGptCredentialStore({
+      path,
+      beforeStaleLockClaim: async () => {
+        if (swapped) return;
+        swapped = true;
+        await rm(lockPath, { recursive: true });
+        await mkdir(lockPath, { mode: 0o700 });
+        await writeFile(
+          join(lockPath, "owner.json"),
+          JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), token: "successor-owner" }),
+          { mode: 0o600 },
+        );
+        setTimeout(() => void rm(lockPath, { recursive: true, force: true }), 40);
+      },
+    });
+
+    await expect(store.modify("openai-codex", async () => undefined)).resolves.toEqual(credential());
+    expect(swapped).toBe(true);
     expect((await readdir(join(root, "credentials"))).filter((entry) => entry.includes(".stale-"))).toEqual([]);
   });
 
@@ -369,6 +510,8 @@ describe("ChatGPT authentication", () => {
     const store = createManagedChatGptCredentialStore({
       path,
       beforeCommit: async () => {
+        await rm(lockPath, { recursive: true });
+        await mkdir(lockPath, { mode: 0o700 });
         await writeFile(
           join(lockPath, "owner.json"),
           JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), token: "successor-owner" }),

@@ -125,11 +125,33 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     const hold = new Promise<void>((resolve) => {
       releaseAuthentication = resolve;
     });
+    let heartbeatWritten!: () => void;
+    const written = new Promise<void>((resolve) => {
+      heartbeatWritten = resolve;
+    });
+    let heartbeatAttempted!: () => void;
+    let releaseHeartbeat!: () => void;
+    const attempted = new Promise<void>((resolve) => {
+      heartbeatAttempted = resolve;
+    });
+    const holdHeartbeat = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    let heartbeatWrites = 0;
     const first = installManagedData({
       ...base,
       managedChats: ["120363000@g.us"],
       defaultRepository: "owner/repo",
       setupLockHeartbeatMillis: 5,
+      setupLockHeartbeatBeforeWrite: async () => {
+        if (heartbeatWrites > 0) return;
+        heartbeatAttempted();
+        await holdHeartbeat;
+      },
+      setupLockHeartbeatAfterWrite: async () => {
+        heartbeatWrites += 1;
+        if (heartbeatWrites === 1) heartbeatWritten();
+      },
       authenticateChatGpt: async (paths) => {
         await base.authenticateChatGpt(paths);
         authenticationStarted();
@@ -137,9 +159,11 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
       },
     });
     await started;
+    await attempted;
     const ownerPath = join(base.parent, ".managed.setup.lock", "owner.json");
     const before = JSON.parse(await readFile(ownerPath, "utf8")) as { heartbeatAt: string };
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseHeartbeat();
+    await written;
     const after = JSON.parse(await readFile(ownerPath, "utf8")) as { heartbeatAt: string };
     expect(Date.parse(after.heartbeatAt)).toBeGreaterThan(Date.parse(before.heartbeatAt));
 
@@ -153,6 +177,42 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
 
     releaseAuthentication();
     await expect(first).resolves.toMatchObject({ created: true });
+  });
+
+  it("drains an in-flight heartbeat before committing and releasing the setup lock", async () => {
+    const base = await fixture();
+    let heartbeatStarted!: () => void;
+    let releaseHeartbeat!: () => void;
+    const started = new Promise<void>((resolve) => {
+      heartbeatStarted = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    let heartbeatWrites = 0;
+    const installation = installManagedData({
+      ...base,
+      managedChats: ["120363000@g.us"],
+      defaultRepository: "owner/repo",
+      setupLockHeartbeatMillis: 1,
+      setupLockHeartbeatBeforeWrite: async () => {
+        heartbeatWrites += 1;
+        if (heartbeatWrites !== 1) return;
+        heartbeatStarted();
+        await hold;
+      },
+      authenticateChatGpt: async (paths) => {
+        await base.authenticateChatGpt(paths);
+        await started;
+      },
+    });
+
+    await started;
+    releaseHeartbeat();
+    await expect(installation).resolves.toMatchObject({ created: true });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(lstat(join(base.parent, ".managed.setup.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(heartbeatWrites).toBeGreaterThan(0);
   });
 
   it("distinguishes an absent install from a damaged install", async () => {
@@ -391,6 +451,52 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     await expect(lstat(stagingRoot)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(unrelated)).resolves.toMatchObject({ mode: expect.any(Number) });
     expect((await inspectManagedData(base)).state).toBe("configured");
+  });
+
+  it("preserves staging when a quarantined setup lock has a fresh heartbeat", async () => {
+    const base = await fixture();
+    const token = "9ef0bcc6-2286-4f2d-a897-2f5f4bccd167";
+    const lock = join(base.parent, ".managed.setup.lock");
+    const stagingRoot = join(base.parent, `.managed.setup-${token}`);
+    const ownerPath = join(lock, "owner.json");
+    await mkdir(lock, { mode: 0o700 });
+    await mkdir(stagingRoot, { mode: 0o700 });
+    await writeFile(join(stagingRoot, "credential-copy"), base.githubToken, { mode: 0o600 });
+    await writeFile(
+      ownerPath,
+      JSON.stringify({
+        pid: process.pid,
+        createdAt: "2000-01-01T00:00:00.000Z",
+        heartbeatAt: "2000-01-01T00:00:00.000Z",
+        token,
+        stagingRoot,
+      }),
+      { mode: 0o600 },
+    );
+
+    await expect(
+      installManagedData({
+        ...base,
+        managedChats: ["120363000@g.us"],
+        defaultRepository: "owner/repo",
+        beforeStaleSetupLockQuarantine: async () => {
+          await writeFile(
+            ownerPath,
+            JSON.stringify({
+              pid: process.pid,
+              createdAt: "2000-01-01T00:00:00.000Z",
+              heartbeatAt: new Date().toISOString(),
+              token,
+              stagingRoot,
+            }),
+            { mode: 0o600 },
+          );
+        },
+      }),
+    ).rejects.toThrow("ownership changed");
+
+    await expect(lstat(stagingRoot)).resolves.toBeDefined();
+    expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({ token });
   });
 
   it("resumes credential staging cleanup interrupted during stale-lock recovery", async () => {

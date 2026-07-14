@@ -230,7 +230,7 @@ export const runChatGptReadinessCheck = async (
   authentication: ChatGptAuthentication,
   options: ChatGptReadinessCheckOptions = {},
 ): Promise<ChatGptReadinessReceipt> => {
-  const authorization = await authentication.authorization();
+  const authorization = await authentication.authorization(options.signal);
   try {
     await (options.request ?? requestChatGptReadiness)(authorization, options.signal);
   } catch (cause) {

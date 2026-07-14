@@ -6,8 +6,6 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { managedPaths } from "../../src/managed/paths.ts";
-import { installManagedData } from "../../src/managed/installation.ts";
-import { createManagedChatGptCredentialStore } from "../../src/model/chatgpt-authentication.ts";
 
 const execute = promisify(execFile);
 const root = await mkdtemp(join(tmpdir(), "ambient-agent-packed-"));
@@ -15,6 +13,7 @@ const packDirectory = join(root, "pack");
 const installDirectory = join(root, "install");
 const homeDirectory = join(root, "home");
 const tokenPath = join(root, "github-token.txt");
+const oauthPreload = join(process.cwd(), "tests", "fixtures", "packed-oauth-fetch.cjs");
 const tarball = join(packDirectory, "ambient-agent-0.1.0.tgz");
 const executable = join(
   installDirectory,
@@ -29,6 +28,7 @@ const environment = {
   XDG_DATA_HOME: join(homeDirectory, ".local", "share"),
   LOCALAPPDATA: join(homeDirectory, "AppData", "Local"),
   PATH: `${join(installDirectory, "node_modules", ".bin")}${delimiter}${process.env.PATH ?? ""}`,
+  NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${oauthPreload}`].filter(Boolean).join(" "),
 };
 const executeAmbientAgent = (args: string[]) =>
   process.platform === "win32"
@@ -80,21 +80,17 @@ describe("packed ambient-agent executable", () => {
       });
       return;
     }
-    await installManagedData({
-      dataDirectory: paths.root,
-      managedChats: ["120363000@g.us"],
-      defaultRepository: "owner/repo",
-      githubToken: "packed-github-secret",
-      authenticateChatGpt: async (stagingPaths) => {
-        const store = createManagedChatGptCredentialStore({ path: stagingPaths.chatGptOAuthCredential });
-        await store.modify("openai-codex", async () => ({
-          type: "oauth",
-          access: "packed-access-secret",
-          refresh: "packed-refresh-secret",
-          expires: 2_000_000_000_000,
-        }));
-      },
-    });
+    const init = await executeAmbientAgent([
+      "init",
+      "--chat",
+      "120363000@g.us",
+      "--repository",
+      "owner/repo",
+      "--github-token-file",
+      tokenPath,
+    ]);
+    expect(init.stdout).toContain("PACK-TEST");
+    expect(init.stdout).toContain("Created secure managed installation");
 
     const status = await executeAmbientAgent(["status", "--json"]);
     expect(JSON.parse(status.stdout)).toMatchObject({
@@ -103,7 +99,7 @@ describe("packed ambient-agent executable", () => {
     });
     const config = await readFile(paths.config, "utf8");
     expect(config).not.toContain("packed-github-secret");
-    expect(config).not.toContain("packed-access-secret");
+    expect(config).not.toContain("packed-refresh-secret");
     expect((await stat(paths.root)).mode & 0o777).toBe(0o700);
     expect((await stat(paths.githubCredential)).mode & 0o777).toBe(0o600);
     expect((await stat(paths.chatGptOAuthCredential)).mode & 0o777).toBe(0o600);

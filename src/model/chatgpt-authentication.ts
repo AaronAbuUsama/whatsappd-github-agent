@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { CredentialStore, ModelAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import {
   loginOpenAICodexDeviceCode,
@@ -51,13 +51,13 @@ export type ModelAuthorization = ModelAuth;
 export interface ChatGptAuthentication {
   authenticate(callbacks: DeviceCodeCallbacks, signal?: AbortSignal): Promise<void>;
   inspect(): Promise<ChatGptAuthenticationStatus>;
-  authorization(): Promise<ModelAuthorization>;
+  authorization(signal?: AbortSignal): Promise<ModelAuthorization>;
 }
 
 export interface ChatGptOAuthAdapter {
   login(callbacks: DeviceCodeCallbacks, signal?: AbortSignal): Promise<OAuthCredential>;
-  refresh(credential: OAuthCredential): Promise<OAuthCredential>;
-  authorization(credential: OAuthCredential): Promise<ModelAuthorization>;
+  refresh(credential: OAuthCredential, signal?: AbortSignal): Promise<OAuthCredential>;
+  authorization(credential: OAuthCredential, signal?: AbortSignal): Promise<ModelAuthorization>;
 }
 
 export interface CreateChatGptAuthenticationOptions {
@@ -68,13 +68,22 @@ export interface CreateChatGptAuthenticationOptions {
 
 export interface ManagedChatGptCredentialStoreOptions {
   readonly path: string;
+  readonly managedRoot?: string;
   readonly legacyPath?: string;
   readonly onLegacyMigration?: () => Promise<void>;
   readonly beforeCommit?: (temporaryPath: string, targetPath: string) => Promise<void>;
+  readonly beforeStaleLockClaim?: (lockPath: string) => Promise<void>;
 }
 
 export interface ChatGptCredentialStore extends CredentialStore {
-  replace(providerId: string, credential: OAuthCredential): Promise<void>;
+  read(providerId: string, signal?: AbortSignal): Promise<OAuthCredential | undefined>;
+  modify(
+    providerId: string,
+    change: (credential: OAuthCredential | undefined) => Promise<OAuthCredential | undefined>,
+    signal?: AbortSignal,
+  ): Promise<OAuthCredential | undefined>;
+  replace(providerId: string, credential: OAuthCredential, signal?: AbortSignal): Promise<void>;
+  delete(providerId: string, signal?: AbortSignal): Promise<void>;
 }
 
 const DIRECTORY_MODE = 0o700;
@@ -84,6 +93,8 @@ const LOCK_WAIT_MILLIS = 20;
 const LOCK_TIMEOUT_MILLIS = 20 * 60 * 1_000;
 const STALE_LOCK_MILLIS = 30_000;
 const LOCK_OWNER_FILE = "owner.json";
+const LOCK_RECLAIM_FILE = "reclaiming.json";
+const LOCK_RELEASE_FILE = "releasing.json";
 
 interface CredentialLockOwner {
   readonly pid: number;
@@ -94,7 +105,34 @@ interface CredentialLockOwner {
 const errorCode = (cause: unknown): string | undefined =>
   typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined;
 
-const delay = async (millis: number): Promise<void> => await new Promise((resolve) => setTimeout(resolve, millis));
+const abortError = (signal: AbortSignal): unknown =>
+  signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) throw abortError(signal);
+};
+
+const abortable = async <T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  throwIfAborted(signal);
+  if (signal === undefined) return await operation;
+  return await new Promise<T>((resolveOperation, rejectOperation) => {
+    const onAbort = () => rejectOperation(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolveOperation(value);
+      },
+      (cause: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        rejectOperation(cause);
+      },
+    );
+  });
+};
+
+const delay = async (millis: number, signal?: AbortSignal): Promise<void> =>
+  await abortable(new Promise((resolve) => setTimeout(resolve, millis)), signal);
 
 const pathExists = async (path: string | undefined): Promise<boolean> => {
   if (path === undefined) return false;
@@ -107,9 +145,61 @@ const pathExists = async (path: string | undefined): Promise<boolean> => {
   }
 };
 
-const ensurePrivateDirectory = async (path: string): Promise<void> => {
-  await mkdir(path, { recursive: true, mode: DIRECTORY_MODE });
-  await chmod(path, DIRECTORY_MODE);
+const assertManagedCredentialDirectory = async (path: string, managedRoot: string): Promise<void> => {
+  if (resolve(path) !== resolve(join(managedRoot, "credentials"))) {
+    throw new Error("The managed ChatGPT credential path escapes the managed data root.");
+  }
+  const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
+  for (const [directoryPath, message] of [
+    [managedRoot, "The managed data root is not a private directory."],
+    [path, "The managed ChatGPT credential directory is not a private directory."],
+  ] as const) {
+    let directory;
+    try {
+      directory = await open(directoryPath, constants.O_RDONLY | noFollow);
+      if (!(await directory.stat()).isDirectory()) throw new Error(message);
+    } finally {
+      await directory?.close();
+    }
+  }
+};
+
+const ensurePrivateDirectory = async (path: string, managedRoot?: string): Promise<void> => {
+  if (managedRoot === undefined) {
+    await mkdir(path, { recursive: true, mode: DIRECTORY_MODE });
+  } else {
+    try {
+      await assertManagedCredentialDirectory(path, managedRoot);
+    } catch (cause) {
+      if (errorCode(cause) === "ENOENT") {
+        throw new Error("The managed ChatGPT credential directory is missing.", { cause });
+      }
+      throw cause;
+    }
+  }
+  const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
+  let directory;
+  try {
+    directory = await open(path, constants.O_RDONLY | noFollow);
+    if (!(await directory.stat()).isDirectory()) {
+      throw new Error("The managed ChatGPT credential directory is not a private directory.");
+    }
+    await directory.chmod(DIRECTORY_MODE);
+  } catch (cause) {
+    throw cause;
+  } finally {
+    await directory?.close();
+  }
+};
+
+const assertReplaceableCredentialPath = async (path: string): Promise<void> => {
+  try {
+    if (!(await lstat(path)).isFile()) {
+      throw new Error("The managed ChatGPT credential path is not a regular file.");
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
+  }
 };
 
 const processIsAlive = (pid: number): boolean => {
@@ -156,9 +246,11 @@ const atomicWriteCredential = async (
   path: string,
   credential: OAuthCredential,
   beforeCommit?: ManagedChatGptCredentialStoreOptions["beforeCommit"],
+  managedRoot?: string,
 ): Promise<void> => {
   const directory = dirname(path);
-  await ensurePrivateDirectory(directory);
+  await ensurePrivateDirectory(directory, managedRoot);
+  await assertReplaceableCredentialPath(path);
   const temporary = `${path}.${randomUUID()}.tmp`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -170,7 +262,8 @@ const atomicWriteCredential = async (
     await beforeCommit?.(temporary, path);
     await rename(temporary, path);
     await chmod(path, FILE_MODE);
-    const directoryHandle = await open(directory, constants.O_RDONLY);
+    const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
+    const directoryHandle = await open(directory, constants.O_RDONLY | noFollow);
     try {
       await directoryHandle.sync();
     } finally {
@@ -193,38 +286,60 @@ const parseCredentialLockOwner = (value: unknown): CredentialLockOwner | undefin
 const readCredentialLockOwner = async (lockPath: string): Promise<CredentialLockOwner | undefined> =>
   parseCredentialLockOwner(await readPrivateJson(join(lockPath, LOCK_OWNER_FILE)));
 
-const restoreCredentialLock = async (quarantinePath: string, lockPath: string): Promise<void> => {
+const removeOwnedMarker = async (markerPath: string, token: string): Promise<void> => {
   try {
-    await rename(quarantinePath, lockPath);
-  } catch {
-    // Keep the quarantine intact rather than deleting a lock whose ownership changed.
+    const marker = await readPrivateJson(markerPath);
+    if (typeof marker === "object" && marker !== null && (marker as Record<string, unknown>).token === token) {
+      await rm(markerPath, { force: true });
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
   }
 };
 
 const releaseCredentialLock = async (lockPath: string, token: string): Promise<void> => {
-  const owner = await readCredentialLockOwner(lockPath);
-  if (owner?.token !== token) return;
-  const quarantinePath = `${lockPath}.release-${token}`;
+  let candidate;
   try {
-    await rename(lockPath, quarantinePath);
+    candidate = await lstat(lockPath);
   } catch (cause) {
     if (errorCode(cause) === "ENOENT") return;
     throw cause;
   }
-  const movedOwner = await readCredentialLockOwner(quarantinePath);
-  if (movedOwner?.token !== token) {
-    await restoreCredentialLock(quarantinePath, lockPath);
-    return;
+  const owner = await readCredentialLockOwner(lockPath);
+  if (owner?.token !== token) return;
+  const releasePath = join(lockPath, LOCK_RELEASE_FILE);
+  let release;
+  try {
+    release = await open(releasePath, "wx", FILE_MODE);
+    await release.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
+    await release.sync();
+  } catch (cause) {
+    if (["ENOENT", "EEXIST", "EINVAL"].includes(errorCode(cause) ?? "")) return;
+    throw cause;
+  } finally {
+    await release?.close();
   }
-  await rm(quarantinePath, { recursive: true, force: true });
+  try {
+    const claimed = await lstat(lockPath);
+    if (claimed.dev !== candidate.dev || claimed.ino !== candidate.ino) return;
+    if ((await readCredentialLockOwner(lockPath))?.token !== token) return;
+    await rm(lockPath, { recursive: true, force: true });
+  } finally {
+    await removeOwnedMarker(releasePath, token);
+  }
 };
 
-const acquireCredentialLock = async (path: string): Promise<() => Promise<void>> => {
+const acquireCredentialLock = async (
+  path: string,
+  signal?: AbortSignal,
+  options: Pick<ManagedChatGptCredentialStoreOptions, "managedRoot" | "beforeStaleLockClaim"> = {},
+): Promise<() => Promise<void>> => {
   const lockPath = `${path}.lock`;
   const started = Date.now();
   const token = randomUUID();
-  await ensurePrivateDirectory(dirname(path));
+  await ensurePrivateDirectory(dirname(path), options.managedRoot);
   while (true) {
+    throwIfAborted(signal);
     try {
       await mkdir(lockPath, { mode: DIRECTORY_MODE });
       await chmod(lockPath, DIRECTORY_MODE);
@@ -257,25 +372,45 @@ const acquireCredentialLock = async (path: string): Promise<() => Promise<void>>
         const stale = owner !== undefined ? !processIsAlive(owner.pid) : Date.now() - lock.mtimeMs > STALE_LOCK_MILLIS;
         if (stale) {
           const candidate = await lstat(lockPath);
-          const candidateOwner = await readCredentialLockOwner(lockPath).catch(() => undefined);
-          const candidateIsStale =
-            candidateOwner !== undefined
-              ? !processIsAlive(candidateOwner.pid)
-              : Date.now() - candidate.mtimeMs > STALE_LOCK_MILLIS;
-          if (!candidateIsStale) continue;
-          const quarantinePath = `${lockPath}.stale-${randomUUID()}`;
+          await options.beforeStaleLockClaim?.(lockPath);
+          const reclaimPath = join(lockPath, LOCK_RECLAIM_FILE);
+          let ownedReclaimPath = reclaimPath;
+          let reclaim;
           try {
-            await rename(lockPath, quarantinePath);
-          } catch (renameCause) {
-            if (errorCode(renameCause) === "ENOENT") continue;
-            throw renameCause;
+            reclaim = await open(reclaimPath, "wx", FILE_MODE);
+            await reclaim.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
+            await reclaim.sync();
+          } catch (claimCause) {
+            if (["ENOENT", "EEXIST", "EINVAL"].includes(errorCode(claimCause) ?? "")) continue;
+            throw claimCause;
+          } finally {
+            await reclaim?.close();
           }
-          const moved = await lstat(quarantinePath);
-          if (moved.dev !== candidate.dev || moved.ino !== candidate.ino) {
-            await restoreCredentialLock(quarantinePath, lockPath);
-            throw new Error("The managed ChatGPT credential lock changed ownership during stale recovery.");
+          try {
+            const claimed = await lstat(lockPath);
+            if (claimed.dev !== candidate.dev || claimed.ino !== candidate.ino) continue;
+            const claimedOwner = await readCredentialLockOwner(lockPath).catch(() => undefined);
+            const claimedIsStale =
+              claimedOwner !== undefined
+                ? !processIsAlive(claimedOwner.pid)
+                : Date.now() - candidate.mtimeMs > STALE_LOCK_MILLIS;
+            if (!claimedIsStale) continue;
+            const quarantinePath = `${lockPath}.stale-${token}`;
+            try {
+              await rename(lockPath, quarantinePath);
+            } catch (renameCause) {
+              if (errorCode(renameCause) === "ENOENT") continue;
+              throw renameCause;
+            }
+            ownedReclaimPath = join(quarantinePath, LOCK_RECLAIM_FILE);
+            const moved = await lstat(quarantinePath);
+            if (moved.dev !== candidate.dev || moved.ino !== candidate.ino) {
+              throw new Error("The managed ChatGPT credential lock changed ownership during stale recovery.");
+            }
+            await rm(quarantinePath, { recursive: true, force: true });
+          } finally {
+            await removeOwnedMarker(ownedReclaimPath, token);
           }
-          await rm(quarantinePath, { recursive: true, force: true });
           continue;
         }
       } catch (inspectionCause) {
@@ -285,7 +420,7 @@ const acquireCredentialLock = async (path: string): Promise<() => Promise<void>>
       if (Date.now() - started >= LOCK_TIMEOUT_MILLIS) {
         throw new Error("Timed out waiting for the managed ChatGPT credential lock.");
       }
-      await delay(LOCK_WAIT_MILLIS);
+      await delay(LOCK_WAIT_MILLIS, signal);
     }
   }
 };
@@ -302,12 +437,7 @@ export const createManagedChatGptCredentialStore = (
   const readUnlocked = async (): Promise<OAuthCredential | undefined> => {
     const current = await readPrivateJson(options.path);
     if (current !== undefined) {
-      const credential = validateChatGptOAuthCredential(current);
-      if (options.legacyPath !== undefined && (await pathExists(options.legacyPath))) {
-        await options.onLegacyMigration?.();
-        await rm(options.legacyPath, { force: true });
-      }
-      return credential;
+      return validateChatGptOAuthCredential(current);
     }
     if (options.legacyPath === undefined) return undefined;
     const legacy = await readPrivateJson(options.legacyPath);
@@ -316,15 +446,21 @@ export const createManagedChatGptCredentialStore = (
       throw new Error("The provisional managed ChatGPT credential is malformed.");
     }
     const migrated = validateChatGptOAuthCredential((legacy as Record<string, unknown>)[CHATGPT_PROVIDER_ID]);
-    await atomicWriteCredential(options.path, migrated, options.beforeCommit);
-    await options.onLegacyMigration?.();
-    await rm(options.legacyPath, { force: true });
     return migrated;
   };
 
-  const locked = async <T>(task: () => Promise<T>): Promise<T> => {
-    const release = await acquireCredentialLock(options.path);
+  const finishLegacyMigration = async (): Promise<void> => {
+    await options.onLegacyMigration?.();
+    if (options.legacyPath !== undefined && (await pathExists(options.legacyPath))) {
+      await assertReplaceableCredentialPath(options.legacyPath);
+      await rm(options.legacyPath, { force: true });
+    }
+  };
+
+  const locked = async <T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    const release = await acquireCredentialLock(options.path, signal, options);
     try {
+      throwIfAborted(signal);
       return await task();
     } finally {
       await release();
@@ -332,18 +468,15 @@ export const createManagedChatGptCredentialStore = (
   };
 
   return {
-    async read(providerId) {
+    async read(providerId, signal) {
       assertProvider(providerId);
-      if (
-        !(await pathExists(options.path)) &&
-        !(await pathExists(options.legacyPath)) &&
-        !(await pathExists(`${options.path}.lock`))
-      ) {
-        return undefined;
+      throwIfAborted(signal);
+      if (options.managedRoot !== undefined) {
+        await assertManagedCredentialDirectory(dirname(options.path), options.managedRoot);
       }
-      return await locked(readUnlocked);
+      return await readUnlocked();
     },
-    async modify(providerId, change) {
+    async modify(providerId, change, signal) {
       assertProvider(providerId);
       return await locked(async () => {
         const current = await readUnlocked();
@@ -351,26 +484,29 @@ export const createManagedChatGptCredentialStore = (
         if (next === undefined) return current;
         if (next.type !== "oauth") throw new Error("Only a ChatGPT OAuth credential may be stored.");
         const credential = validateChatGptOAuthCredential(next);
-        await atomicWriteCredential(options.path, credential, options.beforeCommit);
+        throwIfAborted(signal);
+        await atomicWriteCredential(options.path, credential, options.beforeCommit, options.managedRoot);
+        await finishLegacyMigration();
         return credential;
-      });
+      }, signal);
     },
-    async replace(providerId, next) {
+    async replace(providerId, next, signal) {
       assertProvider(providerId);
       const credential = validateChatGptOAuthCredential(next);
       await locked(async () => {
-        await atomicWriteCredential(options.path, credential, options.beforeCommit);
         if (options.legacyPath !== undefined && (await pathExists(options.legacyPath))) {
-          await options.onLegacyMigration?.();
-          await rm(options.legacyPath, { force: true });
+          await assertReplaceableCredentialPath(options.legacyPath);
         }
-      });
+        throwIfAborted(signal);
+        await atomicWriteCredential(options.path, credential, options.beforeCommit, options.managedRoot);
+        await finishLegacyMigration();
+      }, signal);
     },
-    async delete(providerId) {
+    async delete(providerId, signal) {
       assertProvider(providerId);
       await locked(async () => {
         await rm(options.path, { force: true });
-      });
+      }, signal);
     },
   };
 };
@@ -455,6 +591,7 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
   const oauth = options.oauth ?? piChatGptOAuthAdapter();
   const now = options.now ?? Date.now;
   let unusableMessage: string | undefined;
+  const store = options.store as ChatGptCredentialStore;
 
   return {
     async authenticate(callbacks, signal) {
@@ -467,11 +604,13 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
       }
       try {
         if ("replace" in options.store && typeof options.store.replace === "function") {
-          await options.store.replace(CHATGPT_PROVIDER_ID, credential);
+          await store.replace(CHATGPT_PROVIDER_ID, credential, signal);
         } else {
+          throwIfAborted(signal);
           await options.store.modify(CHATGPT_PROVIDER_ID, async () => credential);
         }
       } catch (cause) {
+        if (signal?.aborted) throw loginFailure(cause, signal);
         throw new ChatGptAuthenticationError(
           "persistence-failed",
           "ChatGPT login succeeded, but the managed credential could not be saved; login is not ready.",
@@ -500,11 +639,12 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
       return credential.expires <= now() ? { state: "expired-refreshable" } : { state: "ready" };
     },
 
-    async authorization() {
+    async authorization(signal) {
       try {
+        throwIfAborted(signal);
         let current;
         try {
-          current = await options.store.read(CHATGPT_PROVIDER_ID);
+          current = await store.read(CHATGPT_PROVIDER_ID, signal);
         } catch (cause) {
           throw new ChatGptAuthenticationError(
             "persistence-failed",
@@ -529,18 +669,19 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
           let refreshFailed = false;
           let refreshed;
           try {
-            refreshed = await options.store.modify(CHATGPT_PROVIDER_ID, async (latest) => {
+            refreshed = await store.modify(CHATGPT_PROVIDER_ID, async (latest) => {
               if (latest === undefined) return undefined;
               const validated = validateChatGptOAuthCredential(latest);
               if (validated.expires > now()) return undefined;
               try {
-                return validateChatGptOAuthCredential(await oauth.refresh(validated));
+                return validateChatGptOAuthCredential(await abortable(oauth.refresh(validated, signal), signal));
               } catch (cause) {
                 refreshFailed = true;
                 throw cause;
               }
-            });
+            }, signal);
           } catch (cause) {
+            if (signal?.aborted) throw loginFailure(cause, signal);
             throw new ChatGptAuthenticationError(
               refreshFailed ? "refresh-failed" : "persistence-failed",
               refreshFailed
@@ -559,8 +700,9 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
         }
         let authorization: ModelAuthorization;
         try {
-          authorization = await oauth.authorization(credential);
+          authorization = await abortable(oauth.authorization(credential, signal), signal);
         } catch (cause) {
+          if (signal?.aborted) throw loginFailure(cause, signal);
           throw new ChatGptAuthenticationError(
             "provider-rejected",
             "ChatGPT could not derive model authorization from the managed credential.",
@@ -576,6 +718,12 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
         unusableMessage = undefined;
         return authorization;
       } catch (cause) {
+        if (
+          cause instanceof ChatGptAuthenticationError &&
+          (cause.code === "cancelled" || cause.code === "timeout")
+        ) {
+          throw cause;
+        }
         unusableMessage = cause instanceof Error ? cause.message : String(cause);
         throw cause;
       }

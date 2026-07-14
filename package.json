@@ -32,7 +32,7 @@
   ],
   "type": "module",
   "scripts": {
-    "dev": "flue dev --target node",
+    "dev": "pnpm run build && pnpm start",
     "build": "pnpm run build:server && pnpm run build:cli",
     "build:server": "flue build --target node",
     "build:cli": "vp pack",

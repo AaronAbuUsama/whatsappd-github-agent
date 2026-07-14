@@ -33,7 +33,7 @@ describe("the post-Eve production cut", () => {
       scripts: Record<string, string>;
     };
 
-    expect(packageJson.scripts.dev).toBe("flue dev --target node");
+    expect(packageJson.scripts.dev).toBe("pnpm run build && pnpm start");
     expect(packageJson.scripts["build:server"]).toBe("flue build --target node");
     expect(packageJson.scripts["build:cli"]).toBe("vp pack");
     expect(packageJson.scripts.build).toBe("pnpm run build:server && pnpm run build:cli");

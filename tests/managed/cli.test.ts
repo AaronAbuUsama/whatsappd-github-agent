@@ -63,6 +63,20 @@ const files = async () => {
 describe("managed CLI", () => {
   it("starts the generated runtime from the selected managed installation", async () => {
     const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
     const cli = harness();
     const starts: ManagedPaths[] = [];
 
@@ -76,6 +90,44 @@ describe("managed CLI", () => {
     ).toBe(0);
     expect(starts).toEqual([managedPaths({ dataDirectory: paths.data })]);
     expect(cli.stderr()).toBe("");
+  });
+
+  it("refuses to start an unconfigured or structurally damaged installation", async () => {
+    const paths = await files();
+    const unconfigured = harness();
+    const startRuntime = vi.fn(async () => undefined);
+
+    expect(
+      await runCli(["--data-dir", paths.data, "start"], { ...unconfigured, startRuntime }),
+    ).toBe(1);
+    expect(unconfigured.stderr()).toContain("not configured");
+    expect(startRuntime).not.toHaveBeenCalled();
+
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const outside = join(paths.parent, "start-outside-credentials");
+    await mkdir(outside, { mode: 0o700 });
+    await rm(managed.credentials, { recursive: true });
+    await symlink(outside, managed.credentials);
+    const damaged = harness();
+
+    expect(await runCli(["--data-dir", paths.data, "start"], { ...damaged, startRuntime })).toBe(1);
+    expect(damaged.stderr()).toContain("Refusing to start damaged managed data");
+    expect(startRuntime).not.toHaveBeenCalled();
+    await expect(lstat(join(outside, "chatgpt-oauth.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("loads managed configuration and the optional .env before importing the generated runtime", async () => {
@@ -453,6 +505,68 @@ describe("managed CLI", () => {
     expect((await lstat(credentialPath)).mode & 0o777).toBe(0o600);
   });
 
+  it("refuses non-file credential nodes before starting device authentication", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const credentialPath = managedPaths({ dataDirectory: paths.data }).chatGptOAuthCredential;
+    await rm(credentialPath);
+    await mkdir(credentialPath, { mode: 0o700 });
+    const cli = harness();
+    const login = vi.fn(cli.chatGptOAuth.login);
+
+    expect(
+      await runCli(["--data-dir", paths.data, "auth"], {
+        ...cli,
+        chatGptOAuth: { ...cli.chatGptOAuth, login },
+      }),
+    ).toBe(1);
+    expect(cli.stderr()).toContain("run ambient-agent doctor");
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a missing legacy credential reference during explicit reauthentication", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const config = JSON.parse(await readFile(managed.config, "utf8")) as { model: { credential: string } };
+    config.model.credential = "pi-auth";
+    await writeFile(managed.config, JSON.stringify(config), { mode: 0o600 });
+    await rm(managed.chatGptOAuthCredential);
+    const reauth = harness();
+
+    expect(await runCli(["--data-dir", paths.data, "auth"], reauth)).toBe(0);
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({
+      model: { credential: "chatgpt-oauth" },
+    });
+    await expect(lstat(managed.chatGptOAuthCredential)).resolves.toBeDefined();
+  });
+
   it("does not inspect or migrate authentication through a damaged credential-directory symlink", async () => {
     const paths = await files();
     await runCli(
@@ -493,6 +607,9 @@ describe("managed CLI", () => {
       state: "damaged",
       modelAuthentication: { state: "unusable" },
     });
+    const textStatus = harness();
+    expect(await runCli(["--data-dir", paths.data, "status"], textStatus)).toBe(3);
+    expect(textStatus.stdout()).toContain("Run ambient-agent doctor and repair the managed installation");
     await expect(lstat(join(outside, "pi-auth.json"))).resolves.toBeDefined();
     await expect(lstat(join(outside, "chatgpt-oauth.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(join(outside, "chatgpt-oauth.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });

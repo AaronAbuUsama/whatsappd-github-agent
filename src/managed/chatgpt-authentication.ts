@@ -10,6 +10,7 @@ export const createManagedChatGptAuthentication = (paths: ManagedPaths, oauth?: 
   createChatGptAuthentication({
     store: createManagedChatGptCredentialStore({
       path: paths.chatGptOAuthCredential,
+      managedRoot: paths.root,
       legacyPath: paths.legacyPiAuthCredential,
       onLegacyMigration: async () => await migrateManagedChatGptCredentialReference(paths.config),
     }),
