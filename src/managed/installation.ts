@@ -407,10 +407,11 @@ const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
 
 export const inspectManagedData = async (
   options: ManagedPathEnvironment = {},
+  inspectionOptions: { readonly ignoreSetupLock?: boolean } = {},
 ): Promise<InstallationInspection> => {
   const paths = managedPaths(options);
   const platform = options.platform ?? process.platform;
-  const lockDiagnostics = await inspectSetupLock(paths.root);
+  const lockDiagnostics = inspectionOptions.ignoreSetupLock ? [] : await inspectSetupLock(paths.root);
   let rootExists: boolean;
   try {
     rootExists = await exists(paths.root);
@@ -589,7 +590,7 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
 
   const stagingRoot = lock.stagingRoot;
   try {
-    const current = await inspectManagedData(input);
+    const current = await inspectManagedData(input, { ignoreSetupLock: true });
     if (current.state === "configured") return { created: false, inspection: current };
     if (current.state === "damaged") {
       throw new Error(`Refusing to replace existing managed data at ${targetPaths.root}.`);

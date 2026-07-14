@@ -514,17 +514,22 @@ export const createChatGptAuthentication = (options: CreateChatGptAuthentication
           let refreshFailed = false;
           let refreshed;
           try {
-            refreshed = await store.modify(CHATGPT_PROVIDER_ID, async (latest) => {
-              if (latest === undefined) return undefined;
-              const validated = validateChatGptOAuthCredential(latest);
-              if (validated.expires > now()) return undefined;
-              try {
-                return validateChatGptOAuthCredential(await abortable(oauth.refresh(validated, signal), signal));
-              } catch (cause) {
-                refreshFailed = true;
-                throw cause;
-              }
-            }, signal);
+            const refreshOperation = store.modify(
+              CHATGPT_PROVIDER_ID,
+              async (latest) => {
+                if (latest === undefined) return undefined;
+                const validated = validateChatGptOAuthCredential(latest);
+                if (validated.expires > now()) return undefined;
+                try {
+                  return validateChatGptOAuthCredential(await oauth.refresh(validated, signal));
+                } catch (cause) {
+                  refreshFailed = true;
+                  throw cause;
+                }
+              },
+              signal,
+            );
+            refreshed = await abortable(refreshOperation, signal);
           } catch (cause) {
             if (signal?.aborted) throw loginFailure(cause, signal);
             throw new ChatGptAuthenticationError(
