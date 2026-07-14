@@ -37,7 +37,7 @@
     "build:server": "flue build --target node",
     "build:cli": "vp pack",
     "prepack": "pnpm run build",
-    "start": "node --env-file-if-exists=.env dist/server.mjs",
+    "start": "node dist/cli/main.js start",
     "whatsapp:dry-run": "tsx scripts/whatsapp-dry-run.ts",
     "typecheck": "tsc --noEmit",
     "test": "vp test run",

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,15 +11,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { IncomingMessage } from "../../src/coalescer/events.ts";
 import type { FakeGitHubProofEvent } from "../../src/host/fake-github-proof-host.ts";
 import type { FakeWhatsAppEvent } from "../../src/host/fake-whatsapp-host.ts";
-import { managedPaths } from "../../src/managed/paths.ts";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const fixtureRoot = join(repoRoot, "tests/fixtures/ambience");
 const tempRoot = mkdtempSync(join(tmpdir(), "ambience-flue-"));
 const buildRoot = mkdtempSync(join(fixtureRoot, ".test-build-"));
 const outputRoot = join(buildRoot, "dist");
-const managed = managedPaths({ homeDirectory: tempRoot, environment: {} });
-const databasePath = managed.flueDatabase;
+const databasePath = join(tempRoot, "flue.sqlite");
 const githubIngressDatabasePath = join(tempRoot, "github-ingress.db");
 const githubWebhookSecret = "fixture-github-webhook-secret";
 
@@ -39,13 +37,9 @@ async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
   const port = await unusedPort();
   origin = `http://127.0.0.1:${port}`;
   server = spawn(process.execPath, [join(outputRoot, "server.mjs")], {
-    cwd: buildRoot,
+    cwd: tempRoot,
     env: {
       ...process.env,
-      HOME: tempRoot,
-      LOCALAPPDATA: "",
-      USERPROFILE: tempRoot,
-      XDG_DATA_HOME: "",
       GITHUB_WEBHOOK_SECRET: githubWebhookSecret,
       GITHUB_CHAT_ROUTES: "acme/widgets=github-ingress-29@g.us",
       GITHUB_INGRESS_DB_PATH: githubIngressDatabasePath,
@@ -303,7 +297,6 @@ async function getRun(runId: string): Promise<TestRunRecord> {
 }
 
 beforeAll(async () => {
-  mkdirSync(managed.root, { recursive: true });
   const build = spawn(
     "pnpm",
     ["exec", "flue", "build", "--target", "node", "--root", fixtureRoot, "--output", outputRoot],

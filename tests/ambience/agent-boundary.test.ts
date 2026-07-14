@@ -14,6 +14,6 @@ describe("Ambience admission boundary", () => {
       scripts?: Record<string, string>;
     };
 
-    expect(packageJson.scripts?.["start"]).toBe("node --env-file-if-exists=.env dist/server.mjs");
+    expect(packageJson.scripts?.["start"]).toBe("node dist/cli/main.js start");
   });
 });

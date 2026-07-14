@@ -37,7 +37,7 @@ describe("the post-Eve production cut", () => {
     expect(packageJson.scripts["build:server"]).toBe("flue build --target node");
     expect(packageJson.scripts["build:cli"]).toBe("vp pack");
     expect(packageJson.scripts.build).toBe("pnpm run build:server && pnpm run build:cli");
-    expect(packageJson.scripts.start).toBe("node --env-file-if-exists=.env dist/server.mjs");
+    expect(packageJson.scripts.start).toBe("node dist/cli/main.js start");
     expect(Object.keys(packageJson.scripts)).not.toContain("ambience:build");
     expect(Object.values(packageJson.scripts).join("\n")).not.toMatch(
       /(?:eve|src\/index\.ts|coalescer\/(?:doorway|live|repl|voice|worker)|spike-(?:loopback|resume))/,

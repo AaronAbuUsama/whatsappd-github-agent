@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli, type CliOutput } from "../../src/cli/program.ts";
-import { managedPaths } from "../../src/managed/paths.ts";
+import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -47,6 +47,23 @@ const files = async () => {
 };
 
 describe("managed CLI", () => {
+  it("starts the generated runtime from the selected managed installation", async () => {
+    const paths = await files();
+    const cli = harness();
+    const starts: ManagedPaths[] = [];
+
+    expect(
+      await runCli(["--data-dir", paths.data, "start"], {
+        ...cli,
+        startRuntime: async (managed) => {
+          starts.push(managed);
+        },
+      }),
+    ).toBe(0);
+    expect(starts).toEqual([managedPaths({ dataDirectory: paths.data })]);
+    expect(cli.stderr()).toBe("");
+  });
+
   it("supports a fully scripted setup and deterministic status", async () => {
     const paths = await files();
     const init = harness();
