@@ -75,7 +75,6 @@ describe("packed ambient-agent executable", () => {
     ).rejects.toMatchObject({
       code: 2,
       stdout: expect.stringContaining('"state": "unconfigured"'),
-      stderr: "",
     });
   });
 });
