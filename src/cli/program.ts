@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "@commander-js/extra-typings";
 import * as prompts from "@clack/prompts";
+import packageManifest from "../../package.json" with { type: "json" };
 
 import { inspectManagedData, type InstallationInspection } from "../managed/installation.js";
 import { createManagedChatGptAuthentication } from "../managed/chatgpt-authentication.js";
@@ -457,7 +458,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   const program = new Command()
     .name("ambient-agent")
     .description("Install and operate the Ambient Agent managed runtime")
-    .version("0.1.0")
+    .version(packageManifest.version)
     .option("--data-dir <path>", "override the managed data directory")
     .configureOutput({ writeOut: output.stdout, writeErr: output.stderr })
     .exitOverride();

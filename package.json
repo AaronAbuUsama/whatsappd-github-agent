@@ -1,6 +1,6 @@
 {
   "name": "ambient-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "description": "Ambience: a continuing ambient agent on Flue for managed WhatsApp chats and authorized GitHub issue management.",
   "keywords": [

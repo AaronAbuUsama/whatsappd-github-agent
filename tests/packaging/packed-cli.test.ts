@@ -166,13 +166,16 @@ describe("packed ambient-agent executable", () => {
   it("is a normal executable Node npm bin produced by Vite+", async () => {
     const installedManifest = JSON.parse(
       await readFile(join(installDirectory, "node_modules", "ambient-agent", "package.json"), "utf8"),
-    ) as { readonly bin?: unknown };
+    ) as { readonly bin?: unknown; readonly version: string };
     expect(installedManifest.bin).toEqual({ "ambient-agent": "dist/cli/main.js" });
     const installedEntry = join(installDirectory, "node_modules", "ambient-agent", "dist", "cli", "main.js");
     expect((await readFile(installedEntry, "utf8")).startsWith("#!/usr/bin/env node\n")).toBe(true);
     if (process.platform !== "win32") expect((await stat(installedEntry)).mode & 0o111).not.toBe(0);
     await expect(executeAmbientAgent(["--help"])).resolves.toMatchObject({
       stdout: expect.stringContaining("Install and operate the Ambient Agent managed runtime"),
+    });
+    await expect(executeAmbientAgent(["--version"])).resolves.toMatchObject({
+      stdout: `${installedManifest.version}\n`,
     });
   });
 

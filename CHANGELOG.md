@@ -1,5 +1,11 @@
 # ambient-agent
 
+## 0.2.2
+
+### Patch Changes
+
+- e54277e: Report the installed package version from the Ambient Agent CLI.
+
 ## 0.2.1
 
 ### Patch Changes
