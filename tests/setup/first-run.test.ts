@@ -147,6 +147,29 @@ describe("transactional first-run setup", () => {
     expect(config).toContain("owner/discovered");
   });
 
+  it("honors an explicit chat during interactive setup instead of prompting for another", async () => {
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts, reviews } = setup(events);
+    prompts.selectChat = async () => {
+      throw new Error("interactive chat selection must not run when --chat was supplied");
+    };
+
+    await expect(
+      runFirstRunSetup({
+        dataDirectory: paths.dataDirectory,
+        interactive: true,
+        scripted: { chat: "older@g.us" },
+        services,
+        prompts,
+        chatGptCallbacks: { onDeviceCode: () => undefined },
+        whatsappCallbacks: {},
+      }),
+    ).resolves.toMatchObject({ created: true });
+
+    expect(reviews).toMatchObject([{ chat: { jid: "older@g.us", name: "Older Project", kind: "group" } }]);
+  });
+
   it("retries invalid chat and GitHub fields without repeating provider authentication", async () => {
     const paths = await fixture();
     const events: string[] = [];

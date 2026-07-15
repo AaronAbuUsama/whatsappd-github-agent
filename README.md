@@ -318,6 +318,23 @@ The complete packed stable-base journey, including managed OAuth, real
 WhatsApp, real GitHub state, and process replacement, is in
 [docs/proof/ambient-agent-stable-base-live.md](./docs/proof/ambient-agent-stable-base-live.md).
 
+## Releases
+
+Package changes include a Changeset created with `pnpm changeset`. Every push
+to `main` runs typecheck, tests, and the production build before the Changesets
+action may change release state. When unreleased Changesets exist, the action
+opens or updates a `Release packages` pull request containing the version and
+changelog. Merging that reviewed release PR to `main` runs the same gate and
+then publishes the resulting version to npm.
+
+npm Trusted Publishing binds `ambient-agent` to
+`AaronAbuUsama/whatsappd-github-agent` and `.github/workflows/release.yml`.
+GitHub OIDC supplies a short-lived publish credential, so no long-lived npm
+token is stored in this repository or its Actions secrets. The workflow's
+`GITHUB_TOKEN` has only the `contents: write` and `pull-requests: write`
+permissions required to maintain the release PR and tag the release; npm gets
+only `id-token: write` for the trusted-publisher exchange.
+
 ## Development
 
 ```bash

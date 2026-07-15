@@ -126,13 +126,15 @@ const selectChat = async (
     }
     throw new Error("The connected WhatsApp account did not synchronize any supported chats.");
   }
-  if (!input.interactive) {
-    const scripted = input.scripted?.chat;
-    if (!scripted) throw new Error("Non-interactive setup requires --chat from the authenticated account sync result.");
+  const scripted = input.scripted?.chat;
+  if (scripted !== undefined) {
     const selected = supported.find(({ jid }) => jid === scripted);
     if (!selected)
       throw new Error("The scripted WhatsApp chat was not found in the authenticated account sync result.");
     return selected;
+  }
+  if (!input.interactive) {
+    throw new Error("Non-interactive setup requires --chat from the authenticated account sync result.");
   }
   for (;;) {
     const jid = await input.prompts.selectChat(supported);

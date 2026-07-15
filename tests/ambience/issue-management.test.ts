@@ -26,6 +26,7 @@ import {
   githubIssueProviderBody,
   githubIssueRecord,
   githubIssueSearchQuery,
+  githubIssueUpdateProviderBody,
 } from "../../src/host/github-issue-repository.ts";
 import { commentProviderBody, issueOperationMarker } from "../../src/host/issue-operation-footer.ts";
 
@@ -131,6 +132,24 @@ describe("production Issue Management tools", () => {
         number: 7,
         html_url: "https://github.com/acme/widgets/issues/7",
         title: "Visible title",
+        body: providerBody,
+        state: "open",
+      }),
+    ).toMatchObject({ body: "Visible body" });
+  });
+
+  it("persists the latest Operation Identity when an issue update changes metadata only", () => {
+    const currentBody = githubIssueProviderBody("Visible body", ["<!-- ambience-operation:create-id -->"]);
+    const providerBody = githubIssueUpdateProviderBody(currentBody, undefined, { id: "metadata-update-id" });
+
+    expect(providerBody).toContain("Visible body");
+    expect(providerBody).toContain("<!-- ambience-operation:create-id -->");
+    expect(providerBody).toContain("<!-- ambience-operation:metadata-update-id -->");
+    expect(
+      githubIssueRecord(REPOSITORY, {
+        number: 7,
+        html_url: "https://github.com/acme/widgets/issues/7",
+        title: "Metadata-only update",
         body: providerBody,
         state: "open",
       }),

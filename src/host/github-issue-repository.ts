@@ -20,6 +20,18 @@ import {
 export const GITHUB_ISSUE_BODY_LIMIT = 65_536;
 export const githubIssueProviderBody = (body: string, markers: readonly string[]): string =>
   issueProviderBody(body, markers, GITHUB_ISSUE_BODY_LIMIT);
+export const githubIssueUpdateProviderBody = (
+  currentProviderBody: string,
+  nextPublicBody: string | undefined,
+  operation: OperationIdentity,
+): string => {
+  const current = parseIssueProviderBody(currentProviderBody);
+  const markers = [
+    ...(current.markers.length === 0 ? [] : [current.markers[0]!]),
+    issueOperationMarker(operation),
+  ];
+  return githubIssueProviderBody(nextPublicBody ?? current.publicBody, markers);
+};
 const GITHUB_SEARCH_QUERY_LIMIT = 256;
 const issueStateReason = (value: unknown): IssueStateReason =>
   value === "completed" || value === "not_planned" || value === "duplicate" || value === "reopened" ? value : null;
@@ -214,17 +226,12 @@ export const createOctokitIssueRepository = (token: string): IssueRepository => 
         request: { signal },
       });
       githubIssueRecord(repository, current.data);
-      const existingMarkers = parseIssueProviderBody(current.data.body ?? "").markers;
-      const markers = [
-        ...(existingMarkers.length === 0 ? [] : [existingMarkers[0]!]),
-        issueOperationMarker(operation),
-      ];
       const response = await octokit.rest.issues.update({
         owner: repository.owner,
         repo: repository.repo,
         issue_number: number,
         ...(changes.title === undefined ? {} : { title: changes.title }),
-        ...(changes.body === undefined ? {} : { body: githubIssueProviderBody(changes.body, markers) }),
+        body: githubIssueUpdateProviderBody(current.data.body ?? "", changes.body, operation),
         ...(changes.labels === undefined ? {} : { labels: [...changes.labels] }),
         ...(changes.assignees === undefined ? {} : { assignees: [...changes.assignees] }),
         ...(changes.milestone === undefined ? {} : { milestone: changes.milestone }),
