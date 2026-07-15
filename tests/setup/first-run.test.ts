@@ -303,6 +303,31 @@ describe("transactional first-run setup", () => {
     await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "unconfigured" });
   });
 
+  it("does not promote when the timeout fires while final review is pending", async () => {
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts } = setup(events);
+    const controller = new AbortController();
+    prompts.review = async () => {
+      controller.abort(new DOMException("The operation timed out with secret details.", "TimeoutError"));
+      return true;
+    };
+
+    await expect(
+      runFirstRunSetup({
+        dataDirectory: paths.dataDirectory,
+        interactive: true,
+        services,
+        prompts,
+        chatGptCallbacks: { onDeviceCode: () => undefined },
+        whatsappCallbacks: {},
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("cancelled or timed out before promotion");
+    await expect(lstat(paths.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "unconfigured" });
+  });
+
   it("fails non-interactive setup before writing when managed provider credentials are absent", async () => {
     const paths = await fixture();
     const events: string[] = [];

@@ -74,6 +74,7 @@ export interface PreparedManagedData {
 
 export interface InstallPreparedManagedDataInput extends ManagedPathEnvironment {
   readonly prepare: (paths: ManagedPaths) => Promise<PreparedManagedData>;
+  readonly signal?: AbortSignal;
 }
 
 export interface InstallManagedDataResult {
@@ -619,6 +620,9 @@ export const installPreparedManagedData = async (
     const stagingInspection = await inspectManagedData({ dataDirectory: stagingRoot });
     if (stagingInspection.state !== "configured") {
       throw new Error("Managed staging verification failed; setup did not commit any files.");
+    }
+    if (input.signal?.aborted) {
+      throw new Error("Setup was cancelled or timed out before promotion; no files changed.");
     }
     await rename(stagingRoot, targetPaths.root);
   } finally {

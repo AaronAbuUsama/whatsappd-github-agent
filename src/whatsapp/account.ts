@@ -65,6 +65,7 @@ export interface CreateWhatsAppAccountOptions {
   readonly archive: ConversationArchive;
   readonly sessionFactory?: () => WhatsAppSession;
   readonly now?: () => number;
+  readonly syncTimeoutMillis?: number;
 }
 
 export class WhatsAppAccountError extends Error {
@@ -108,10 +109,12 @@ const candidateName = (chat: HistoryChat, contacts: ReadonlyMap<string, HistoryC
   chat.subject?.trim() || contacts.get(chat.id)?.displayName?.trim() || chat.id;
 
 export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): ManagedWhatsAppAccount => {
-  const session = options.sessionFactory?.() ?? createSession({
-    store: fileStore(options.storeDirectory),
-    auth: qrAuth(),
-  });
+  const session =
+    options.sessionFactory?.() ??
+    createSession({
+      store: fileStore(options.storeDirectory),
+      auth: qrAuth(),
+    });
   const chats = new Map<string, HistoryChat>();
   const contacts = new Map<string, HistoryContact>();
   const now = options.now ?? Date.now;
@@ -120,8 +123,10 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
   const messageSubscribers = new Set<(message: IncomingMessage) => void | Promise<void>>();
   const updateSubscribers = new Set<(update: Update) => void | Promise<void>>();
   const syncSubscribers = new Set<(batch: ConversationSyncBatch) => void | Promise<void>>();
+  const initialSyncWaiters = new Set<(error?: WhatsAppAccountError) => void>();
   const pendingMutationEchoes = new Map<string, Array<{ readonly expiresAt: number; readonly scope: string }>>();
   const mutationEchoTtlMs = 60_000;
+  let initialSyncObserved = false;
 
   const prunePendingMutationEchoes = (observedAt: number): void => {
     for (const [fingerprint, pending] of pendingMutationEchoes) {
@@ -152,7 +157,7 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
     const event = conversationUpdate(update);
     const fingerprint = event.kind === "receipt" ? undefined : conversationMutationFingerprint(event);
     prunePendingMutationEchoes(now());
-    const pending = fingerprint === undefined ? [] : pendingMutationEchoes.get(fingerprint) ?? [];
+    const pending = fingerprint === undefined ? [] : (pendingMutationEchoes.get(fingerprint) ?? []);
     if (pending.length > 0 && fingerprint !== undefined) {
       pending.shift();
       if (pending.length === 0) pendingMutationEchoes.delete(fingerprint);
@@ -166,8 +171,42 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
   });
   const unsubscribeSync = session.onConversationSync(async (batch) => {
     mergeSync(batch);
+    initialSyncObserved = true;
+    for (const settle of initialSyncWaiters) settle();
+    initialSyncWaiters.clear();
     for (const subscriber of syncSubscribers) await subscriber(batch);
   });
+
+  const waitForInitialSync = async (signal?: AbortSignal): Promise<void> => {
+    if (initialSyncObserved) return;
+    const timeout = AbortSignal.timeout(options.syncTimeoutMillis ?? 60_000);
+    const waitSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (error?: WhatsAppAccountError): void => {
+        if (settled) return;
+        settled = true;
+        initialSyncWaiters.delete(settle);
+        waitSignal.removeEventListener("abort", onAbort);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const onAbort = (): void => {
+        const code = abortCode(waitSignal);
+        settle(
+          new WhatsAppAccountError(
+            code,
+            code === "timeout" ? "WhatsApp conversation sync timed out." : "WhatsApp conversation sync was cancelled.",
+            { cause: waitSignal.reason },
+          ),
+        );
+      };
+      initialSyncWaiters.add(settle);
+      if (initialSyncObserved) settle();
+      else if (waitSignal.aborted) onAbort();
+      else waitSignal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
 
   const managedSession = new Proxy(session, {
     get(target, property) {
@@ -210,10 +249,7 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
     },
   });
 
-  const authenticate = async (
-    callbacks: PairingCallbacks,
-    signal?: AbortSignal,
-  ): Promise<AuthenticatedAccount> => {
+  const authenticate = async (callbacks: PairingCallbacks, signal?: AbortSignal): Promise<AuthenticatedAccount> => {
     throwIfAborted(signal);
     if (authenticated !== undefined) return authenticated;
     if (authentication !== undefined) return await authentication;
@@ -236,17 +272,18 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
         void session.stop();
         const code = abortCode(signal);
         settle({
-          error: new WhatsAppAccountError(code, code === "timeout" ? "WhatsApp authentication timed out." : "WhatsApp authentication was cancelled.", {
-            cause: signal?.reason,
-          }),
+          error: new WhatsAppAccountError(
+            code,
+            code === "timeout" ? "WhatsApp authentication timed out." : "WhatsApp authentication was cancelled.",
+            {
+              cause: signal?.reason,
+            },
+          ),
         });
       };
       const unsubscribeStatus = session.onStatus((status) => {
         callbacks.onStatus?.(status);
-        if (
-          status.phase === "pairing" &&
-          status.pairing.step === "challenge_live"
-        ) {
+        if (status.phase === "pairing" && status.pairing.step === "challenge_live") {
           callbacks.onPairing?.({
             method: status.pairing.method,
             ...(status.pairing.qr === undefined ? {} : { qr: status.pairing.qr }),
@@ -263,7 +300,9 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
       });
       signal?.addEventListener("abort", onAbort, { once: true });
       void session.start().catch((cause: unknown) => {
-        settle({ error: new WhatsAppAccountError("start_failed", "WhatsApp authentication could not start.", { cause }) });
+        settle({
+          error: new WhatsAppAccountError("start_failed", "WhatsApp authentication could not start.", { cause }),
+        });
       });
     }).finally(() => {
       if (authenticated === undefined) authentication = undefined;
@@ -278,17 +317,21 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
       if (authenticated === undefined) {
         throw new WhatsAppAccountError("not_authenticated", "Authenticate WhatsApp before discovering chats.");
       }
+      await waitForInitialSync(signal);
       return [...chats.values()]
-        .map((chat): ChatCandidate => ({
-          jid: chat.id,
-          name: candidateName(chat, contacts),
-          kind: chat.isGroup ? "group" : "direct",
-          ...(chat.lastMessageAt === undefined ? {} : { lastActivityAt: chat.lastMessageAt }),
-        }))
-        .sort((left, right) =>
-          (right.lastActivityAt ?? 0) - (left.lastActivityAt ?? 0) ||
-          left.name.localeCompare(right.name) ||
-          left.jid.localeCompare(right.jid),
+        .map(
+          (chat): ChatCandidate => ({
+            jid: chat.id,
+            name: candidateName(chat, contacts),
+            kind: chat.isGroup ? "group" : "direct",
+            ...(chat.lastMessageAt === undefined ? {} : { lastActivityAt: chat.lastMessageAt }),
+          }),
+        )
+        .sort(
+          (left, right) =>
+            (right.lastActivityAt ?? 0) - (left.lastActivityAt ?? 0) ||
+            left.name.localeCompare(right.name) ||
+            left.jid.localeCompare(right.jid),
         );
     },
     session: () => {
@@ -298,6 +341,10 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
       return managedSession;
     },
     stop: async () => {
+      for (const settle of initialSyncWaiters) {
+        settle(new WhatsAppAccountError("cancelled", "WhatsApp stopped before conversation sync completed."));
+      }
+      initialSyncWaiters.clear();
       unsubscribeSync();
       unsubscribeUpdate();
       unsubscribeMessage();

@@ -187,7 +187,11 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         whatsappCredentialSource: paired ? "fresh pairing" : "existing managed session",
         githubCredentialSource: github.credential.source,
       };
-      if (!(await input.prompts.review(review))) {
+      const approved = await input.prompts.review(review);
+      if (input.signal?.aborted) {
+        throw new Error("Setup was cancelled or timed out before promotion; no files changed.");
+      }
+      if (!approved) {
         throw new Error("Setup cancelled before promotion; no files changed.");
       }
       return {
