@@ -1,5 +1,11 @@
 # ambient-agent
 
+## 0.2.1
+
+### Patch Changes
+
+- 5ea7f9e: Make packaged-runtime verification follow the current package version and document the npm OIDC proof boundary.
+
 ## 0.2.0
 
 ### Minor Changes
