@@ -38,7 +38,7 @@
     "build:cli": "vp pack",
     "changeset": "changeset",
     "prepack": "pnpm run build",
-    "release": "pnpm run build && changeset publish",
+    "release": "pnpm run build && tsx scripts/publish-npm-release.ts",
     "start": "node dist/cli/main.js start",
     "whatsapp:dry-run": "tsx scripts/whatsapp-dry-run.ts",
     "typecheck": "tsc --noEmit",

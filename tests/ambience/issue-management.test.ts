@@ -22,6 +22,7 @@ import { createIssueOperationStore } from "../../src/capabilities/issue-manageme
 import { createFakeIssueRepository } from "../../src/host/fake-issue-repository.ts";
 import {
   GITHUB_ISSUE_BODY_LIMIT,
+  createOctokitIssueRepository,
   createSuccessfulPromiseCache,
   githubIssueProviderBody,
   githubIssueRecord,
@@ -138,19 +139,43 @@ describe("production Issue Management tools", () => {
     ).toMatchObject({ body: "Visible body" });
   });
 
-  it("persists the latest Operation Identity when an issue update changes metadata only", () => {
+  it("sends the latest Operation Identity in the provider body for a metadata-only update", async () => {
     const currentBody = githubIssueProviderBody("Visible body", ["<!-- ambience-operation:create-id -->"]);
-    const providerBody = githubIssueUpdateProviderBody(currentBody, undefined, { id: "metadata-update-id" });
+    let patchedBody: string | undefined;
+    const requestFetch: typeof fetch = async (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      const current = {
+        number: 7,
+        html_url: "https://github.com/acme/widgets/issues/7",
+        title: "Metadata-only update",
+        body: currentBody,
+        state: "open",
+      };
+      if (url.endsWith("/repos/acme/widgets/issues/7") && init?.method === "PATCH") {
+        const update = JSON.parse(String(init.body)) as { body?: string };
+        patchedBody = update.body;
+        return Response.json({ ...current, ...update });
+      }
+      return Response.json(current);
+    };
+    const repository = createOctokitIssueRepository("test-token", { fetch: requestFetch });
 
-    expect(providerBody).toContain("Visible body");
-    expect(providerBody).toContain("<!-- ambience-operation:create-id -->");
-    expect(providerBody).toContain("<!-- ambience-operation:metadata-update-id -->");
+    await repository.update({
+      repository: REPOSITORY,
+      number: 7,
+      changes: { labels: ["ready-for-agent"] },
+      operation: { id: "metadata-update-id" },
+    });
+
+    expect(patchedBody).toContain("Visible body");
+    expect(patchedBody).toContain("<!-- ambience-operation:create-id -->");
+    expect(patchedBody).toContain("<!-- ambience-operation:metadata-update-id -->");
     expect(
       githubIssueRecord(REPOSITORY, {
         number: 7,
         html_url: "https://github.com/acme/widgets/issues/7",
         title: "Metadata-only update",
-        body: providerBody,
+        body: patchedBody,
         state: "open",
       }),
     ).toMatchObject({ body: "Visible body" });

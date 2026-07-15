@@ -130,8 +130,10 @@ export const createSuccessfulPromiseCache = <T>(load: () => Promise<T>): (() => 
   };
 };
 
-export const createOctokitIssueRepository = (token: string): IssueRepository => {
-  const octokit = new Octokit({ auth: token, userAgent: "ambient-agent-issue-management" });
+type OctokitRequestOptions = NonNullable<ConstructorParameters<typeof Octokit>[0]>["request"];
+
+export const createOctokitIssueRepository = (token: string, request?: OctokitRequestOptions): IssueRepository => {
+  const octokit = new Octokit({ auth: token, userAgent: "ambient-agent-issue-management", request });
   const providerAuthor = createSuccessfulPromiseCache(async () =>
     octokit.rest.users.getAuthenticated().then((response) => response.data.login),
   );
