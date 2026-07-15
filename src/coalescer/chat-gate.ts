@@ -47,3 +47,13 @@ export const makeChatGate = (env: ChatGateEnv): ChatGate => {
       groups.size > 0 ? [...groups].join(", ") : allowAnyGroup ? "any group" : allowDm ? "DMs" : "nothing",
   };
 };
+
+/** Typed managed configuration: exact group or direct-chat JIDs, with no broad DM escape hatch. */
+export const makeManagedChatGate = (chatIds: readonly string[]): ChatGate => {
+  const managed = new Set(chatIds.map((chatId) => chatId.trim().toLowerCase()).filter(Boolean));
+  return {
+    allowed: (chatId) => managed.has(chatId.toLowerCase()),
+    hasTarget: managed.size > 0,
+    describe: () => (managed.size > 0 ? [...managed].join(", ") : "nothing"),
+  };
+};

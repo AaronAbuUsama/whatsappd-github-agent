@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import * as v from "valibot";
 
 import { managedPaths, type ManagedPathEnvironment, type ManagedPaths } from "./paths.js";
@@ -26,6 +26,8 @@ const CONFIG_ISSUE_PATHS = new Set([
   "model",
   "model.provider",
   "model.credential",
+  "runtime",
+  "runtime.port",
   "github",
   "github.kind",
   "github.credential",
@@ -33,7 +35,7 @@ const CONFIG_ISSUE_PATHS = new Set([
   "github.allowedRepositories",
   "github.allowedRepositories.[]",
 ]);
-const GITHUB_CREDENTIAL_ISSUE_PATHS = new Set(["<root>", "schemaVersion", "kind", "token"]);
+const GITHUB_CREDENTIAL_ISSUE_PATHS = new Set(["<root>", "schemaVersion", "kind", "token", "webhookSecret"]);
 const CHATGPT_OAUTH_ISSUE_PATHS = new Set(["<root>", "type", "access", "refresh", "expires"]);
 const LEGACY_PI_AUTH_ISSUE_PATHS = new Set([
   "<root>",
@@ -614,6 +616,7 @@ export const installPreparedManagedData = async (
       schemaVersion: 1,
       kind: "personal-token",
       token: prepared.githubToken,
+      webhookSecret: randomBytes(32).toString("base64url"),
     });
     if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
     await writePreparedConfiguration(stagingPaths, configResult.output, githubResult.output);

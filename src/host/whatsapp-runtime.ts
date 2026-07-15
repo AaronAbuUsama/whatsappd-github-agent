@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { join } from "node:path";
 
 import { Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { WhatsAppSession } from "whatsappd";
@@ -11,7 +10,7 @@ import {
   type WhatsAppSayPort,
   type WhatsAppSayResult,
 } from "../capabilities/whatsapp-participation/whatsapp-port.js";
-import { makeChatGate, type ChatGate } from "../coalescer/chat-gate.js";
+import { makeManagedChatGate, type ChatGate } from "../coalescer/chat-gate.js";
 import * as Coalescer from "../coalescer/coalescer.js";
 import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js";
 import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
@@ -127,22 +126,17 @@ export interface WhatsAppRuntimeControl {
   readonly stop: () => Promise<void>;
 }
 
-export const startWhatsAppRuntime = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): WhatsAppRuntimeControl => {
-  if (env.AMBIENCE_WHATSAPP !== "1") {
-    status = { phase: "disabled" };
-    return { stop: async () => undefined };
-  }
+export interface WhatsAppRuntimeOptions {
+  readonly storeDirectory: string;
+  readonly applicationDatabase: string;
+  readonly managedChats: readonly string[];
+  readonly botLid?: string;
+}
 
-  const storeDir = env.WHATSAPP_STORE_DIR?.trim() || "./.wa-auth";
-  const gate = makeChatGate({
-    groupIds: env.WHATSAPP_GROUP_IDS ?? env.WHATSAPP_GROUP_ID,
-    allowAnyGroup: env.WHATSAPP_ALLOW_ANY_GROUP,
-    allowDm: env.WHATSAPP_ALLOW_DM,
-  });
-  const applicationDatabase = join(storeDir, "..", "application.sqlite");
-  const archive = createConversationArchive(applicationDatabase);
+export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
+  const storeDir = options.storeDirectory;
+  const gate = makeManagedChatGate(options.managedChats);
+  const archive = createConversationArchive(options.applicationDatabase);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
   const account = createWhatsAppAccount({ storeDirectory: storeDir, archive: inbox.recorder });
   status = { phase: "starting", chatTarget: gate.describe() };
@@ -169,10 +163,10 @@ export const startWhatsAppRuntime = (
       }),
     );
     const session = account.session();
-    const botIds = botIdsOf(session, env.WHATSAPP_BOT_LID);
+    const botIds = botIdsOf(session, options.botLid);
     status = { phase: "online", chatTarget: gate.describe(), botIds };
     yield* Effect.logInfo(`Ambience WhatsApp online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
-    yield* runWhatsAppSession(session, { gate, history: archive, inbox, botLid: env.WHATSAPP_BOT_LID });
+    yield* runWhatsAppSession(session, { gate, history: archive, inbox, botLid: options.botLid });
   });
 
   const fiber = Effect.runFork(Effect.scoped(program));

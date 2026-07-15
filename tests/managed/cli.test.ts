@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { runCli, type CliOutput } from "../../src/cli/program.ts";
-import { takeManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
+import { getManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import type { ChatGptOAuthAdapter } from "../../src/model/chatgpt-authentication.ts";
 import { ChatGptReadinessError } from "../../src/model/pi-subscription.ts";
@@ -60,8 +60,11 @@ const harness = () => {
     validationError: () => undefined,
   };
   const firstRunServices = {
-    whatsappFor: () => ({
-      authenticate: async () => ({ jid: "15550000000@s.whatsapp.net" }),
+    whatsappFor: (paths: ManagedPaths) => ({
+      authenticate: async () => {
+        await writeFile(join(paths.whatsapp, "creds.json"), JSON.stringify({ registered: true }), { mode: 0o600 });
+        return { jid: "15550000000@s.whatsapp.net" };
+      },
       synchronizedChats: async () => [
         { jid: "120363000@g.us", name: "Managed Test Chat", kind: "group" as const, lastActivityAt: 1_000 },
       ],
@@ -161,7 +164,7 @@ describe("managed CLI", () => {
     await expect(lstat(join(outside, "chatgpt-oauth.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("loads managed configuration and the optional .env before importing the generated runtime", async () => {
+  it("passes typed managed dependencies without exporting credentials through process.env", async () => {
     const paths = await files();
     const init = harness();
     const initExitCode = await runCli(
@@ -182,21 +185,9 @@ describe("managed CLI", () => {
     await writeFile(join(paths.data, ".env"), "GITHUB_WEBHOOK_SECRET=dotenv-webhook-secret\nPORT=7777\n");
 
     const managed = managedPaths({ dataDirectory: paths.data });
+    const managedWebhookSecret = JSON.parse(await readFile(managed.githubCredential, "utf8")).webhookSecret as string;
     const expectedDirectory = await realpath(paths.data);
-    const keys = [
-      "AMBIENCE_WHATSAPP",
-      "APPLICATION_DB_PATH",
-      "GITHUB_ALLOWED_REPOS",
-      "GITHUB_ISSUE_OPERATIONS_DB_PATH",
-      "GITHUB_REPO",
-      "GITHUB_TOKEN",
-      "GITHUB_WEBHOOK_SECRET",
-      "PORT",
-      "WHATSAPP_GROUP_ID",
-      "WHATSAPP_GROUP_IDS",
-      "WHATSAPP_HISTORY_DB",
-      "WHATSAPP_STORE_DIR",
-    ] as const;
+    const keys = ["GITHUB_ALLOWED_REPOS", "GITHUB_REPO", "GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "PORT"] as const;
     const previousDirectory = process.cwd();
     const previousEnvironment = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     for (const key of keys) delete process.env[key];
@@ -204,6 +195,7 @@ describe("managed CLI", () => {
     process.env.GITHUB_REPO = "external/override-must-not-win";
     process.env.GITHUB_ALLOWED_REPOS = "external/override-must-not-win";
     process.env.GITHUB_TOKEN = "external-secret-must-not-win";
+    process.env.GITHUB_WEBHOOK_SECRET = "external-webhook-must-not-win";
 
     try {
       const cli = harness();
@@ -212,21 +204,26 @@ describe("managed CLI", () => {
         ...cli,
         importRuntime: async () => {
           imports += 1;
-          await expect(takeManagedRuntimeDependencies().authentication.inspect()).resolves.toEqual({ state: "ready" });
+          const runtime = getManagedRuntimeDependencies();
+          await expect(runtime.authentication.inspect()).resolves.toEqual({ state: "ready" });
+          expect(runtime).toMatchObject({
+            configuration: {
+              managedChats: ["120363000@g.us"],
+              github: { defaultRepository: "owner/repo", allowedRepositories: ["owner/repo"] },
+            },
+            githubCredential: {
+              token: "github-secret-token",
+              webhookSecret: managedWebhookSecret,
+            },
+            paths: managed,
+          });
           expect(process.cwd()).toBe(expectedDirectory);
           expect(process.env).toMatchObject({
-            AMBIENCE_WHATSAPP: "1",
-            APPLICATION_DB_PATH: managed.applicationDatabase,
-            GITHUB_ALLOWED_REPOS: "owner/repo",
-            GITHUB_ISSUE_OPERATIONS_DB_PATH: managed.applicationDatabase,
-            GITHUB_REPO: "owner/repo",
-            GITHUB_TOKEN: "github-secret-token",
-            GITHUB_WEBHOOK_SECRET: "dotenv-webhook-secret",
-            PORT: "8888",
-            WHATSAPP_GROUP_ID: "120363000@g.us",
-            WHATSAPP_GROUP_IDS: "120363000@g.us",
-            WHATSAPP_HISTORY_DB: managed.applicationDatabase,
-            WHATSAPP_STORE_DIR: managed.whatsapp,
+            GITHUB_ALLOWED_REPOS: "external/override-must-not-win",
+            GITHUB_REPO: "external/override-must-not-win",
+            GITHUB_TOKEN: "external-secret-must-not-win",
+            GITHUB_WEBHOOK_SECRET: "external-webhook-must-not-win",
+            PORT: "3000",
           });
         },
       });
@@ -277,6 +274,141 @@ describe("managed CLI", () => {
     expect(status.stderr()).toBe("");
   });
 
+  it.each([
+    ["stopped", 0],
+    ["starting", 0],
+    ["healthy", 0],
+    ["degraded", 3],
+    ["failed", 3],
+  ] as const)("reports observed local runtime state %s", async (runtimeState, expectedExit) => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const status = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "status", "--json"], {
+        ...status,
+        runtimeHealthFor: async () => ({
+          state: runtimeState,
+          whatsapp: {
+            phase: runtimeState === "healthy" ? "online" : runtimeState === "degraded" ? "disabled" : runtimeState,
+          },
+        }),
+      }),
+    ).toBe(expectedExit);
+    expect(JSON.parse(status.stdout())).toMatchObject({ runtimeState, observedRuntime: { state: runtimeState } });
+  });
+
+  it("explains the read-only predecessor webhook-secret migration state", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const credentialPath = managedPaths({ dataDirectory: paths.data }).githubCredential;
+    const credential = JSON.parse(await readFile(credentialPath, "utf8")) as Record<string, unknown>;
+    delete credential.webhookSecret;
+    await writeFile(credentialPath, JSON.stringify(credential), { mode: 0o600 });
+
+    const status = harness();
+    expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      runtimeState: "degraded",
+      observedRuntime: { state: "stopped" },
+      checks: [
+        { name: "application-database", state: "ready" },
+        { name: "flue-database", state: "ready" },
+        { name: "whatsapp-session", state: "ready" },
+        {
+          name: "github-webhook-secret",
+          state: "warning",
+          code: "github.webhook-secret-migration-pending",
+          remediation: expect.stringContaining("ambient-agent start"),
+        },
+      ],
+    });
+  });
+
+  it("reconfigures through validated owning services without replacing databases or model credentials", async () => {
+    const paths = await files();
+    const cli = harness();
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+          "--github-token-file",
+          paths.token,
+        ],
+        cli,
+      ),
+    ).toBe(0);
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const beforeApplication = await readFile(managed.applicationDatabase);
+    const beforeFlue = await readFile(managed.flueDatabase);
+    const beforeModel = await readFile(managed.chatGptOAuthCredential, "utf8");
+    const existingConfig = JSON.parse(await readFile(managed.config, "utf8")) as Record<string, unknown>;
+    await writeFile(
+      managed.config,
+      JSON.stringify({
+        ...existingConfig,
+        managedChats: ["120363000@g.us", "15551234567@s.whatsapp.net"],
+        github: {
+          ...(existingConfig.github as Record<string, unknown>),
+          allowedRepositories: ["owner/repo", "owner/other"],
+        },
+      }),
+      { mode: 0o600 },
+    );
+
+    const config = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "config", "--repository", "Owner/Next", "--port", "4321"], {
+        ...config,
+        interactive: false,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({
+      managedChats: ["120363000@g.us", "15551234567@s.whatsapp.net"],
+      github: {
+        defaultRepository: "Owner/Next",
+        allowedRepositories: ["owner/repo", "owner/other", "Owner/Next"],
+      },
+      runtime: { port: 4321 },
+    });
+    await expect(readFile(managed.applicationDatabase)).resolves.toEqual(beforeApplication);
+    await expect(readFile(managed.flueDatabase)).resolves.toEqual(beforeFlue);
+    await expect(readFile(managed.chatGptOAuthCredential, "utf8")).resolves.toBe(beforeModel);
+    expect(config.stdout()).not.toContain("github-secret-token");
+  });
+
   it("reports Uncertain work as degraded without exposing stored targets or provider errors", async () => {
     const paths = await files();
     await runCli(
@@ -312,6 +444,7 @@ describe("managed CLI", () => {
     const status = harness();
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
     expect(JSON.parse(status.stdout())).toMatchObject({
+      runtimeState: "degraded",
       uncertainWork: {
         health: "degraded",
         admissions: 0,
@@ -322,6 +455,33 @@ describe("managed CLI", () => {
     });
     expect(status.stdout()).not.toContain("private issue body");
     expect(status.stdout()).not.toContain("credential material");
+  });
+
+  it("renders a corrupt application-database diagnosis without reopening it for uncertainty", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    await writeFile(managedPaths({ dataDirectory: paths.data }).applicationDatabase, "not a sqlite database");
+    const status = harness();
+
+    expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      runtimeState: "failed",
+      checks: expect.arrayContaining([expect.objectContaining({ name: "application-database", state: "failed" })]),
+    });
+    expect(status.stderr()).toBe("");
   });
 
   it("routes explicit doctor decisions through the headless Uncertain-work controller", async () => {
@@ -462,15 +622,23 @@ describe("managed CLI", () => {
       model: "openai-codex/gpt-5.6-luna" as const,
       request: "complete" as const,
     }));
+    const verifyGitHub = vi.fn(async (_token: string, repository: string) => repository);
 
     expect(
       await runCli(["--data-dir", paths.data, "doctor", "--live", "--json"], {
         ...live,
         readinessCheck,
+        firstRunServices: { ...live.firstRunServices, verifyGitHub },
       }),
     ).toBe(0);
     expect(readinessCheck).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(live.stdout())).toMatchObject({ liveCheck: { request: "complete" } });
+    expect(verifyGitHub).toHaveBeenCalledWith("github-secret-token", "owner/repo", expect.any(AbortSignal));
+    expect(JSON.parse(live.stdout())).toMatchObject({
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "github-access", state: "ready", code: "github.ready" }),
+      ]),
+      liveCheck: { request: "complete" },
+    });
   });
 
   it("bounds the live readiness request with a dedicated timeout", async () => {
@@ -504,6 +672,44 @@ describe("managed CLI", () => {
       modelAuthentication: { state: "ready" },
       liveCheck: { request: "failed", reason: "request-failed" },
     });
+  });
+
+  it("reports a sanitized GitHub access failure through doctor --live", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const live = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "doctor", "--live", "--json"], {
+        ...live,
+        readinessCheck: async () => ({ model: "openai-codex/gpt-5.6-luna", request: "complete" }),
+        firstRunServices: {
+          ...live.firstRunServices,
+          verifyGitHub: async () => {
+            throw new Error("provider failure containing private token material");
+          },
+        },
+      }),
+    ).toBe(1);
+    expect(JSON.parse(live.stdout())).toMatchObject({
+      runtimeState: "failed",
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "github-access", state: "failed", code: "github.access-failed" }),
+      ]),
+    });
+    expect(live.stdout()).not.toContain("private token material");
   });
 
   it("classifies a revoked credential as unusable when the gated live check rejects it", async () => {

@@ -1,9 +1,9 @@
 import { createGitHubChannel } from "@flue/github";
 
 import { handleGitHubDelivery } from "../github/ingress-runtime.js";
+import { getManagedRuntimeDependencies } from "../managed/runtime-dependencies.js";
 
-const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
-if (!webhookSecret) throw new Error("GITHUB_WEBHOOK_SECRET is required for GitHub ingress");
+const webhookSecret = getManagedRuntimeDependencies().githubCredential.webhookSecret;
 
 // flue-blueprint: channel/github@1
 export const channel = createGitHubChannel({

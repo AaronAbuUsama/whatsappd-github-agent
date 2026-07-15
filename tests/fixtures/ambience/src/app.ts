@@ -187,7 +187,7 @@ configureIssueManagementRuntime({
   operations: issueOperations,
   policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
 });
-const githubIngress = loadGitHubIngressSettings();
+const githubIngress = loadGitHubIngressSettings(process.env);
 const githubIngressStore = installGitHubIngressRuntime(
   githubIngress,
   async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
@@ -261,7 +261,7 @@ app.post("/test/admission/:windowId/reconcile", async (context) => {
   const result = await reconcileUncertainAdmission(
     inbox,
     context.req.param("windowId"),
-    createFlueAdmissionEvidenceSource(),
+    createFlueAdmissionEvidenceSource(process.env.FLUE_DB_PATH ?? "./flue.sqlite"),
   );
   return context.json(result);
 });

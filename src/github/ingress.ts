@@ -47,9 +47,7 @@ const parseRepository = (value: string): string => {
   return repositoryKey(parts[0], parts[1]);
 };
 
-export const loadGitHubIngressSettings = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): GitHubIngressSettings => {
+export const loadGitHubIngressSettings = (env: Readonly<Record<string, string | undefined>>): GitHubIngressSettings => {
   const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim();
   if (!webhookSecret) throw new Error("GITHUB_WEBHOOK_SECRET is required for GitHub ingress");
 

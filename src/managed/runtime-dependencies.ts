@@ -1,7 +1,12 @@
 import type { ChatGptAuthentication } from "../model/chatgpt-authentication.js";
+import type { ManagedPaths } from "./paths.js";
+import type { GitHubCredential, ManagedConfig } from "./schema.js";
 
 export interface ManagedRuntimeDependencies {
   readonly authentication: ChatGptAuthentication;
+  readonly configuration: ManagedConfig;
+  readonly githubCredential: GitHubCredential & { readonly webhookSecret: string };
+  readonly paths: ManagedPaths;
 }
 
 const RUNTIME_DEPENDENCIES = Symbol.for("ambient-agent.managed-runtime-dependencies");
@@ -16,11 +21,10 @@ export const installManagedRuntimeDependencies = (next: ManagedRuntimeDependenci
   runtimeGlobal[RUNTIME_DEPENDENCIES] = next;
 };
 
-export const takeManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
+export const getManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
   const dependencies = runtimeGlobal[RUNTIME_DEPENDENCIES];
   if (dependencies === undefined) {
     throw new Error("Managed runtime dependencies were not configured by the Ambient Agent CLI.");
   }
-  delete runtimeGlobal[RUNTIME_DEPENDENCIES];
   return dependencies;
 };

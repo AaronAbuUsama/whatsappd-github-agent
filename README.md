@@ -46,8 +46,9 @@ paired WhatsApp account, a scoped GitHub token, and a ChatGPT Plus/Pro account.
 Windows setup currently fails closed until equivalent private ACL enforcement
 is implemented.
 
-Until the package is published, build a local tarball, install that tarball, and
-create its managed data skeleton:
+Until the package is published, build a local tarball and install that exact
+artifact. After publication, replace the first three commands with
+`npx ambient-agent`:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -65,7 +66,7 @@ ambient-agent status
 ambient-agent auth              # replace missing, malformed, or rejected ChatGPT authentication
 ambient-agent doctor
 ambient-agent doctor --refresh  # safely rotate an expired credential
-ambient-agent doctor --live     # opt-in real model readiness request
+ambient-agent doctor --live     # opt-in real GitHub and model readiness requests
 
 # If status or doctor prints an Uncertain reference, inspect first, then choose explicitly:
 ambient-agent doctor --retry admission:<windowId>
@@ -73,6 +74,9 @@ ambient-agent doctor --retry mutation:<operationId>
 ambient-agent doctor --accept-observed mutation:<operationId>
 ambient-agent doctor --abandon admission:<windowId>
 ambient-agent doctor --abandon mutation:<operationId>
+
+# Review or change the synchronized managed chat and authorized repository.
+ambient-agent config
 ```
 
 After the package is published, `npx ambient-agent` will be the equivalent
@@ -87,7 +91,15 @@ explicit ChatGPT reauthentication without changing the rest of the installation.
 Managed JSON diagnostics read at most 1 MiB per file and fail closed if a file
 exceeds that limit or changes during inspection.
 
-`status` is read-only and reports Uncertain counts and mutation kinds; on the
+`status` is read-only. It checks both SQLite files and the app-owned WhatsApp
+registration fact, reports Uncertain counts and mutation kinds, and makes one
+bounded local `/health` request at the port stored in `config.json`. An explicit
+connection refusal reports `stopped`; timeouts, malformed responses, HTTP
+failures, and responses from a different installation report `failed`. A
+correlated response reports `starting`, `healthy`, `degraded`, `failed`, or
+`stopped` from the actual runtime phase. The CLI does not probe PIDs or infer
+stale ownership.
+On the
 supported stopped-runtime boundary it also counts durable `dispatching` and
 `attempting` rows as degraded instead of claiming interrupted work is healthy.
 It does not print chat content, issue/comment bodies, credentials, or stored
@@ -120,28 +132,81 @@ node dist/cli/main.js init --chat 120363000000000000@g.us \
 node dist/cli/main.js start
 ```
 
-With `AMBIENCE_WHATSAPP=1`, the one Flue process owns the whatsappd session.
-On a new credential store it prints a QR; link it from WhatsApp's Linked devices
-screen. Use `pnpm run whatsapp:dry-run` for a send-nothing credential probe.
+The managed composition root enables WhatsApp and supplies its managed paths;
+no operator-authored `AMBIENCE_WHATSAPP`, database, GitHub, or credential-path
+variables are required. On a new credential store setup prints a QR; link it
+from WhatsApp's Linked devices screen. Use `pnpm run whatsapp:dry-run` only for
+source-development credential probing.
 
-For a built deployment:
+For a built deployment, `start` stays in the foreground and the process manager
+owns restart policy and log capture:
 
 ```bash
 pnpm run build
 pnpm run start
 ```
 
-The health endpoint reports the model authentication mode, selected model, and
-WhatsApp runtime phase. No model API-key environment variable is supported.
+A minimal systemd service can therefore use the installed executable directly:
+
+```ini
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ambient-agent start
+Restart=on-failure
+KillSignal=SIGTERM
+```
+
+Run the service as the same dedicated user that performed setup. Do not copy
+credentials into the unit or add model/GitHub secrets as environment
+variables. Select a non-default local listener once with
+`ambient-agent config --port <port>`; `start` and `status` then use the same
+validated managed setting.
+
+## Backup, restore, and recovery
+
+Stop the foreground process cleanly before copying data. Back up the entire
+managed directory as one private unit: `config.json`, `credentials/`, both
+SQLite files, `whatsapp/`, and `logs/`. Preserve owner-only directory access
+and private credential-file modes. To restore, keep the process stopped, place
+the complete copy at the target managed-data path, run `ambient-agent status`
+and `ambient-agent doctor`, and only then run `ambient-agent start`. Never mix
+databases or credentials from different snapshots. Issue #58 adds the
+independent temporary-home replacement proof for this documented boundary.
+
+Recovery is deliberately local and explicit:
+
+- Missing or rejected ChatGPT authorization: run `ambient-agent auth`.
+- Invalid permissions, JSON, SQLite integrity, or WhatsApp registration:
+  leave the process stopped and follow the exact `doctor` remediation.
+- Uncertain admission or GitHub mutation: inspect it and choose one explicit
+  `doctor --retry`, `--accept-observed`, or `--abandon` action.
+- Damaged managed data: restore a complete known-good backup; `init` and
+  `config` refuse to overwrite it.
+
+The GitHub token and an installation-local webhook signing secret live inside
+the private `credentials/github.json` file. Older valid installations receive
+the missing webhook secret through one atomic app-owned migration at `start`;
+a pre-migration `status` reports that pending step as degraded with the same
+remediation. A failed commit leaves the previous credential file intact. ChatGPT OAuth and
+WhatsApp session material are likewise app-owned. Ambient Agent never searches
+or adopts machine-global Pi credentials.
+
+The health endpoint reports the model authentication mode, selected model,
+sanitized WhatsApp runtime phase, and a non-secret installation correlation ID.
+No model API-key environment variable is supported.
 
 ## Configuration boundaries
 
-- `GITHUB_ALLOWED_REPOS` limits every bounded workflow write.
-- `GITHUB_WEBHOOK_SECRET` authenticates ingress before payload parsing.
-- `GITHUB_CHAT_ROUTES` keeps repository-to-chat ownership application-owned.
-- `APPLICATION_DB_PATH` is the single SQLite boundary for archive, intake, GitHub ingress, and operation receipts.
-- `WHATSAPP_GROUP_ID(S)` and `WHATSAPP_ALLOW_DM` keep admission fail-closed.
-- `WHATSAPP_HISTORY_DB` retains full-fidelity history for the chat-bound tools.
+`ambient-agent start` reads and validates the managed installation once. It
+passes typed configuration, credential, and path dependencies to the generated
+composition root; GitHub and WhatsApp runtime modules do not read product
+configuration or secrets from `process.env`. The GitHub allowlist bounds every
+Issue Management write, the app-owned webhook secret authenticates ingress,
+`application.sqlite` owns application facts, and the explicit managed
+`flue.sqlite` path owns canonical Agent state. The validated non-secret
+`runtime.port` setting selects the local HTTP listener and lets `status`
+discover the matching installation without inspecting process state.
+
 - The application-owned `credentials/chatgpt-oauth.json` record is the only
   accepted model credential. Pi global state and model API-key environment
   variables are not authentication sources.
@@ -167,8 +232,9 @@ they are not current operator guidance.
 ## Safety
 
 whatsappd uses an unofficial WhatsApp Web implementation. Use an account you
-can afford to lose. Keep `.env` and `.wa-auth*/` private. Scope GitHub tokens
-to the smallest repository and issue permissions that satisfy the workflow.
+can afford to lose. Keep managed data and any source-development `.env` or
+`.wa-auth*/` directories private. Scope GitHub tokens to the smallest
+repository and issue permissions that satisfy the workflow.
 
 ## License
 

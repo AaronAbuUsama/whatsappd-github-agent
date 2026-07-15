@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { flueDatabasePath } from "../../src/db.ts";
+import { installManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
+import { managedPaths } from "../../src/managed/paths.ts";
 
 describe("Flue database configuration", () => {
-  it("preserves an operator-selected database with the managed file as fallback", () => {
-    expect(flueDatabasePath({ FLUE_DB_PATH: "/persistent/ambience.sqlite" })).toBe("/persistent/ambience.sqlite");
-    expect(flueDatabasePath({ FLUE_DB_PATH: "   " })).toBe("./flue.sqlite");
-    expect(flueDatabasePath({})).toBe("./flue.sqlite");
+  it("uses the typed managed Flue database path rather than process.env", async () => {
+    const paths = managedPaths({ dataDirectory: "/private/ambient-agent" });
+    installManagedRuntimeDependencies({
+      authentication: {} as never,
+      configuration: {} as never,
+      githubCredential: {} as never,
+      paths,
+    });
+    process.env.FLUE_DB_PATH = "/external/must-not-win.sqlite";
+    const { flueDatabasePath } = await import("../../src/db.ts");
+    expect(flueDatabasePath()).toBe(paths.flueDatabase);
+    delete process.env.FLUE_DB_PATH;
   });
 });

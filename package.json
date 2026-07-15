@@ -25,7 +25,7 @@
     "url": "git+https://github.com/AaronAbuUsama/whatsappd-github-agent.git"
   },
   "bin": {
-    "ambient-agent": "./dist/cli/main.js"
+    "ambient-agent": "dist/cli/main.js"
   },
   "files": [
     "dist"

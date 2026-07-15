@@ -40,6 +40,7 @@ export interface ScriptedFirstRunValues {
 
 export interface RunFirstRunSetupInput extends ManagedPathEnvironment {
   readonly interactive: boolean;
+  readonly allowFreshChatGptAuthentication?: boolean;
   readonly services: FirstRunServices;
   readonly prompts: FirstRunPrompts;
   readonly scripted?: ScriptedFirstRunValues;
@@ -133,7 +134,7 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
     prepare: async (paths) => {
       const chatGpt = input.services.chatGptFor(paths);
       const chatGptStatus = await chatGpt.inspect();
-      if (!input.interactive && chatGptStatus.state !== "ready") {
+      if (!input.interactive && !input.allowFreshChatGptAuthentication && chatGptStatus.state !== "ready") {
         throw new Error("Non-interactive setup requires an existing valid managed ChatGPT credential.");
       }
       if (chatGptStatus.state !== "ready") {
@@ -187,7 +188,7 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         whatsappCredentialSource: paired ? "fresh pairing" : "existing managed session",
         githubCredentialSource: github.credential.source,
       };
-      const approved = await input.prompts.review(review);
+      const approved = input.interactive ? await input.prompts.review(review) : true;
       if (input.signal?.aborted) {
         throw new Error("Setup was cancelled or timed out before promotion; no files changed.");
       }

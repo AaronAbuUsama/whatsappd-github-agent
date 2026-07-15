@@ -5,7 +5,6 @@ import type { ConversationRecord, ConversationStreamStore } from "@flue/runtime/
 import { sqlite } from "@flue/runtime/node";
 
 import type { ConversationWindow } from "../coalescer/events.js";
-import { flueDatabasePath } from "../db.js";
 import type { ManagedChatInbox, WindowAdmission } from "./managed-chat-inbox.js";
 
 export interface AdmissionEvidenceSource {
@@ -126,9 +125,7 @@ export const findFlueAdmissionReceipt = async (
  * Open a separate adapter handle and read canonical evidence only. Missing
  * storage or an absent Window is inconclusive, never evidence for retry.
  */
-export const createFlueAdmissionEvidenceSource = (
-  databasePath: string = flueDatabasePath(),
-): AdmissionEvidenceSource => ({
+export const createFlueAdmissionEvidenceSource = (databasePath: string): AdmissionEvidenceSource => ({
   find: async (window) => {
     if (!existsSync(databasePath)) return undefined;
     const adapter = sqlite(databasePath);

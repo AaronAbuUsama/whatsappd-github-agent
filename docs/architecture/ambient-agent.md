@@ -12,13 +12,13 @@ Ambience is the proper name of the continuing Flue Agent. There is one Ambience 
 
 ## Current stable-base progress
 
-| Current code                                                                                                                            | What it proves                                                                                                    | Why it is not the stable base                                                                     |
-| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories            | One continuing Flue Agent can privately process every Window and manage the supported issue journey               | Operator uncertainty controls and the final packed runtime composition remain in later DAG issues |
-| `src/app.ts` and `src/host/whatsapp-runtime.ts` still consume a process-local environment bridge prepared from the managed installation | The validated managed setup owns credentials and configuration without user-authored environment files            | #11 still owns the final explicit composition root and complete packed command integration        |
-| `src/capabilities/issue-management/` owns the supported issue journey and a durable Operation Identity ledger                           | Authorized creation, correction, discussion, and lifecycle mutations preserve explicit proof boundaries           | #57 exposes operator resolution for Uncertain operations                                          |
-| `src/github/` verifies, routes, deduplicates, and admits provider deliveries through `application.sqlite`                               | A mapped delivery reaches one continuing Ambience with a retained Flue receipt across duplicate and restart cases | #57 exposes operator resolution for any Uncertain admission                                       |
-| `package.json` exposes a publishable `ambient-agent` bin with managed `init`, `auth`, `status`, `doctor`, and foreground `start` paths  | A packed tarball installs and runs the managed composition root on the supported POSIX floor                      | The package is not published yet and #11 still owns final composition and `config` rollout        |
+| Current code                                                                                                                                     | What it proves                                                                                                    | Why it is not the stable base                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories                     | One continuing Flue Agent can privately process every Window and manage the supported issue journey               | The complete real-provider journey still requires #59 proof                               |
+| `src/app.ts` and `src/host/whatsapp-runtime.ts` consume typed configuration, credential, and path dependencies from the CLI composition root     | The validated managed setup owns credentials and configuration without user-authored environment files            | Public-registry and real-provider journey proof remain before the stable base is complete |
+| `src/capabilities/issue-management/` owns the supported issue journey and a durable Operation Identity ledger                                    | Authorized creation, correction, discussion, and lifecycle mutations preserve explicit proof boundaries           | Live provider mutation and reconciliation remain #59 proof                                |
+| `src/github/` verifies, routes, deduplicates, and admits provider deliveries through `application.sqlite`                                        | A mapped delivery reaches one continuing Ambience with a retained Flue receipt across duplicate and restart cases | Live webhook routing and delivery remain #59 proof                                        |
+| `package.json` exposes a publishable `ambient-agent` bin with managed `init`, `auth`, `config`, `status`, `doctor`, and foreground `start` paths | A packed tarball installs and runs the managed composition root on the supported POSIX floor                      | The package is not published yet; real-provider journey proof remains in #59              |
 
 The rollout replaces these paths. It does not layer a second production path beside them.
 
@@ -208,6 +208,10 @@ The published package and executable are both named `ambient-agent`. A normal in
 ```
 
 The directory is created with mode `0700`; credential files use mode `0600`.
+`github.json` also holds an app-generated webhook signing secret so production
+startup does not depend on an operator-authored `.env` file. A one-time atomic
+migration adds it to older valid managed credentials without adopting any
+machine-global state.
 Ambient Agent starts the headless `openai-codex` device-code flow itself and
 stores the complete provider record with lock-protected atomic replacement.
 Expired credentials are refreshed once under the same lock and the rotated
@@ -229,7 +233,7 @@ npx ambient-agent start        # non-interactive foreground runtime
 npx ambient-agent status       # read-only state and health
 npx ambient-agent doctor       # offline configuration, credential and DB diagnostics
 npx ambient-agent doctor --refresh # opt-in credential refresh verification
-npx ambient-agent doctor --live    # opt-in real model request through production auth
+npx ambient-agent doctor --live    # opt-in real GitHub and model checks through production auth
 npx ambient-agent doctor --retry admission:<windowId> # explicit requeue after observation
 npx ambient-agent doctor --retry mutation:<operationId> # explicit new Operation Identity
 npx ambient-agent doctor --accept-observed mutation:<operationId>

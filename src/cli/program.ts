@@ -7,8 +7,20 @@ import * as prompts from "@clack/prompts";
 
 import { inspectManagedData, type InstallationInspection } from "../managed/installation.js";
 import { createManagedChatGptAuthentication } from "../managed/chatgpt-authentication.js";
+import {
+  readManagedConfig,
+  readManagedGitHubCredential,
+  ensureManagedGitHubWebhookSecret,
+  writeManagedConfiguration,
+} from "../managed/configuration.js";
+import { inspectManagedServices, type ManagedCheck } from "../managed/diagnostics.js";
 import { managedPaths, type ManagedPaths } from "../managed/paths.js";
-import { loadManagedRuntimeEnvironment } from "../managed/runtime-environment.js";
+import {
+  probeAmbientRuntimeHealth,
+  runtimeInstallationId,
+  type AmbientRuntimeHealth,
+  type AmbientRuntimeState,
+} from "../managed/runtime-health.js";
 import { installManagedRuntimeDependencies } from "../managed/runtime-dependencies.js";
 import {
   createUncertainWorkController,
@@ -31,7 +43,12 @@ import {
   runChatGptReadinessCheck,
   type ChatGptReadinessReceipt,
 } from "../model/pi-subscription.js";
-import { discoverGitHubCredential, discoverOriginRepository, verifyGitHubRepositoryAccess } from "../setup/github.js";
+import {
+  discoverGitHubCredential,
+  discoverOriginRepository,
+  normalizeGitHubRepository,
+  verifyGitHubRepositoryAccess,
+} from "../setup/github.js";
 import { runFirstRunSetup, type FirstRunPrompts, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
 import { createWhatsAppAccount } from "../whatsapp/account.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
@@ -63,6 +80,7 @@ export interface CliDependencies {
   ) => Promise<ChatGptReadinessReceipt>;
   readonly uncertainWorkFor?: (paths: ManagedPaths) => Promise<UncertainWorkController>;
   readonly inspectUncertainWork?: (databasePath: string) => UncertainWorkStatus;
+  readonly runtimeHealthFor?: (paths: ManagedPaths) => Promise<AmbientRuntimeHealth>;
 }
 
 export type StartRuntime = (paths: ManagedPaths) => Promise<void>;
@@ -75,16 +93,41 @@ const defaultOutput: CliOutput = {
 
 const importRuntime: ImportRuntime = async (specifier) => await import(specifier);
 
+const parseRuntimePort = (value: string): number => {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("The runtime port must be an integer from 1 through 65535.");
+  }
+  return port;
+};
+
 const startGeneratedRuntime = async (
   paths: ManagedPaths,
   authentication: ChatGptAuthentication,
   importServer: ImportRuntime = importRuntime,
 ): Promise<void> => {
-  installManagedRuntimeDependencies({ authentication });
-  await loadManagedRuntimeEnvironment(paths);
+  await ensureManagedGitHubWebhookSecret(paths.githubCredential);
+  const configuration = await readManagedConfig(paths.config);
+  const githubCredential = await readManagedGitHubCredential(paths.githubCredential);
+  if (githubCredential.webhookSecret === undefined) {
+    throw new Error("The app-owned GitHub webhook credential migration did not complete.");
+  }
+  installManagedRuntimeDependencies({
+    authentication,
+    configuration,
+    githubCredential: { ...githubCredential, webhookSecret: githubCredential.webhookSecret },
+    paths,
+  });
   process.chdir(paths.root);
   const serverEntry = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs"));
-  await importServer(serverEntry.href);
+  const previousPort = process.env.PORT;
+  process.env.PORT = String(configuration.runtime.port);
+  try {
+    await importServer(serverEntry.href);
+  } finally {
+    if (previousPort === undefined) delete process.env.PORT;
+    else process.env.PORT = previousPort;
+  }
 };
 
 const requiredPrompt = async (label: string, prompt: () => Promise<string | symbol>): Promise<string> => {
@@ -174,16 +217,38 @@ const defaultSetupPrompts: SetupPrompts = {
 const renderInspection = (
   inspection: InstallationInspection,
   authentication: ChatGptAuthenticationStatus,
+  checks: readonly ManagedCheck[],
+  observedRuntime: AmbientRuntimeHealth | undefined,
   liveCheck: ChatGptReadinessReceipt | undefined,
   uncertainWork: UncertainWorkStatus | undefined,
   uncertainDoctor: UncertainDoctorReport | undefined,
   uncertainAction: UncertainActionResult | undefined,
   json: boolean,
 ): string => {
+  const localRuntimeState: AmbientRuntimeState =
+    inspection.state === "unconfigured"
+      ? "stopped"
+      : inspection.state === "damaged" || checks.some(({ state }) => state === "failed")
+        ? "failed"
+        : authentication.state !== "ready" ||
+            checks.some(({ state }) => state === "warning") ||
+            uncertainWork?.health === "degraded" ||
+            liveCheck?.request === "failed"
+          ? "degraded"
+          : "configured";
+  const runtimeState: AmbientRuntimeState =
+    localRuntimeState === "failed" || observedRuntime?.state === "failed"
+      ? "failed"
+      : localRuntimeState === "degraded" || observedRuntime?.state === "degraded"
+        ? "degraded"
+        : (observedRuntime?.state ?? localRuntimeState);
   if (json)
     return `${JSON.stringify(
       {
         ...inspection,
+        runtimeState,
+        checks,
+        observedRuntime,
         modelAuthentication: authentication,
         liveCheck,
         uncertainWork,
@@ -193,9 +258,17 @@ const renderInspection = (
       null,
       2,
     )}\n`;
-  const lines = [`Ambient Agent: ${inspection.state}`, `Data directory: ${inspection.dataDirectory}`];
+  const lines = [
+    `Ambient Agent: ${inspection.state}`,
+    `Runtime state: ${runtimeState}`,
+    `Data directory: ${inspection.dataDirectory}`,
+  ];
   for (const item of inspection.diagnostics) {
     lines.push(`[${item.code}] ${item.message}`, `  Path: ${item.path}`, `  Fix: ${item.remediation}`);
+  }
+  for (const check of checks) {
+    lines.push(`${check.name}: ${check.state} (${check.code})`, `  ${check.message}`);
+    if (check.remediation !== undefined) lines.push(`  Fix: ${check.remediation}`);
   }
   lines.push(`ChatGPT authentication: ${authentication.state}`);
   if (authentication.state === "missing") {
@@ -309,11 +382,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   const uncertainWorkFor =
     dependencies.uncertainWorkFor ??
     (async (paths: ManagedPaths): Promise<UncertainWorkController> => {
-      const environment: Record<string, string | undefined> = {};
-      await loadManagedRuntimeEnvironment(paths, environment);
-      const token = environment.GITHUB_TOKEN;
-      if (token === undefined)
-        throw new Error("The managed GitHub credential is unavailable for uncertainty diagnosis.");
+      const token = (await readManagedGitHubCredential(paths.githubCredential)).token;
       const archive = createConversationArchive(paths.applicationDatabase);
       try {
         createManagedChatInbox(archive, { allowed: () => false });
@@ -328,6 +397,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       });
     });
   const inspectUncertainWork = dependencies.inspectUncertainWork ?? inspectUncertainWorkStatus;
+  const runtimeHealthFor =
+    dependencies.runtimeHealthFor ??
+    (async (paths) => {
+      const configuration = await readManagedConfig(paths.config);
+      const credential = await readManagedGitHubCredential(paths.githubCredential);
+      if (credential.webhookSecret === undefined) return { state: "stopped", whatsapp: { phase: "stopped" } };
+      return await probeAmbientRuntimeHealth({
+        port: configuration.runtime.port,
+        installationId: runtimeInstallationId(credential.webhookSecret),
+        timeoutMillis: 750,
+      });
+    });
   const operationSignal = (timeoutMillis: number): AbortSignal => {
     const timeout = AbortSignal.timeout(timeoutMillis);
     return dependencies.signal === undefined ? timeout : AbortSignal.any([dependencies.signal, timeout]);
@@ -384,6 +465,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     json: boolean,
     refresh: boolean = false,
     live: boolean = false,
+    observeRuntime: boolean = false,
     uncertainty?:
       | { readonly mode: "status" }
       | {
@@ -395,6 +477,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   ): Promise<{
     readonly installation: InstallationInspection;
     readonly authentication: ChatGptAuthenticationStatus;
+    readonly checks: readonly ManagedCheck[];
+    readonly observedRuntime?: AmbientRuntimeHealth;
     readonly liveCheck?: ChatGptReadinessReceipt;
     readonly uncertainWork?: UncertainWorkStatus;
     readonly uncertainDoctor?: UncertainDoctorReport;
@@ -403,7 +487,45 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const paths = managedPaths({ dataDirectory: program.opts().dataDir });
     const inspection = await inspectManagedData({ dataDirectory: paths.root });
     const authenticationSafe = inspection.state === "configured" || credentialDamageOnly(inspection, paths);
+    const checks = inspection.state === "configured" ? [...(await inspectManagedServices(paths))] : [];
+    const managedGitHubCredential =
+      inspection.state === "configured" ? await readManagedGitHubCredential(paths.githubCredential) : undefined;
+    if (managedGitHubCredential?.webhookSecret === undefined && inspection.state === "configured") {
+      checks.push({
+        name: "github-webhook-secret",
+        state: "warning",
+        code: "github.webhook-secret-migration-pending",
+        message: "The valid predecessor GitHub credential needs the app-owned webhook-secret migration.",
+        remediation: "Run ambient-agent start once; startup performs the supported atomic migration before listening.",
+      });
+    }
+    if (live && inspection.state === "configured") {
+      const config = await readManagedConfig(paths.config);
+      try {
+        await firstRunServices.verifyGitHub(
+          managedGitHubCredential!.token,
+          config.github.defaultRepository,
+          readinessSignal(),
+        );
+        checks.push({
+          name: "github-access",
+          state: "ready",
+          code: "github.ready",
+          message: `GitHub authenticated and can access ${config.github.defaultRepository}.`,
+        });
+      } catch {
+        checks.push({
+          name: "github-access",
+          state: "failed",
+          code: "github.access-failed",
+          message: `GitHub authentication or repository access failed for ${config.github.defaultRepository}.`,
+          remediation: "Run ambient-agent config with a valid scoped GitHub token, then run doctor --live again.",
+        });
+      }
+    }
     const authentication = authenticationSafe ? authenticationFor(paths) : undefined;
+    const observedRuntime =
+      observeRuntime && inspection.state === "configured" ? await runtimeHealthFor(paths) : undefined;
     let authenticationStatus: ChatGptAuthenticationStatus =
       inspection.state === "unconfigured"
         ? { state: "missing" }
@@ -445,7 +567,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     let uncertainWork: UncertainWorkStatus | undefined;
     let uncertainDoctor: UncertainDoctorReport | undefined;
     let uncertainAction: UncertainActionResult | undefined;
-    if (inspection.state === "configured" && uncertainty !== undefined) {
+    const applicationDatabaseReady = checks.some(
+      ({ name, state }) => name === "application-database" && state === "ready",
+    );
+    if (inspection.state === "configured" && applicationDatabaseReady && uncertainty !== undefined) {
       if (uncertainty.mode === "status") {
         uncertainWork = inspectUncertainWork(paths.applicationDatabase);
       } else {
@@ -466,6 +591,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       renderInspection(
         inspection,
         authenticationStatus,
+        checks,
+        observedRuntime,
         liveCheck,
         uncertainWork,
         uncertainDoctor,
@@ -476,6 +603,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     return {
       installation: inspection,
       authentication: authenticationStatus,
+      checks,
+      observedRuntime,
       liveCheck,
       uncertainWork,
       uncertainDoctor,
@@ -489,6 +618,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--chat <jid>", "managed WhatsApp chat JID")
     .option("--repository <owner/name>", "default GitHub repository")
     .option("--github-token-file <path>", "read the GitHub token from a file")
+    .option("--authorize", "allow explicit headless ChatGPT device authorization")
     .action(async (options) => {
       const global = program.opts();
       const current = await inspectManagedData({ dataDirectory: global.dataDir });
@@ -508,6 +638,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const result = await runFirstRunSetup({
         dataDirectory: global.dataDir,
         interactive,
+        allowFreshChatGptAuthentication: options.authorize ?? false,
         services: firstRunServices,
         prompts: setupPrompts,
         scripted: {
@@ -550,6 +681,129 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     });
 
   program
+    .command("config")
+    .description("review and change validated managed configuration")
+    .option("--chat <jid>", "managed WhatsApp chat JID")
+    .option("--repository <owner/name>", "default GitHub repository")
+    .option("--port <port>", "foreground runtime HTTP port")
+    .option("--github-token-file <path>", "replace the GitHub token from a private file")
+    .action(async (options) => {
+      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
+      const inspection = await inspectManagedData({ dataDirectory: paths.root });
+      if (inspection.state !== "configured") {
+        throw new Error(
+          inspection.state === "unconfigured"
+            ? "Ambient Agent is not configured; run ambient-agent init first."
+            : `Refusing to reconfigure damaged managed data at ${paths.root}; run ambient-agent doctor.`,
+        );
+      }
+      const currentConfig = await readManagedConfig(paths.config);
+      const currentCredential = await readManagedGitHubCredential(paths.githubCredential);
+      let selected = {
+        jid: options.chat ?? currentConfig.managedChats[0]!,
+        name: options.chat ?? currentConfig.managedChats[0]!,
+        kind: (options.chat ?? currentConfig.managedChats[0]!).endsWith("@g.us")
+          ? ("group" as const)
+          : ("direct" as const),
+      };
+
+      if (interactive || options.chat !== undefined) {
+        const archive = createConversationArchive(paths.applicationDatabase);
+        const account = firstRunServices.whatsappFor(paths, archive);
+        try {
+          let pairingRequired = false;
+          await account.authenticate(
+            {
+              ...whatsappCallbacks,
+              onPairing: (progress) => {
+                pairingRequired = true;
+                whatsappCallbacks.onPairing?.(progress);
+              },
+            },
+            authenticationSignal(),
+          );
+          if (!interactive && pairingRequired) {
+            throw new Error("Non-interactive config requires an existing valid managed WhatsApp session.");
+          }
+          const candidates = await account.synchronizedChats(authenticationSignal());
+          const jid = interactive ? await setupPrompts.selectChat(candidates) : options.chat!;
+          const candidate = candidates.find((item) => item.jid === jid);
+          if (candidate === undefined) {
+            throw new Error("The selected WhatsApp chat was not found in the authenticated account sync result.");
+          }
+          selected = { jid: candidate.jid, name: candidate.name, kind: candidate.kind };
+        } finally {
+          try {
+            await account.stop();
+          } finally {
+            archive.close();
+          }
+        }
+      }
+
+      const repository = normalizeGitHubRepository(
+        interactive
+          ? await setupPrompts.repository(options.repository ?? currentConfig.github.defaultRepository)
+          : (options.repository ?? currentConfig.github.defaultRepository),
+      );
+      const credentialFromFile =
+        options.githubTokenFile === undefined
+          ? undefined
+          : { token: await readGitHubToken(options.githubTokenFile), source: "token file" };
+      const credential = interactive
+        ? await setupPrompts.githubCredential(
+            credentialFromFile ?? { token: currentCredential.token, source: "existing managed credential" },
+          )
+        : (credentialFromFile ?? { token: currentCredential.token, source: "existing managed credential" });
+      const verifiedRepository = await firstRunServices.verifyGitHub(
+        credential.token,
+        repository,
+        authenticationSignal(),
+      );
+      const review: SetupReview = {
+        dataDirectory: paths.root,
+        chat: selected,
+        repository: verifiedRepository,
+        chatGptCredentialSource: "existing managed credential",
+        whatsappCredentialSource: "existing managed session",
+        githubCredentialSource: credential.source,
+      };
+      if (interactive && !(await setupPrompts.review(review))) {
+        throw new Error("Configuration cancelled; managed configuration was not changed.");
+      }
+      const managedChats = [
+        selected.jid,
+        ...currentConfig.managedChats.filter((chat) => chat.toLowerCase() !== selected.jid.toLowerCase()),
+      ];
+      const allowedRepositories = [...currentConfig.github.allowedRepositories, verifiedRepository].filter(
+        (repository, index, all) =>
+          all.findIndex((candidate) => candidate.toLowerCase() === repository.toLowerCase()) === index,
+      );
+      const runtimePort = options.port === undefined ? currentConfig.runtime.port : parseRuntimePort(options.port);
+      await writeManagedConfiguration(
+        paths.config,
+        paths.githubCredential,
+        {
+          ...currentConfig,
+          managedChats,
+          runtime: { port: runtimePort },
+          github: {
+            ...currentConfig.github,
+            defaultRepository: verifiedRepository,
+            allowedRepositories,
+          },
+        },
+        {
+          schemaVersion: 1,
+          kind: "personal-token",
+          token: credential.token,
+          ...(currentCredential.webhookSecret === undefined ? {} : { webhookSecret: currentCredential.webhookSecret }),
+        },
+      );
+      output.stdout(`Updated validated managed configuration at ${paths.config}.\n`);
+    });
+
+  program
     .command("start")
     .description("start the generated Flue server in the foreground")
     .action(async () => {
@@ -570,11 +824,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .description("report whether the managed installation is ready")
     .option("--json", "emit machine-readable JSON")
     .action(async (options) => {
-      const report = await reportInspection(options.json ?? false, false, false, { mode: "status" });
+      const report = await reportInspection(options.json ?? false, false, false, true, { mode: "status" });
       if (report.installation.state === "unconfigured") exitCode = 2;
       else if (
         report.installation.state === "damaged" ||
         report.authentication.state !== "ready" ||
+        report.checks.some(({ state }) => state !== "ready") ||
+        report.observedRuntime?.state === "failed" ||
+        report.observedRuntime?.state === "degraded" ||
         report.uncertainWork?.health === "degraded"
       )
         exitCode = 3;
@@ -585,7 +842,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .description("diagnose managed configuration, permissions, and credential references")
     .option("--json", "emit machine-readable JSON")
     .option("--refresh", "verify and safely rotate an expired ChatGPT credential")
-    .option("--live", "make one gated real model readiness request")
+    .option("--live", "make gated real GitHub and model readiness requests")
     .option("--retry <ref>", "explicitly retry admission:<windowId> or mutation:<operationId>")
     .option("--abandon <ref>", "explicitly abandon unresolved work while preserving its audit")
     .option("--accept-observed <ref>", "accept observed desired state for an external mutation")
@@ -598,6 +855,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         options.json ?? false,
         Boolean(options.refresh || options.live),
         options.live ?? false,
+        false,
         {
           mode: "doctor",
           ...(options.retry === undefined ? {} : { retry: options.retry as UncertainWorkRef }),
@@ -610,6 +868,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (
         report.installation.state !== "configured" ||
         report.authentication.state !== "ready" ||
+        report.checks.some(({ state }) => state !== "ready") ||
         report.liveCheck?.request === "failed" ||
         report.uncertainWork?.health === "degraded" ||
         report.uncertainAction?.outcome === "failed"

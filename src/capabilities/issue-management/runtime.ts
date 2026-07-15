@@ -17,7 +17,7 @@ export interface IssueManagementSettings {
 }
 
 export const loadIssueManagementSettings = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  env: Readonly<Record<string, string | undefined>>,
 ): IssueManagementSettings => {
   const token = env.GITHUB_TOKEN?.trim();
   if (!token) throw new Error("GITHUB_TOKEN is required for Issue Management");

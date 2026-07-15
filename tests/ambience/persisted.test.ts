@@ -106,7 +106,7 @@ async function waitForServer(url: string, process: ChildProcessWithoutNullStream
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     if (process.exitCode !== null) {
-      throw new Error(`Flue fixture exited before readiness with ${process.exitCode}`);
+      throw new Error(`Flue fixture exited before readiness with ${process.exitCode}:\n${serverOutput}`);
     }
     try {
       const response = await fetch(`${url}/health`);

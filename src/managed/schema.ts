@@ -13,6 +13,7 @@ const ManagedChat = v.pipe(
   NonBlankString,
   v.regex(/^[^@\s]+@(g\.us|s\.whatsapp\.net)$/, "Expected a WhatsApp group or direct-chat JID"),
 );
+const RuntimePort = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65_535));
 
 export const ManagedConfigSchema = v.pipe(
   v.strictObject({
@@ -25,6 +26,7 @@ export const ManagedConfigSchema = v.pipe(
         v.literal(LEGACY_PI_AUTH_CREDENTIAL_REFERENCE),
       ]),
     }),
+    runtime: v.optional(v.strictObject({ port: RuntimePort }), { port: 3000 }),
     github: v.strictObject({
       kind: v.literal("personal-token"),
       credential: v.literal(GITHUB_CREDENTIAL_REFERENCE),
@@ -47,6 +49,7 @@ export const GitHubCredentialSchema = v.strictObject({
   schemaVersion: v.literal(1),
   kind: v.literal("personal-token"),
   token: NonBlankString,
+  webhookSecret: v.optional(NonBlankString),
 });
 
 export type GitHubCredential = v.InferOutput<typeof GitHubCredentialSchema>;
@@ -68,6 +71,7 @@ export const createManagedConfig = (managedChats: readonly string[], defaultRepo
   schemaVersion: 1,
   managedChats: [...managedChats],
   model: { provider: "openai-codex", credential: CHATGPT_OAUTH_CREDENTIAL_REFERENCE },
+  runtime: { port: 3000 },
   github: {
     kind: "personal-token",
     credential: GITHUB_CREDENTIAL_REFERENCE,

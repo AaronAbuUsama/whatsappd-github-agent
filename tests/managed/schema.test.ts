@@ -14,6 +14,7 @@ describe("managed schemas", () => {
     const parsed = v.parse(ManagedConfigSchema, config);
     expect(parsed.managedChats).toEqual(["120363000@g.us", "15550000000@s.whatsapp.net"]);
     expect(parsed.github.defaultRepository).toBe("owner/repo");
+    expect(parsed.runtime).toEqual({ port: 3000 });
   });
 
   it("rejects blank or malformed managed-chat identifiers", () => {
@@ -60,5 +61,12 @@ describe("managed schemas", () => {
       provider: "openai-codex",
       credential: "chatgpt-oauth",
     });
+  });
+
+  it("defaults older managed configuration to the discoverable runtime port and validates explicit ports", () => {
+    const { runtime: _runtime, ...older } = createManagedConfig(["120363000@g.us"], "owner/repo");
+    expect(v.parse(ManagedConfigSchema, older).runtime).toEqual({ port: 3000 });
+    expect(v.safeParse(ManagedConfigSchema, { ...older, runtime: { port: 65_535 } }).success).toBe(true);
+    expect(v.safeParse(ManagedConfigSchema, { ...older, runtime: { port: 65_536 } }).success).toBe(false);
   });
 });
