@@ -1,5 +1,7 @@
 <div align="center">
 
+  <img src="./assets/brand/ambient-agent-readme-banner.png" alt="Ambient Agent — an agentic software engineer that lives in your WhatsApp group" width="100%">
+
   <h1>Ambient Agent</h1>
 
   <p><strong>An agentic software engineer that lives in your WhatsApp group.</strong></p>
