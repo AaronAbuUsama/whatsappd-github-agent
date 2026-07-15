@@ -7,16 +7,19 @@ import type {
   IncomingMessage as WhatsAppMessage,
   MessageRef,
   Outbound,
+  Status,
+  Update,
   WhatsAppSession,
 } from "whatsappd";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import type { AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
 import { makeChatGate } from "../../src/coalescer/chat-gate.ts";
-import { createWhatsAppHistory, persistWhatsAppMessages } from "../../src/host/whatsapp-history.ts";
 import { createWhatsAppHost, runWhatsAppSession } from "../../src/host/whatsapp-runtime.ts";
+import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { createReadWhatsAppThreadTool, createSearchWhatsAppHistoryTool } from "../../src/tools/whatsapp/history.ts";
 import { createSayTool } from "../../src/tools/whatsapp/say.ts";
+import { createWhatsAppAccount } from "../../src/whatsapp/account.ts";
 
 const CHAT = "managed-31@g.us";
 const OTHER_CHAT = "unmanaged-31@g.us";
@@ -27,22 +30,39 @@ afterEach(() => {
   for (const directory of dirs.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-const temporaryHistory = () => {
+const temporaryArchive = () => {
   const directory = mkdtempSync(join(tmpdir(), "ambience-whatsapp-"));
   dirs.push(directory);
-  return createWhatsAppHistory(join(directory, "history.sqlite"));
+  return {
+    archive: createConversationArchive(join(directory, "application.sqlite")),
+    storeDirectory: join(directory, "whatsapp"),
+  };
 };
 
 const fakeSession = (options: { readonly sendError?: Error; readonly typingOffError?: Error } = {}) => {
   const messageListeners = new Set<(message: WhatsAppMessage) => void | Promise<void>>();
   const syncListeners = new Set<(batch: ConversationSyncBatch) => void | Promise<void>>();
+  const updateListeners = new Set<(update: Update) => void | Promise<void>>();
+  const statusListeners = new Set<(status: Status) => void | Promise<void>>();
   const sent: Array<{ chatId: string; content: Outbound }> = [];
   const typing: Array<{ chatId: string; on: boolean }> = [];
   let nextMessage = 0;
+  let status: Status = { phase: "disconnected" };
   const session = {
+    get status() {
+      return status;
+    },
+    onStatus(listener: (next: Status) => void | Promise<void>) {
+      statusListeners.add(listener);
+      return () => statusListeners.delete(listener);
+    },
     onMessage(listener: (message: WhatsAppMessage) => void | Promise<void>) {
       messageListeners.add(listener);
       return () => messageListeners.delete(listener);
+    },
+    onUpdate(listener: (update: Update) => void | Promise<void>) {
+      updateListeners.add(listener);
+      return () => updateListeners.delete(listener);
     },
     onConversationSync(listener: (batch: ConversationSyncBatch) => void | Promise<void>) {
       syncListeners.add(listener);
@@ -57,6 +77,11 @@ const fakeSession = (options: { readonly sendError?: Error; readonly typingOffEr
       typing.push({ chatId, on });
       if (!on && options.typingOffError) throw options.typingOffError;
     },
+    async start(): Promise<void> {
+      status = { phase: "online" };
+      for (const listener of statusListeners) await listener(status);
+    },
+    async stop(): Promise<void> {},
     identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
   } as unknown as WhatsAppSession;
   return { session, messageListeners, syncListeners, sent, typing };
@@ -89,18 +114,23 @@ const inbound = (
 
 describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
   it("uses one managed session for gated ingress, history, Ambience dispatch, and explicit say", async () => {
-    const history = temporaryHistory();
+    const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
-    const persisted = persistWhatsAppMessages(fake.session, history);
+    const account = createWhatsAppAccount({
+      storeDirectory,
+      archive,
+      sessionFactory: () => fake.session,
+    });
+    await account.authenticate({});
     const dispatches: AmbienceDispatchRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.forkScoped(
-            runWhatsAppSession(persisted.session, {
+            runWhatsAppSession(account.session(), {
               gate: makeChatGate({ groupIds: CHAT }),
-              history,
+              history: archive,
               coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
               dispatch: async (request) => {
                 dispatches.push(request);
@@ -127,7 +157,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
             // It enriches one row rather than manufacturing a second message.
             for (const listener of fake.messageListeners) await listener(synced);
             for (const listener of fake.messageListeners) {
-              await listener(inbound({ id: "ignored-31", chatId: OTHER_CHAT }));
+              await listener(inbound({ id: "ignored-31", chatId: OTHER_CHAT, text: "must remain isolated" }));
             }
             for (const listener of fake.messageListeners) await listener(inbound());
           });
@@ -165,14 +195,6 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
           ]);
           expect(fake.sent).toEqual([{ chatId: CHAT, content: { text: "one controlled reply" } }]);
 
-          history.persist({
-            id: "other-chat-message",
-            chatId: OTHER_CHAT,
-            direction: "inbound",
-            kind: "text",
-            text: "must remain isolated",
-            timestamp: 500,
-          });
           const read = createReadWhatsAppThreadTool(CHAT);
           const search = createSearchWhatsAppHistoryTool(CHAT);
           expect(read.run({ input: { limit: 10 } })).toMatchObject({
@@ -182,7 +204,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
               expect.objectContaining({ id: "real-host-message-1", direction: "outbound" }),
             ],
           });
-          expect(history.readThread(CHAT, 10).filter(({ id }) => id === "history-sync-31")).toHaveLength(1);
+          expect(archive.readThread(CHAT, 10).filter(({ id }) => id === "history-sync-31")).toHaveLength(1);
           expect(search.run({ input: { query: "controlled reply" } })).toMatchObject({
             messages: [expect.objectContaining({ id: "real-host-message-1", chatId: CHAT })],
           });
@@ -191,8 +213,8 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       ),
     );
 
-    persisted.unsubscribe();
-    history.close();
+    await account.stop();
+    archive.close();
   });
 });
 
