@@ -32,6 +32,27 @@ describe("managed service diagnostics", () => {
     expect(JSON.stringify(checks)).not.toContain("must-not-escape");
   });
 
+  it("recognizes a persisted WhatsApp Web linked-device identity", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-linked-"));
+    roots.push(root);
+    const paths = managedPaths({ dataDirectory: root });
+    await mkdir(paths.whatsapp, { mode: 0o700 });
+    await Promise.all([
+      writeFile(paths.applicationDatabase, ""),
+      writeFile(paths.flueDatabase, ""),
+      writeFile(
+        join(paths.whatsapp, "creds.json"),
+        JSON.stringify({ registered: false, me: { id: "linked-device-identity-must-not-escape" } }),
+      ),
+    ]);
+
+    const checks = await inspectManagedServices(paths);
+    expect(checks).toContainEqual(
+      expect.objectContaining({ name: "whatsapp-session", state: "ready", code: "whatsapp.ready" }),
+    );
+    expect(JSON.stringify(checks)).not.toContain("linked-device-identity-must-not-escape");
+  });
+
   it("reports a missing WhatsApp credential without creating it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-missing-"));
     roots.push(root);

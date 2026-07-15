@@ -1,6 +1,9 @@
 # Ambient Agent production architecture
 
-This is the ratified target and implementation map for the stable-base rollout. The integration branch now includes durable Managed Chat Windows and Admission Relay receipts; the remaining gaps below are not claims that those merged slices are still best-effort.
+This is the ratified architecture and implementation map for the stable base.
+The complete packed, managed-OAuth, WhatsApp, GitHub, and process-replacement
+receipt is recorded in
+[`docs/proof/ambient-agent-stable-base-live.md`](../proof/ambient-agent-stable-base-live.md).
 
 ## Product
 
@@ -10,15 +13,15 @@ The first complete production Capability is Issue Management. It handles bug rep
 
 Ambience is the proper name of the continuing Flue Agent. There is one Ambience instance per Managed Chat, addressed by WhatsApp `chatId`.
 
-## Current stable-base progress
+## Stable-base evidence
 
-| Current code                                                                                                                                     | What it proves                                                                                                    | Why it is not the stable base                                                             |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories                     | One continuing Flue Agent can privately process every Window and manage the supported issue journey               | The complete real-provider journey still requires #59 proof                               |
-| `src/app.ts` and `src/host/whatsapp-runtime.ts` consume typed configuration, credential, and path dependencies from the CLI composition root     | The validated managed setup owns credentials and configuration without user-authored environment files            | Public-registry and real-provider journey proof remain before the stable base is complete |
-| `src/capabilities/issue-management/` owns the supported issue journey and a durable Operation Identity ledger                                    | Authorized creation, correction, discussion, and lifecycle mutations preserve explicit proof boundaries           | Live provider mutation and reconciliation remain #59 proof                                |
-| `src/github/` verifies, routes, deduplicates, and admits provider deliveries through `application.sqlite`                                        | A mapped delivery reaches one continuing Ambience with a retained Flue receipt across duplicate and restart cases | Live webhook routing and delivery remain #59 proof                                        |
-| `package.json` exposes a publishable `ambient-agent` bin with managed `init`, `auth`, `config`, `status`, `doctor`, and foreground `start` paths | A packed tarball installs and runs the managed composition root on the supported POSIX floor                      | The package is not published yet; real-provider journey proof remains in #59              |
+| Current code                                                                                                                                 | Mechanically verified boundary                                                                                                              | Boundary outside the receipt                                                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories                 | Two real post-setup Windows reached one continuing canonical Ambience stream and selected the supported Tools                               | Model behavior beyond the recorded journey remains evaluation- or scenario-specific                        |
+| `src/app.ts` and `src/host/whatsapp-runtime.ts` consume typed configuration, credential, and path dependencies from the CLI composition root | An installed local tarball used one private managed directory, managed ChatGPT OAuth, and a real adopted WhatsApp session                   | Fresh QR pairing and provider credential portability to another host were not exercised                    |
+| `src/capabilities/issue-management/` owns the supported issue journey and a durable Operation Identity ledger                                | A real report created exactly one authorized issue; a later instruction added one comment and closed it under separate completed identities | Ambiguous live-provider reconciliation was proven deterministically, not induced during the qualifying run |
+| `src/github/` verifies, routes, deduplicates, and admits provider deliveries through `application.sqlite`                                    | Deterministic signed-ingress and restart suites cover the application-owned webhook path                                                    | GitHub's public webhook transport was not part of the WhatsApp-initiated #59 journey                       |
+| `package.json` exposes the `ambient-agent` bin with managed `init`, `auth`, `config`, `status`, `doctor`, and foreground `start` paths       | `ambient-agent@0.1.0` exists on npm; the newer stable-base source was packed, installed, started, replaced, and diagnosed through that bin  | The newer source changes require a subsequent registry release before a bare public install contains them  |
 
 The rollout replaces these paths. It does not layer a second production path beside them.
 

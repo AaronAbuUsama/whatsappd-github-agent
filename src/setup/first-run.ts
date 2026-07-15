@@ -1,8 +1,16 @@
+import { chmod, cp, lstat, opendir, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
+
 import { createConversationArchive, type ConversationArchive } from "../intake/conversation-archive.js";
 import { installPreparedManagedData, type InstallManagedDataResult } from "../managed/installation.js";
 import { managedPaths, type ManagedPathEnvironment, type ManagedPaths } from "../managed/paths.js";
 import type { ChatGptAuthentication, DeviceCodeCallbacks } from "../model/chatgpt-authentication.js";
-import type { ChatCandidate, ManagedWhatsAppAccount, PairingCallbacks } from "../whatsapp/account.js";
+import {
+  WhatsAppAccountError,
+  type ChatCandidate,
+  type ManagedWhatsAppAccount,
+  type PairingCallbacks,
+} from "../whatsapp/account.js";
 import { normalizeGitHubRepository, type DiscoveredGitHubCredential } from "./github.js";
 
 export interface SetupReview {
@@ -41,6 +49,7 @@ export interface ScriptedFirstRunValues {
 export interface RunFirstRunSetupInput extends ManagedPathEnvironment {
   readonly interactive: boolean;
   readonly allowFreshChatGptAuthentication?: boolean;
+  readonly whatsappStoreSource?: string;
   readonly services: FirstRunServices;
   readonly prompts: FirstRunPrompts;
   readonly scripted?: ScriptedFirstRunValues;
@@ -49,15 +58,74 @@ export interface RunFirstRunSetupInput extends ManagedPathEnvironment {
   readonly signal?: AbortSignal;
 }
 
+const secureImportedWhatsAppStore = async (directory: string): Promise<void> => {
+  const entries = await opendir(directory);
+  for await (const entry of entries) {
+    const path = join(directory, entry.name);
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+      throw new Error("The WhatsApp store may contain only directories and regular files.");
+    }
+    if (stat.isDirectory()) {
+      await secureImportedWhatsAppStore(path);
+      await chmod(path, 0o700);
+    } else {
+      await chmod(path, 0o600);
+    }
+  }
+};
+
+const importWhatsAppStore = async (source: string, destination: string): Promise<void> => {
+  const sourceStat = await lstat(source);
+  if (sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
+    throw new Error("The WhatsApp store source must be a regular directory.");
+  }
+  const [canonicalSource, canonicalDestination] = await Promise.all([realpath(source), realpath(destination)]);
+  const contains = (parent: string, child: string): boolean => {
+    const path = relative(parent, child);
+    return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
+  };
+  if (contains(canonicalSource, canonicalDestination) || contains(canonicalDestination, canonicalSource)) {
+    throw new Error("The WhatsApp store source and managed staging directory must not overlap.");
+  }
+  const entries = await opendir(source);
+  for await (const entry of entries) {
+    await cp(join(source, entry.name), join(destination, entry.name), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: async (path) => {
+        const stat = await lstat(path);
+        if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+          throw new Error("The WhatsApp store may contain only directories and regular files.");
+        }
+        return true;
+      },
+    });
+  }
+  await secureImportedWhatsAppStore(destination);
+  await chmod(destination, 0o700);
+};
+
 const supportedChat = (jid: string): boolean => /^[^@\s]+@(g\.us|s\.whatsapp\.net)$/.test(jid);
 
 const selectChat = async (
   candidates: readonly ChatCandidate[],
   input: RunFirstRunSetupInput,
+  allowImportedFallback: boolean,
 ): Promise<ChatCandidate> => {
   const supported = candidates.filter(({ jid }) => supportedChat(jid));
-  if (supported.length === 0)
+  if (supported.length === 0) {
+    const importedChat = allowImportedFallback ? input.scripted?.chat : undefined;
+    if (importedChat !== undefined && supportedChat(importedChat)) {
+      return {
+        jid: importedChat,
+        name: importedChat,
+        kind: importedChat.endsWith("@g.us") ? "group" : "direct",
+      };
+    }
     throw new Error("The connected WhatsApp account did not synchronize any supported chats.");
+  }
   if (!input.interactive) {
     const scripted = input.scripted?.chat;
     if (!scripted) throw new Error("Non-interactive setup requires --chat from the authenticated account sync result.");
@@ -132,6 +200,9 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
   return await installPreparedManagedData({
     ...input,
     prepare: async (paths) => {
+      if (input.whatsappStoreSource !== undefined) {
+        await importWhatsAppStore(input.whatsappStoreSource, paths.whatsapp);
+      }
       const chatGpt = input.services.chatGptFor(paths);
       const chatGptStatus = await chatGpt.inspect();
       if (!input.interactive && !input.allowFreshChatGptAuthentication && chatGptStatus.state !== "ready") {
@@ -164,7 +235,20 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         if (!input.interactive && paired) {
           throw new Error("Non-interactive setup requires an existing valid managed WhatsApp session.");
         }
-        selected = await selectChat(await account.synchronizedChats(input.signal), input);
+        let candidates: readonly ChatCandidate[];
+        try {
+          candidates = await account.synchronizedChats(input.signal);
+        } catch (cause) {
+          const mayUseImportedChat =
+            !paired &&
+            input.whatsappStoreSource !== undefined &&
+            input.scripted?.chat !== undefined &&
+            cause instanceof WhatsAppAccountError &&
+            cause.code === "timeout";
+          if (!mayUseImportedChat) throw cause;
+          candidates = [];
+        }
+        selected = await selectChat(candidates, input, !paired && input.whatsappStoreSource !== undefined);
       } catch (cause) {
         if (!input.interactive && paired) {
           throw new Error("Non-interactive setup requires an existing valid managed WhatsApp session.");

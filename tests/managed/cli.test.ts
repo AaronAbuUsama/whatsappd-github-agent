@@ -8,6 +8,7 @@ import { getManagedRuntimeDependencies } from "../../src/managed/runtime-depende
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import type { ChatGptOAuthAdapter } from "../../src/model/chatgpt-authentication.ts";
 import { ChatGptReadinessError } from "../../src/model/pi-subscription.ts";
+import { WhatsAppAccountError } from "../../src/whatsapp/account.ts";
 import { createIssueOperationStore } from "../../src/capabilities/issue-management/operation-store.ts";
 import type { UncertainWorkController } from "../../src/managed/uncertain-work.ts";
 
@@ -272,6 +273,219 @@ describe("managed CLI", () => {
     });
     expect(status.stdout()).not.toContain("access-secret");
     expect(status.stderr()).toBe("");
+  });
+
+  it("imports a stopped local WhatsApp store into the private setup stage", async () => {
+    const paths = await files();
+    const source = join(paths.parent, "legacy-whatsapp");
+    await mkdir(source, { mode: 0o755 });
+    await writeFile(join(source, "creds.json"), JSON.stringify({ registered: true }), { mode: 0o644 });
+    await writeFile(join(source, "session-key.json"), "private-session-material", { mode: 0o644 });
+
+    const cli = harness();
+    const exitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--whatsapp-store",
+        source,
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      {
+        ...cli,
+        firstRunServices: {
+          ...cli.firstRunServices,
+          whatsappFor: (managed) => ({
+            authenticate: async () => {
+              await expect(readFile(join(managed.whatsapp, "creds.json"), "utf8")).resolves.toContain(
+                '"registered":true',
+              );
+              return { jid: "15550000000@s.whatsapp.net" };
+            },
+            synchronizedChats: async () => [
+              { jid: "120363000@g.us", name: "Managed Test Chat", kind: "group", lastActivityAt: 1_000 },
+            ],
+            session: () => {
+              throw new Error("not used during setup");
+            },
+            stop: async () => undefined,
+          }),
+        },
+      },
+    );
+
+    expect(exitCode, cli.stderr()).toBe(0);
+    const managedStore = managedPaths({ dataDirectory: paths.data }).whatsapp;
+    await expect(readFile(join(source, "session-key.json"), "utf8")).resolves.toBe("private-session-material");
+    await expect(readFile(join(managedStore, "session-key.json"), "utf8")).resolves.toBe("private-session-material");
+    expect((await lstat(managedStore)).mode & 0o777).toBe(0o700);
+    expect((await lstat(join(managedStore, "session-key.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects a WhatsApp store that contains the managed setup stage", async () => {
+    const paths = await files();
+    const cli = harness();
+
+    const exitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--whatsapp-store",
+        paths.parent,
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      cli,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(cli.stderr()).toContain("source and managed staging directory must not overlap");
+    await expect(lstat(paths.data)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects links in an imported WhatsApp store without committing setup", async () => {
+    const paths = await files();
+    const source = join(paths.parent, "legacy-whatsapp");
+    const outside = join(paths.parent, "outside-session-key.json");
+    await mkdir(source, { mode: 0o700 });
+    await writeFile(outside, "must-not-copy", { mode: 0o600 });
+    await symlink(outside, join(source, "session-key.json"));
+    const cli = harness();
+
+    const exitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--whatsapp-store",
+        source,
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      cli,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(cli.stderr()).toContain("only directories and regular files");
+    await expect(lstat(paths.data)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(outside, "utf8")).resolves.toBe("must-not-copy");
+  });
+
+  it("uses an explicit Managed Chat for an imported online session with no fresh chat index", async () => {
+    const paths = await files();
+    const source = join(paths.parent, "legacy-whatsapp");
+    await mkdir(source, { mode: 0o700 });
+    await writeFile(join(source, "creds.json"), JSON.stringify({ registered: true }), { mode: 0o600 });
+
+    const cli = harness();
+    const exitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--authorize",
+        "--whatsapp-store",
+        source,
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      {
+        ...cli,
+        interactive: false,
+        firstRunServices: {
+          ...cli.firstRunServices,
+          whatsappFor: () => ({
+            authenticate: async () => ({ jid: "15550000000@s.whatsapp.net" }),
+            synchronizedChats: async () => {
+              throw new WhatsAppAccountError("timeout", "WhatsApp conversation sync timed out.");
+            },
+            session: () => {
+              throw new Error("not used during setup");
+            },
+            stop: async () => undefined,
+          }),
+        },
+      },
+    );
+
+    expect(exitCode, cli.stderr()).toBe(0);
+    const config = JSON.parse(await readFile(managedPaths({ dataDirectory: paths.data }).config, "utf8")) as {
+      managedChats: string[];
+    };
+    expect(config.managedChats).toEqual(["120363000@g.us"]);
+  });
+
+  it.each([
+    ["empty sync", async () => [], "did not synchronize any supported chats"],
+    [
+      "sync timeout",
+      async () => {
+        throw new WhatsAppAccountError("timeout", "WhatsApp conversation sync timed out.");
+      },
+      "conversation sync timed out",
+    ],
+  ])("does not trust an imported chat after fresh pairing with %s", async (_case, synchronizedChats, message) => {
+    const paths = await files();
+    const source = join(paths.parent, "legacy-whatsapp");
+    await mkdir(source, { mode: 0o700 });
+    await writeFile(join(source, "creds.json"), JSON.stringify({ registered: true }), { mode: 0o600 });
+    const cli = harness();
+
+    const exitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--whatsapp-store",
+        source,
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      {
+        ...cli,
+        firstRunServices: {
+          ...cli.firstRunServices,
+          whatsappFor: () => ({
+            authenticate: async (callbacks) => {
+              callbacks.onPairing?.({ method: "qr", qr: "fresh-pairing", expiresAt: 60_000 });
+              return { jid: "15550000000@s.whatsapp.net" };
+            },
+            synchronizedChats,
+            session: () => {
+              throw new Error("not used during setup");
+            },
+            stop: async () => undefined,
+          }),
+        },
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(cli.stderr()).toContain(message);
+    await expect(lstat(paths.data)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([

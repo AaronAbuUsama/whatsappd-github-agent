@@ -1,9 +1,10 @@
 # Ambient Agent
 
 > The secure `ambient-agent` installer, managed filesystem, foreground runtime,
-> `status`, and `doctor` commands are shipped. The production Issue Management
-> rollout is still tracked by the remaining stable-base work in
-> [the architecture plan](./docs/architecture/ambient-agent.md).
+> `status`, and `doctor` commands are shipped. The stable-base source and its
+> real-provider acceptance receipt are documented in
+> [the production architecture](./docs/architecture/ambient-agent.md) and
+> [the stable-base proof](./docs/proof/ambient-agent-stable-base-live.md).
 
 A continuing ambient agent for managed WhatsApp chats. Each accepted coalesced
 window is admitted to one canonical instance of Ambience — this application's
@@ -21,7 +22,7 @@ paired whatsappd session
   -> continuing Ambience context
        |-> read/search bound WhatsApp history
        |-> say -> whatsappd session.send
-       `-> search/read/create an authorized GitHub issue directly
+       `-> search/read/create/correct/discuss/resolve authorized GitHub issues
 
 verified GitHub webhook -> application routing/deduplication -> same Ambience
 ```
@@ -32,8 +33,8 @@ copies that prose. Only the explicit `say` tool can call the WhatsApp send
 boundary.
 
 Ambience receives the versioned Issue Management Skill and provider-neutral
-search, read, and create Tools bound to the one authorized repository. The
-application assigns an Operation Identity before creation. If a provider
+issue and comment lifecycle Tools bound to the authorized repository. The
+application assigns an Operation Identity before every mutation. If a provider
 response is lost, it performs bounded read-only observation and never blindly
 repeats the mutation.
 
@@ -46,9 +47,8 @@ paired WhatsApp account, a scoped GitHub token, and a ChatGPT Plus/Pro account.
 Windows setup currently fails closed until equivalent private ACL enforcement
 is implemented.
 
-Until the package is published, build a local tarball and install that exact
-artifact. After publication, replace the first three commands with
-`npx ambient-agent`:
+The `ambient-agent@0.1.0` package is published. To verify newer source before a
+subsequent release, build a local tarball and install that exact artifact:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -79,8 +79,42 @@ ambient-agent doctor --abandon mutation:<operationId>
 ambient-agent config
 ```
 
-After the package is published, `npx ambient-agent` will be the equivalent
-one-command entry point.
+`npx --yes ambient-agent@0.1.0` is the equivalent published entry point for
+that release.
+
+### Log in to ChatGPT
+
+`init` and `auth` use the supported ChatGPT subscription device flow; no model
+API key or `.env` entry is accepted.
+
+1. Run `ambient-agent init` for a new installation, or `ambient-agent auth` to
+   replace the credential in an existing one.
+2. Open the verification URL printed in the terminal in a browser signed in to
+   the intended ChatGPT Plus or Pro account.
+3. Enter the one-time code printed beside the URL and approve the request.
+4. Return to the terminal and wait for the command to confirm that the managed
+   credential was stored.
+5. Run `ambient-agent doctor --live`. Login is ready only when it reports
+   `modelAuthentication.state: "ready"` and `liveCheck.request: "complete"`.
+
+The device code expires. If it does, rerun `auth`; do not copy browser tokens or
+machine-global Pi credentials into the managed directory.
+
+To migrate an existing stopped, same-owner local `whatsappd` file store into a
+new installation, add `--whatsapp-store /absolute/path/to/.wa-auth` and an
+explicit `--chat <jid>` to `init`. Setup copies the store into its private
+stage, leaves the source untouched, rejects links and special files, and
+rejects overlapping source/staging trees. It normalizes copied directories to
+`0700` and files to `0600` before connecting.
+Do not run the source session concurrently: one WhatsApp linked-device session
+has one local owner.
+
+An adopted WhatsApp session may reach `online` without emitting a new chat
+index. Only on this explicit import path may the supplied supported `--chat`
+be provisionally selected when no synchronized candidate arrives. Setup proves
+the session is authenticated and validates the JID shape; the first real
+inbound event from that chat is the mechanical membership proof. Fresh pairing
+and ordinary setup still require selection from the synchronized account.
 
 With no arguments, the executable enters guided setup on a first run and
 reports status thereafter. It stores non-secret configuration and credential
@@ -91,8 +125,8 @@ explicit ChatGPT reauthentication without changing the rest of the installation.
 Managed JSON diagnostics read at most 1 MiB per file and fail closed if a file
 exceeds that limit or changes during inspection.
 
-`status` is read-only. It checks both SQLite files and the app-owned WhatsApp
-registration fact, reports Uncertain counts and mutation kinds, and makes one
+`status` is read-only. It checks both SQLite files and app-owned WhatsApp
+registration-or-linked-account identity evidence, reports Uncertain counts and mutation kinds, and makes one
 bounded local `/health` request at the port stored in `config.json`. An explicit
 connection refusal reports `stopped`; timeouts, malformed responses, HTTP
 failures, and responses from a different installation report `failed`. A
@@ -214,7 +248,7 @@ The `&&` chain fail-stops before `start` if either validation command exits
 non-zero, and `start` repeats the local database and WhatsApp checks before it
 opens the runtime. Do not start if either command reports damaged permissions,
 invalid JSON, an incompatible declared database schema, failed SQLite
-integrity, or an invalid WhatsApp registration. Correct the copy or choose a
+integrity, or missing WhatsApp registration-or-linked-account evidence. Correct the copy or choose a
 different known-good snapshot and run both checks again.
 
 The application database check accepts the current `AMBT` application marker
@@ -240,7 +274,7 @@ journey or deployment-specific human validation.
 Recovery is deliberately local and explicit:
 
 - Missing or rejected ChatGPT authorization: run `ambient-agent auth`.
-- Invalid permissions, JSON, SQLite integrity, or WhatsApp registration:
+- Invalid permissions, JSON, SQLite integrity, or WhatsApp registration-or-linked-account evidence:
   leave the process stopped and follow the exact `doctor` remediation.
 - Uncertain admission or GitHub mutation: inspect it and choose one explicit
   `doctor --retry`, `--accept-observed`, or `--abandon` action.
@@ -280,6 +314,9 @@ ownership and failure semantics. The post-deletion production proof is in
 [docs/proof/ambience-hard-cut-live.md](./docs/proof/ambience-hard-cut-live.md).
 The earlier replacement proof is retained as a historical prerequisite in
 [docs/proof/ambience-replacement-live.md](./docs/proof/ambience-replacement-live.md).
+The complete packed stable-base journey, including managed OAuth, real
+WhatsApp, real GitHub state, and process replacement, is in
+[docs/proof/ambient-agent-stable-base-live.md](./docs/proof/ambient-agent-stable-base-live.md).
 
 ## Development
 

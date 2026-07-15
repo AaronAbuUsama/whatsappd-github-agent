@@ -198,13 +198,21 @@ const whatsappSessionCheck = async (path: string): Promise<ManagedCheck> => {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > 4 * 1024 * 1024) throw new Error("unsupported");
     const value = JSON.parse(await handle.readFile("utf8")) as unknown;
-    const registered = typeof value === "object" && value !== null && Reflect.get(value, "registered") === true;
+    const identity = typeof value === "object" && value !== null ? Reflect.get(value, "me") : undefined;
+    const linkedIdentity =
+      typeof identity === "object" &&
+      identity !== null &&
+      typeof Reflect.get(identity, "id") === "string" &&
+      Reflect.get(identity, "id").trim().length > 0;
+    const registered =
+      typeof value === "object" && value !== null && (Reflect.get(value, "registered") === true || linkedIdentity);
     return registered
       ? {
           name: "whatsapp-session",
           state: "ready",
           code: "whatsapp.ready",
-          message: "The app-owned WhatsApp credential reports a registered linked session.",
+          message:
+            "The app-owned WhatsApp credential contains persisted registration or linked-account identity evidence.",
         }
       : {
           name: "whatsapp-session",

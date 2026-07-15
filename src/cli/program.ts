@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "@commander-js/extra-typings";
 import * as prompts from "@clack/prompts";
@@ -618,6 +618,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--chat <jid>", "managed WhatsApp chat JID")
     .option("--repository <owner/name>", "default GitHub repository")
     .option("--github-token-file <path>", "read the GitHub token from a file")
+    .option("--whatsapp-store <path>", "copy a stopped local WhatsApp store into setup")
     .option("--authorize", "allow explicit headless ChatGPT device authorization")
     .action(async (options) => {
       const global = program.opts();
@@ -639,6 +640,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         dataDirectory: global.dataDir,
         interactive,
         allowFreshChatGptAuthentication: options.authorize ?? false,
+        ...(options.whatsappStore === undefined ? {} : { whatsappStoreSource: resolve(options.whatsappStore) }),
         services: firstRunServices,
         prompts: setupPrompts,
         scripted: {
