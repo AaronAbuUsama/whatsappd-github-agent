@@ -21,12 +21,13 @@ interface PackageRelease {
   readonly version: string;
 }
 
+type PublishNpmReleaseResult =
+  | { readonly published: false; readonly tag: string }
+  | { readonly published: true; readonly tag: string; readonly changesetsTagAnnouncement: string };
+
 const distTag = (version: string): string => version.split("-", 2)[1]?.split(".", 1)[0] ?? "latest";
 
-export const publishNpmRelease = (
-  release: PackageRelease,
-  run: RunReleaseCommand,
-): { readonly published: boolean; readonly tag: string; readonly marker?: string } => {
+export const publishNpmRelease = (release: PackageRelease, run: RunReleaseCommand): PublishNpmReleaseResult => {
   const tag = distTag(release.version);
   const existing = run({
     executable: "npm",
@@ -47,7 +48,11 @@ export const publishNpmRelease = (
   if (published.status !== 0) {
     throw new Error(`npm failed to publish ${release.name}@${release.version}.`);
   }
-  return { published: true, tag, marker: `New tag: ${release.name}@${release.version}` };
+  return {
+    published: true,
+    tag,
+    changesetsTagAnnouncement: `New tag: ${release.name}@${release.version}`,
+  };
 };
 
 const runCli = (): void => {
@@ -64,7 +69,7 @@ const runCli = (): void => {
       stderr: command.stderr ?? command.error?.message ?? "",
     };
   });
-  if (result.published) console.log(result.marker);
+  if (result.published) console.log(result.changesetsTagAnnouncement);
   else console.log(`${release.name}@${release.version} is already published.`);
 };
 

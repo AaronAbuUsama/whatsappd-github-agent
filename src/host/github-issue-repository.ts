@@ -20,16 +20,20 @@ import {
 export const GITHUB_ISSUE_BODY_LIMIT = 65_536;
 export const githubIssueProviderBody = (body: string, markers: readonly string[]): string =>
   issueProviderBody(body, markers, GITHUB_ISSUE_BODY_LIMIT);
+const currentAndLatestOperationMarkers = (
+  existingMarkers: readonly string[],
+  operation: OperationIdentity,
+): readonly string[] => [
+  ...(existingMarkers.length === 0 ? [] : [existingMarkers[0]!]),
+  issueOperationMarker(operation),
+];
 export const githubIssueUpdateProviderBody = (
   currentProviderBody: string,
   nextPublicBody: string | undefined,
   operation: OperationIdentity,
 ): string => {
   const current = parseIssueProviderBody(currentProviderBody);
-  const markers = [
-    ...(current.markers.length === 0 ? [] : [current.markers[0]!]),
-    issueOperationMarker(operation),
-  ];
+  const markers = currentAndLatestOperationMarkers(current.markers, operation);
   return githubIssueProviderBody(nextPublicBody ?? current.publicBody, markers);
 };
 const GITHUB_SEARCH_QUERY_LIMIT = 256;
@@ -279,10 +283,7 @@ export const createOctokitIssueRepository = (token: string, request?: OctokitReq
         throw new Error(`GitHub comment ${commentId} is not owned by the configured provider account.`);
       }
       const existingMarkers = parseCommentProviderBody(current.data.body ?? "").markers;
-      const markers = [
-        ...(existingMarkers.length === 0 ? [] : [existingMarkers[0]!]),
-        issueOperationMarker(operation),
-      ];
+      const markers = currentAndLatestOperationMarkers(existingMarkers, operation);
       const response = await octokit.rest.issues.updateComment({
         owner: repository.owner,
         repo: repository.repo,
