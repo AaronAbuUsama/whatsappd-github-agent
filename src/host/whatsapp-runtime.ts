@@ -10,6 +10,7 @@ import * as Coalescer from "../coalescer/coalescer.js";
 import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js";
 import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
+import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
 import { createWhatsAppAccount } from "../whatsapp/account.js";
 import { configureWhatsAppHistory, type WhatsAppHistory } from "./whatsapp-history.js";
 import { configureWhatsAppHost, type WhatsAppHost, type WhatsAppSayResult } from "./whatsapp-host.js";
@@ -74,6 +75,7 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppHost => ({
 export interface WhatsAppSessionRuntimeOptions {
   readonly gate: ChatGate;
   readonly history: WhatsAppHistory;
+  readonly inbox: ManagedChatInbox;
   readonly dispatch?: DispatchAmbience;
   readonly coalescer?: Partial<CoalescerConfigValues>;
   readonly botLid?: string;
@@ -90,8 +92,12 @@ export const runWhatsAppSession = (
   return Coalescer.run.pipe(
     Effect.provide(
       Layer.mergeAll(
-        whatsappEventSource(session, options.gate.allowed),
+        whatsappEventSource(session, options.gate.allowed, {
+          replay: () => options.inbox.unwindowed(),
+          accepted: (message) => options.inbox.pendingArrival(message.chatId, message.id),
+        }),
         makeAmbienceWindowDispatcher(options.dispatch),
+        managedChatWindowStore(options.inbox),
         configLayer({ ...options.coalescer, botIds }),
       ),
     ),
@@ -129,7 +135,8 @@ export const startWhatsAppRuntime = (
   });
   const applicationDatabase = join(storeDir, "..", "application.sqlite");
   const archive = createConversationArchive(applicationDatabase);
-  const account = createWhatsAppAccount({ storeDirectory: storeDir, archive });
+  const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+  const account = createWhatsAppAccount({ storeDirectory: storeDir, archive: inbox.recorder });
   status = { phase: "starting", chatTarget: gate.describe() };
   let stopping = false;
 
@@ -139,23 +146,25 @@ export const startWhatsAppRuntime = (
     if (!gate.hasTarget) {
       yield* Effect.logWarning("No managed WhatsApp chat is configured; ingress remains fail-closed.");
     }
-    yield* Effect.promise(() => account.authenticate({
-      onPairing: (pairing) => {
-        if (pairing.qr !== undefined) {
-          const qr = createRequire(import.meta.url)("qrcode-terminal") as {
-            generate(value: string, options: { readonly small: boolean }): void;
-          };
-          qr.generate(pairing.qr, { small: true });
-        } else if (pairing.code !== undefined) {
-          console.info(`[ambience] WhatsApp pairing code: ${pairing.code}`);
-        }
-      },
-    }));
+    yield* Effect.promise(() =>
+      account.authenticate({
+        onPairing: (pairing) => {
+          if (pairing.qr !== undefined) {
+            const qr = createRequire(import.meta.url)("qrcode-terminal") as {
+              generate(value: string, options: { readonly small: boolean }): void;
+            };
+            qr.generate(pairing.qr, { small: true });
+          } else if (pairing.code !== undefined) {
+            console.info(`[ambience] WhatsApp pairing code: ${pairing.code}`);
+          }
+        },
+      }),
+    );
     const session = account.session();
     const botIds = botIdsOf(session, env.WHATSAPP_BOT_LID);
     status = { phase: "online", chatTarget: gate.describe(), botIds };
     yield* Effect.logInfo(`Ambience WhatsApp online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
-    yield* runWhatsAppSession(session, { gate, history: archive, botLid: env.WHATSAPP_BOT_LID });
+    yield* runWhatsAppSession(session, { gate, history: archive, inbox, botLid: env.WHATSAPP_BOT_LID });
   });
 
   const fiber = Effect.runFork(Effect.scoped(program));

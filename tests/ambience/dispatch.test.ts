@@ -5,7 +5,7 @@ import * as v from "valibot";
 import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { configLayer } from "../../src/coalescer/config.ts";
 import type { IncomingMessage } from "../../src/coalescer/events.ts";
-import { queueEventSource } from "../../src/coalescer/mocks.ts";
+import { inMemoryWindowStore, queueEventSource } from "../../src/coalescer/mocks.ts";
 import { makeAmbienceWindowDispatcher, type AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
 import { createFakeWhatsAppHost } from "../../src/host/fake-whatsapp-host.ts";
 import type { WhatsAppHost } from "../../src/host/whatsapp-host.ts";
@@ -56,6 +56,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
               Effect.provide(
                 Layer.mergeAll(
                   queueEventSource(source),
+                  inMemoryWindowStore(),
                   makeAmbienceWindowDispatcher(dispatch),
                   configLayer({ botIds: [BOT], debounceWindow: Duration.millis(25) }),
                 ),
@@ -72,6 +73,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
               id: CHAT,
               input: {
                 type: "whatsapp.window",
+                windowId: "window-1",
                 chatId: CHAT,
                 reason: "debounce",
                 messages: [

@@ -17,8 +17,8 @@ import { TestClock } from "effect/testing";
 import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { type CoalescerConfigValues, configLayer } from "../../src/coalescer/config.ts";
 import type { ConversationWindow, IncomingMessage } from "../../src/coalescer/events.ts";
-import { queueEventSource, recordingWindowDispatcher } from "../../src/coalescer/mocks.ts";
-import { WindowDispatcher } from "../../src/coalescer/ports.ts";
+import { inMemoryWindowStore, queueEventSource, recordingWindowDispatcher } from "../../src/coalescer/mocks.ts";
+import { WindowDispatcher, WindowStore, WindowStoreError } from "../../src/coalescer/ports.ts";
 
 const BOT = "bot@s.whatsapp.net";
 const CHAT = "team@g.us";
@@ -55,6 +55,7 @@ const startRecording = (
         Layer.mergeAll(
           queueEventSource(source),
           recordingWindowDispatcher(turns),
+          inMemoryWindowStore(),
           configLayer({ botIds: [BOT], debounceWindow: WINDOW, ...cfg }),
         ),
       ),
@@ -133,7 +134,7 @@ describe("Coalescer", () => {
       }
       const t = yield* Ref.get(turns);
       expect(t).toHaveLength(1);
-      expect(t[0]!.reason).toBe("debounce");
+      expect(t[0]!.reason).toBe("maximum-wait");
       expect(t[0]!.messages).toHaveLength(8);
 
       // Still nonstop (t=8..15): a SECOND cap cycle fires ~maxWait after its own
@@ -144,7 +145,7 @@ describe("Coalescer", () => {
       }
       const t2 = yield* Ref.get(turns);
       expect(t2).toHaveLength(2);
-      expect(t2[1]!.reason).toBe("debounce");
+      expect(t2[1]!.reason).toBe("maximum-wait");
     }),
   );
 
@@ -233,21 +234,123 @@ describe("Coalescer", () => {
     }),
   );
 
-  it.effect("buffer bound: the fired window is capped to the most-recent N messages", () =>
+  it.effect("capacity segments a burst into stable lossless Windows without eviction", () =>
     Effect.gen(function* () {
       const source = yield* Queue.unbounded<IncomingMessage>();
       const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
-      yield* startRecording(source, turns, { maxBufferMessages: 3 });
+      yield* startRecording(source, turns, { maxWindowMessages: 3 });
 
       // Six messages in one burst (offered back-to-back, no window between them).
       for (const text of ["1", "2", "3", "4", "5", "6"]) {
         yield* Queue.offer(source, mkMsg(text));
       }
-      // Settle: one fire, buffer capped to the last 3.
-      yield* TestClock.adjust(WINDOW);
+      yield* TestClock.adjust(Duration.zero);
       const t = yield* Ref.get(turns);
-      expect(t).toHaveLength(1);
-      expect(texts(t[0]!)).toEqual(["4", "5", "6"]);
+      expect(t).toHaveLength(2);
+      expect(t.map(texts)).toEqual([
+        ["1", "2", "3"],
+        ["4", "5", "6"],
+      ]);
+      expect(t.map(({ reason }) => reason)).toEqual(["capacity", "capacity"]);
+    }),
+  );
+
+  it.effect("replays a pending durable Window with its stable identity before reading new arrivals", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<IncomingMessage>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      const pending: ConversationWindow = {
+        id: "window-pending-1",
+        chatId: CHAT,
+        messages: [mkMsg("persisted before restart")],
+        reason: "debounce",
+      };
+      const store = Layer.succeed(WindowStore, {
+        pendingWindows: Effect.succeed([pending]),
+        create: (draft) => Effect.succeed({ id: "unused", ...draft }),
+      });
+
+      yield* Effect.forkScoped(
+        Coalescer.run.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              queueEventSource(source),
+              recordingWindowDispatcher(turns),
+              store,
+              configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
+            ),
+          ),
+        ),
+      );
+      yield* TestClock.adjust(Duration.zero);
+
+      expect(yield* Ref.get(turns)).toEqual([pending]);
+    }),
+  );
+
+  it.effect("does not consume new arrivals when the durable startup backlog cannot be read", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<IncomingMessage>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      const createAttempts = yield* Ref.make(0);
+      const unreadableStore = Layer.succeed(WindowStore, {
+        pendingWindows: Effect.fail(new WindowStoreError({ cause: new Error("injected replay read failure") })),
+        create: (draft) =>
+          Ref.update(createAttempts, (count) => count + 1).pipe(Effect.as({ id: "must-not-exist", ...draft })),
+      });
+
+      yield* Effect.forkScoped(
+        Coalescer.run.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              queueEventSource(source),
+              recordingWindowDispatcher(turns),
+              unreadableStore,
+              configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
+            ),
+          ),
+        ),
+      );
+      yield* Queue.offer(source, mkMsg("cannot overtake unread backlog"));
+      yield* TestClock.adjust(Duration.minutes(1));
+
+      expect(yield* Ref.get(createAttempts)).toBe(0);
+      expect(yield* Ref.get(turns)).toEqual([]);
+    }),
+  );
+
+  it.effect("fail-stops one chat after Window persistence fails so later arrivals cannot overtake it", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<IncomingMessage>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      const attempts = yield* Ref.make(0);
+      const failingStore = Layer.succeed(WindowStore, {
+        pendingWindows: Effect.succeed([]),
+        create: () =>
+          Ref.update(attempts, (count) => count + 1).pipe(
+            Effect.andThen(Effect.fail(new WindowStoreError({ cause: new Error("injected storage failure") }))),
+          ),
+      });
+
+      yield* Effect.forkScoped(
+        Coalescer.run.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              queueEventSource(source),
+              recordingWindowDispatcher(turns),
+              failingStore,
+              configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
+            ),
+          ),
+        ),
+      );
+      yield* Queue.offer(source, mkMsg("first remains pending"));
+      yield* TestClock.adjust(WINDOW);
+      yield* Queue.offer(source, mkMsg("later cannot overtake"));
+      yield* TestClock.adjust(Duration.minutes(1));
+
+      expect(yield* Ref.get(attempts)).toBe(1);
+      expect(yield* Ref.get(turns)).toEqual([]);
     }),
   );
 
@@ -287,6 +390,7 @@ describe("Coalescer", () => {
             Layer.mergeAll(
               queueEventSource(source),
               flakyDispatcher,
+              inMemoryWindowStore(),
               configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
             ),
           ),

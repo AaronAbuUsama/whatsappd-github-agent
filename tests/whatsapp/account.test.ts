@@ -271,6 +271,11 @@ describe("managed WhatsApp account", () => {
     for (const listener of fake.messageListeners) {
       await listener(message({ id: "live-unmanaged-49", chatId: "unmanaged-live-49@g.us", live: true }));
     }
+    // A reconnect may repeat a provider ID after it already belongs to a durable
+    // Window. Archive idempotency must also suppress a second downstream intake.
+    for (const listener of fake.messageListeners) {
+      await listener(message({ id: "live-unmanaged-49", chatId: "unmanaged-live-49@g.us", live: true }));
+    }
     const ref = { id: "live-unmanaged-49", chatId: "unmanaged-live-49@g.us", fromMe: false };
     const updates: Update[] = [
       {

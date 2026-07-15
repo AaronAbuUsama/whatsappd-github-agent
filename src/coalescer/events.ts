@@ -37,17 +37,20 @@ export interface IncomingMessage {
 }
 
 /** Why the Coalescer fired: an ambient burst settled, or the bot was addressed. */
-export type FireReason = "debounce" | "mention" | "quote-reply";
+export type FireReason = "debounce" | "maximum-wait" | "capacity" | "mention" | "quote-reply";
 
 /**
  * The window dispatched to Ambience on each flush: messages buffered since the
  * last dispatch, plus why it fired. This is the Coalescer's entire output.
  */
 export interface ConversationWindow {
+  readonly id: string;
   readonly chatId: string;
   readonly messages: readonly IncomingMessage[];
   readonly reason: FireReason;
 }
+
+export type ConversationWindowDraft = Omit<ConversationWindow, "id">;
 
 /**
  * Does this message directly address the bot — an @-mention or a quote-reply of

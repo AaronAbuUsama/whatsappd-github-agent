@@ -1,6 +1,10 @@
 # Coalescer + Voice — execution state (handoff)
 
-> Historical design record. Superseded by the Flue Ambience production path completed in milestone #3; this is not current operator or architecture guidance.
+> Historical design record. Superseded by the Flue Ambience production path and
+> #50's durable Managed Chat Inbox; this is not current operator or architecture
+> guidance. The bounded buffer module and its count/age eviction tests described
+> below were deliberately removed. Use `docs/COALESCER-DESIGN.md` and the Ambient
+> Agent ADRs for the current contract.
 
 Single source of truth for the two-tier WhatsApp agent work. If you're resuming
 after a compaction: **read this whole file first**, then confirm status back.
@@ -96,11 +100,9 @@ GitHub is only the test capability; the **architecture is the deliverable**.
 
 ## 3. Done (committed on `main`)
 
-- `f886a13` — feat(coalescer): the full Coalescer build. `src/coalescer/{events,
-  config,ports,buffer,coalescer,mocks,demo}.ts`, `tests/coalescer/{coalescer,
-  buffer}.test.ts`, `docs/COALESCER-DESIGN.md`. Includes the resilience hardening
-  (`fire` catches failures AND defects, lets interruption through; empty windows
-  never fire; `appendBounded` age-anchored on max timestamp for out-of-order msgs).
+- `f886a13` — feat(coalescer): the original in-memory Coalescer build, including
+  count/age eviction artifacts that #50 later removed. Its resilience work made
+  dispatch catch failures and defects while preserving interruption.
 - `80ed4c6` — refactor(coalescer): the Tier-1 simplification (dead config removed,
   `Array.takeRight`, shared `delegateAndNarrate`, `startSelfGating` test helper).
 - `1f2a921` — docs(handoff): this file.
@@ -236,10 +238,8 @@ quiet on chit-chat, chimes in on relevant/GitHub-ish messages *without* being
 - **`groupByKey` fan-out deferred on purpose** — the manual per-chat registry is
   kept because idle-chat eviction (a real future need) is easier against a
   registry we own than `groupByKey`'s opaque group lifecycle.
-- **maxWait IS built now** — the loop is throttle-with-a-cap (fires on quiet OR
-  `maxWait` since the burst's first message). A cap-triggered fire still carries
-  `reason: "debounce"` (the voice branches on addressed-vs-not, not on which timer
-  tripped), so `FireReason` stayed unchanged.
+- **Historical maxWait shape** — this snapshot used `reason: "debounce"` for a
+  cap-triggered fire. The durable #50 contract records `maximum-wait` separately.
 - **The Codex backend is streaming-only** — `generateText` 400s (`"Stream must be
   set to true"`). The voice uses `streamText` + `consumeStream()`; don't switch it
   back to `generateText`. See §2.5.
@@ -249,10 +249,10 @@ quiet on chit-chat, chimes in on relevant/GitHub-ish messages *without* being
 ## 6. Key file pointers
 
 - Design + known edges: `docs/COALESCER-DESIGN.md` (esp. §7 known edges/seam notes).
-- Core: `src/coalescer/coalescer.ts` (actor loop + router), `buffer.ts`,
-  `events.ts`, `config.ts`, `ports.ts` (the 4 DI seams), `mocks.ts`, `demo.ts`.
-- Tests: `tests/coalescer/{coalescer,buffer}.test.ts` (TestClock, `@effect/vitest`
-  `it.scoped`).
+- Current core: `src/intake/managed-chat-inbox.ts` plus
+  `src/coalescer/{coalescer,events,config,ports,mocks}.ts`.
+- Current tests: `tests/intake/managed-chat-inbox.test.ts` and
+  `tests/coalescer/coalescer.test.ts` (TestClock, `@effect/vitest` `it.scoped`).
 - Voice + REPL: `src/coalescer/voice.ts` (real model-backed `Conversationalist`),
   `src/coalescer/repl.ts` (`pnpm run voice` interactive terminal).
 - Model helper: `eve/models/openai` → `experimental_chatgpt(model?)`.

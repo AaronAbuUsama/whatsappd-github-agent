@@ -10,8 +10,15 @@ const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 
 const whatsappWindowInputSchema = v.object({
   type: v.literal("whatsapp.window"),
+  windowId: nonEmptyString,
   chatId: nonEmptyString,
-  reason: v.union([v.literal("debounce"), v.literal("mention"), v.literal("quote-reply")]),
+  reason: v.union([
+    v.literal("debounce"),
+    v.literal("maximum-wait"),
+    v.literal("capacity"),
+    v.literal("mention"),
+    v.literal("quote-reply"),
+  ]),
   messages: v.array(
     v.object({
       id: nonEmptyString,
@@ -97,6 +104,7 @@ export type AmbienceInput =
 export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowInput =>
   v.parse(whatsappWindowInputSchema, {
     type: "whatsapp.window",
+    windowId: window.id,
     chatId: window.chatId,
     reason: window.reason,
     messages: window.messages,

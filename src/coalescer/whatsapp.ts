@@ -163,6 +163,11 @@ export const botIdsOf = (session: WhatsAppSession, rawLid?: string): readonly st
   return lid ? [botIdOf(session), lid] : [botIdOf(session)];
 };
 
+export interface DurableWhatsAppIntake {
+  readonly replay: () => readonly IncomingMessage[];
+  readonly accepted: (message: WaMessage) => IncomingMessage | undefined;
+}
+
 /**
  * EventSource over `session.onMessage`. Messages are pushed onto an unbounded
  * queue (WhatsApp's inbound rate is low) and surfaced as a Stream; `allow` gates
@@ -172,6 +177,7 @@ export const botIdsOf = (session: WhatsAppSession, rawLid?: string): readonly st
 export const whatsappEventSource = (
   session: WhatsAppSession,
   allow: (chatId: string, isGroup: boolean) => boolean,
+  durable?: DurableWhatsAppIntake,
 ): Layer.Layer<EventSource, never> =>
   Layer.effect(
     EventSource,
@@ -181,10 +187,23 @@ export const whatsappEventSource = (
         const allowed = allow(msg.chatId, msg.isGroup);
         logInbound(msg, allowed);
         if (!allowed) return;
+        const incoming = durable === undefined ? toIncoming(msg) : durable.accepted(msg);
+        if (incoming === undefined) return;
         // Unbounded offer never suspends; the unsafe API preserves callback arrival order.
-        Queue.offerUnsafe(queue, toIncoming(msg));
+        Queue.offerUnsafe(queue, incoming);
       });
       yield* Effect.addFinalizer(() => Effect.sync(() => unsub()));
-      return { events: Stream.fromQueue(queue) };
+      const replay = durable?.replay() ?? [];
+      const replayOverlap = new Set(replay.map((message) => `${message.chatId}\u0000${message.id}`));
+      const isNotReplayOverlap = (message: IncomingMessage): boolean => {
+        const key = `${message.chatId}\u0000${message.id}`;
+        return !replayOverlap.delete(key);
+      };
+      return {
+        events: Stream.concat(
+          Stream.fromIterable(replay),
+          Stream.fromQueue(queue).pipe(Stream.filter(isNotReplayOverlap)),
+        ),
+      };
     }),
   );

@@ -2,9 +2,9 @@
  * Mock Layers for the Coalescer's event source and window-dispatch seam.
  * They are `Ref`-backed so timing tests can inspect exactly what fired.
  */
-import { Layer, Queue, Ref, Stream } from "effect";
+import { Effect, Layer, Queue, Ref, Stream } from "effect";
 import type { ConversationWindow, IncomingMessage } from "./events.ts";
-import { EventSource, WindowDispatcher } from "./ports.ts";
+import { EventSource, WindowDispatcher, WindowStore } from "./ports.ts";
 
 // ── EventSource: a Stream fed from a Queue the test controls ─────────────────
 
@@ -21,3 +21,17 @@ export const recordingWindowDispatcher = (
   Layer.succeed(WindowDispatcher, {
     dispatch: (window) => Ref.update(turns, (t) => [...t, window]),
   });
+
+export const inMemoryWindowStore = (): Layer.Layer<WindowStore, never> => {
+  let sequence = 0;
+  const windows: ConversationWindow[] = [];
+  return Layer.succeed(WindowStore, {
+    pendingWindows: Effect.sync(() => [...windows]),
+    create: (draft) =>
+      Effect.sync(() => {
+        const window = { id: `window-${++sequence}`, ...draft };
+        windows.push(window);
+        return window;
+      }),
+  });
+};

@@ -6,19 +6,28 @@ the in-process whatsappd event stream and Flue Ambience admission.
 ## Contract
 
 - One actor and queue exist per managed `chatId`.
-- Live inbound messages from other senders are accepted; history and self echoes
-  are retained by the history store but never re-admitted as new turns.
+- The managed account records every arrival in the Conversation Archive before
+  notifying the Coalescer. The same application transaction projects the message
+  and inserts configured live inbound arrivals into the Managed Chat Inbox.
+- Unmanaged chats, history, and self echoes remain archive-only.
 - A mention or quote reply of the bot flushes immediately.
 - Ambient messages flush after the quiet window; `maxWait` bounds a nonstop burst.
-- The rolling window is bounded by count and age.
-- Every accepted window is handed to `AmbienceDoorway.admit` exactly once and
-  in order for that chat.
-- A failed admission is logged and does not wedge the chat actor.
+- Reaching `maxWindowMessages` creates a capacity Window and begins another; no
+  accepted arrival is evicted by count or age.
+- Each accepted Inbox arrival is assigned once, in observed order, to a stable
+  Window ID. A Window is persisted before dispatch.
+- Unwindowed arrivals and pending Windows are replayed on runtime startup.
+- If the durable startup backlog cannot be read, intake fail-stops before newer
+  arrivals can overtake it.
+- A failed Ambience dispatch is logged and does not wedge the chat actor. A local
+  Window-store failure fail-stops that chat so a later arrival cannot overtake
+  the durable pending batch; restart replay resumes in Inbox order.
 
 ## Production seam
 
-`src/host/whatsapp-runtime.ts` supplies the full-fidelity whatsappd event source
-and `makeAmbienceDoorway()`. The doorway calls:
+`src/host/whatsapp-runtime.ts` wires the managed account recorder, durable Inbox,
+full-fidelity whatsappd event source, Window store, and Ambience dispatcher. The
+dispatcher calls:
 
 ```ts
 dispatch(ambience, {
@@ -44,7 +53,16 @@ workflow and are not available to root Ambience.
 ## Tunable timing
 
 Defaults in `src/coalescer/config.ts` are a 3-second quiet window, a 10-second
-maximum wait, ten messages, and five minutes of buffered age. Tests use Effect's
-virtual clock to prove light traffic, burst coalescing, immediate addressed
-flushes, hard caps, per-chat isolation, ordering, and recovery after a failed
+maximum wait, and ten messages per Window. Tests use Effect's virtual clock to
+prove light traffic, burst coalescing, immediate addressed flushes, lossless
+capacity segmentation, per-chat isolation, ordering, and recovery after a failed
 turn.
+
+## Proof boundary
+
+#50 mechanically proves transactional intake, stable ordered Window assignment,
+lossless segmentation, and restart availability in the local application SQLite
+database. Pending Windows currently replay with the same ID, so a dispatch whose
+outcome is unknown can be repeated. #51 owns durable admission receipts and the
+`Uncertain` state needed to prove exactly-once Flue admission. Live WhatsApp
+provider delivery is outside these local tests and requires a paired account.

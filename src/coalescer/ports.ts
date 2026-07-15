@@ -6,7 +6,7 @@
  * Decisions D1/D3/D4 in `docs/COALESCER-DESIGN.md`.
  */
 import { Context, Data, type Effect, type Stream } from "effect";
-import type { ConversationWindow, IncomingMessage } from "./events.ts";
+import type { ConversationWindow, ConversationWindowDraft, IncomingMessage } from "./events.ts";
 
 // ── Window dispatcher ────────────────────────────────────────────────────────
 // The Coalescer's sole output. Production dispatches every accepted window to
@@ -23,6 +23,17 @@ export class WindowDispatcher extends Context.Service<
     readonly dispatch: (window: ConversationWindow) => Effect.Effect<void, WindowDispatchError>;
   }
 >()("WindowDispatcher") {}
+
+export class WindowStoreError extends Data.TaggedError("WindowStoreError")<{
+  readonly cause: unknown;
+}> {}
+
+export interface WindowStoreService {
+  readonly pendingWindows: Effect.Effect<readonly ConversationWindow[], WindowStoreError>;
+  readonly create: (draft: ConversationWindowDraft) => Effect.Effect<ConversationWindow, WindowStoreError>;
+}
+
+export class WindowStore extends Context.Service<WindowStore, WindowStoreService>()("WindowStore") {}
 
 // ── EventSource (inbound stream) ────────────────────────────────────────────
 // The raw per-chat event firehose. Mock: a `Stream` fed from a test `Queue`,

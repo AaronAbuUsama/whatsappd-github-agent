@@ -62,7 +62,7 @@ export interface ManagedWhatsAppAccount extends WhatsAppAccountSetup {
 
 export interface CreateWhatsAppAccountOptions {
   readonly storeDirectory: string;
-  readonly archive: ConversationArchive;
+  readonly archive: Pick<ConversationArchive, "append">;
   readonly sessionFactory?: () => WhatsAppSession;
   readonly now?: () => number;
   readonly syncTimeoutMillis?: number;
@@ -150,7 +150,8 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
     for (const message of batch.messages) options.archive.append(conversationArrival(message));
   };
   const unsubscribeMessage = session.onMessage(async (message) => {
-    options.archive.append(conversationArrival(message));
+    const inserted = options.archive.append(conversationArrival(message));
+    if (!inserted) return;
     for (const subscriber of messageSubscribers) await subscriber(message);
   });
   const unsubscribeUpdate = session.onUpdate(async (update) => {

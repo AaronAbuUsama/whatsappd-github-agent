@@ -18,10 +18,8 @@ export interface CoalescerConfigValues {
    * message, whichever comes first. Must be ≥ `debounceWindow` to have any effect.
    */
   readonly maxWait: Duration.Duration;
-  /** Hard cap on the rolling buffer's message count. */
-  readonly maxBufferMessages: number;
-  /** Buffer age bound, in ms, measured against the newest buffered message. */
-  readonly maxBufferAgeMillis: number;
+  /** Maximum messages in one Window. Reaching it segments rather than evicts. */
+  readonly maxWindowMessages: number;
   /**
    * Every JID that means "the bot" — used to detect @-mentions and quote-replies of
    * it. WhatsApp addresses an account by two schemes (phone-number `@s.whatsapp.net`
@@ -33,12 +31,11 @@ export interface CoalescerConfigValues {
 
 export class CoalescerConfig extends Context.Service<CoalescerConfig, CoalescerConfigValues>()("CoalescerConfig") {}
 
-/** Sane defaults: debounce a few seconds, cap a burst at ~10s, buffer ~10 msgs / ~5 min. */
+/** Sane defaults: debounce a few seconds, cap a burst at ~10s, segment at 10 messages. */
 const defaultConfig: CoalescerConfigValues = {
   debounceWindow: Duration.seconds(3),
   maxWait: Duration.seconds(10),
-  maxBufferMessages: 10,
-  maxBufferAgeMillis: Duration.toMillis(Duration.minutes(5)),
+  maxWindowMessages: 10,
   botIds: ["bot@s.whatsapp.net"],
 };
 

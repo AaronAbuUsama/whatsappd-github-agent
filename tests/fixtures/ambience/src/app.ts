@@ -8,7 +8,7 @@ import { Hono } from "hono";
 import * as Coalescer from "../../../../src/coalescer/coalescer.js";
 import { configLayer } from "../../../../src/coalescer/config.js";
 import type { IncomingMessage } from "../../../../src/coalescer/events.js";
-import { queueEventSource } from "../../../../src/coalescer/mocks.js";
+import { inMemoryWindowStore, queueEventSource } from "../../../../src/coalescer/mocks.js";
 import { ambienceWindowDispatcher, dispatchAmbience } from "../../../../src/ambience/dispatch.js";
 import { loadGitHubIngressSettings } from "../../../../src/github/ingress.js";
 import { installGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
@@ -42,7 +42,7 @@ const respond = async (context: Context) => {
   }
   if (last?.role === "toolResult") {
     if (serialized.includes("start_github_proof")) {
-      const runId = serialized.match(/\"runId\"\s*:\s*\"([^\"]+)\"/)?.[1] ?? "missing-run-id";
+      const runId = serialized.match(/"runId"\s*:\s*"([^"]+)"/)?.[1] ?? "missing-run-id";
       return fauxAssistantMessage(`Private workflow admission settled with runId ${runId}.`);
     }
     if (serialized.includes("run_disposable_github_issue_proof")) {
@@ -126,6 +126,7 @@ Effect.runFork(
         Layer.mergeAll(
           queueEventSource(source),
           ambienceWindowDispatcher,
+          inMemoryWindowStore(),
           configLayer({ botIds: ["bot@s.whatsapp.net"], debounceWindow: Duration.millis(25) }),
         ),
       ),
