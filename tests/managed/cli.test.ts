@@ -49,7 +49,38 @@ const harness = () => {
     }),
     authorization: async (credential) => ({ apiKey: credential.access }),
   };
-  return { output, stdout: () => stdout, stderr: () => stderr, chatGptOAuth };
+  const setupPrompts = {
+    selectChat: async (candidates: readonly { readonly jid: string }[]) => candidates[0]!.jid,
+    repository: async (discovered?: string) => discovered ?? "owner/repo",
+    githubCredential: async (discovered?: { readonly token: string; readonly source: string }) =>
+      discovered ?? { token: "prompted-github-secret", source: "secure prompt" },
+    review: async () => true,
+    validationError: () => undefined,
+  };
+  const firstRunServices = {
+    whatsappFor: () => ({
+      authenticate: async () => ({ jid: "15550000000@s.whatsapp.net" }),
+      synchronizedChats: async () => [
+        { jid: "120363000@g.us", name: "Managed Test Chat", kind: "group" as const, lastActivityAt: 1_000 },
+      ],
+      session: () => {
+        throw new Error("not used during setup");
+      },
+      stop: async () => undefined,
+    }),
+    discoverRepository: async () => undefined,
+    discoverCredential: async () => undefined,
+    verifyGitHub: async (_token: string, repository: string) => repository,
+  };
+  return {
+    output,
+    stdout: () => stdout,
+    stderr: () => stderr,
+    chatGptOAuth,
+    interactive: true,
+    setupPrompts,
+    firstRunServices,
+  };
 };
 
 const files = async () => {
@@ -97,9 +128,7 @@ describe("managed CLI", () => {
     const unconfigured = harness();
     const startRuntime = vi.fn(async () => undefined);
 
-    expect(
-      await runCli(["--data-dir", paths.data, "start"], { ...unconfigured, startRuntime }),
-    ).toBe(1);
+    expect(await runCli(["--data-dir", paths.data, "start"], { ...unconfigured, startRuntime })).toBe(1);
     expect(unconfigured.stderr()).toContain("not configured");
     expect(startRuntime).not.toHaveBeenCalled();
 
@@ -133,22 +162,21 @@ describe("managed CLI", () => {
   it("loads managed configuration and the optional .env before importing the generated runtime", async () => {
     const paths = await files();
     const init = harness();
-    expect(
-      await runCli(
-        [
-          "--data-dir",
-          paths.data,
-          "init",
-          "--chat",
-          "120363000@g.us",
-          "--repository",
-          "owner/repo",
-          "--github-token-file",
-          paths.token,
-        ],
-        init,
-      ),
-    ).toBe(0);
+    const initExitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      init,
+    );
+    expect(initExitCode, init.stderr()).toBe(0);
     await writeFile(join(paths.data, ".env"), "GITHUB_WEBHOOK_SECRET=dotenv-webhook-secret\nPORT=7777\n");
 
     const managed = managedPaths({ dataDirectory: paths.data });
@@ -211,22 +239,21 @@ describe("managed CLI", () => {
   it("supports a fully scripted setup and deterministic status", async () => {
     const paths = await files();
     const init = harness();
-    expect(
-      await runCli(
-        [
-          "--data-dir",
-          paths.data,
-          "init",
-          "--chat",
-          "120363000@g.us",
-          "--repository",
-          "owner/repo",
-          "--github-token-file",
-          paths.token,
-        ],
-        init,
-      ),
-    ).toBe(0);
+    const initExitCode = await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      init,
+    );
+    expect(initExitCode, init.stderr()).toBe(0);
     expect(init.stdout()).toContain("Created secure managed installation");
     expect(init.stdout()).toContain("https://auth.example/device");
     expect(init.stdout()).toContain("ABCD-EFGH");
@@ -619,22 +646,29 @@ describe("managed CLI", () => {
     const paths = await files();
     const prompted = harness();
     const setupPrompts = {
-      managedChat: async () => "120363000@g.us",
+      ...prompted.setupPrompts,
+      selectChat: async () => "120363000@g.us",
       repository: async () => "owner/repo",
-      githubToken: async () => "prompted-github-secret",
+      githubCredential: async () => ({ token: "prompted-github-secret", source: "secure prompt" }),
     };
     expect(await runCli(["--data-dir", paths.data, "init"], { ...prompted, setupPrompts })).toBe(0);
 
     const second = harness();
     const forbiddenPrompts = {
-      managedChat: async (): Promise<string> => {
+      selectChat: async (): Promise<string> => {
         throw new Error("managed chat prompt must not run");
       },
       repository: async (): Promise<string> => {
         throw new Error("repository prompt must not run");
       },
-      githubToken: async (): Promise<string> => {
+      githubCredential: async (): Promise<{ token: string; source: string }> => {
         throw new Error("GitHub prompt must not run");
+      },
+      review: async (): Promise<boolean> => {
+        throw new Error("review prompt must not run");
+      },
+      validationError: () => {
+        throw new Error("validation prompt must not run");
       },
     };
     await rm(paths.token);
@@ -651,9 +685,10 @@ describe("managed CLI", () => {
     const paths = await files();
     const prompted = harness();
     const setupPrompts = {
-      managedChat: async () => "120363000@g.us",
+      ...prompted.setupPrompts,
+      selectChat: async () => "120363000@g.us",
       repository: async () => "owner/repo",
-      githubToken: async () => "prompted-github-secret",
+      githubCredential: async () => ({ token: "prompted-github-secret", source: "secure prompt" }),
     };
     expect(await runCli(["--data-dir", paths.data], { ...prompted, setupPrompts })).toBe(0);
     expect(prompted.stdout()).toContain("Created secure managed installation");
@@ -669,7 +704,7 @@ describe("managed CLI", () => {
     const cli = harness();
     let promptsOpened = 0;
     const setupPrompts = {
-      managedChat: async () => {
+      selectChat: async () => {
         promptsOpened += 1;
         return "120363000@g.us";
       },
@@ -677,9 +712,16 @@ describe("managed CLI", () => {
         promptsOpened += 1;
         return "owner/repo";
       },
-      githubToken: async () => {
+      githubCredential: async () => {
         promptsOpened += 1;
-        return "secret";
+        return { token: "secret", source: "prompt" };
+      },
+      review: async () => {
+        promptsOpened += 1;
+        return true;
+      },
+      validationError: () => {
+        promptsOpened += 1;
       },
     };
 
@@ -691,7 +733,7 @@ describe("managed CLI", () => {
       }),
     ).toBe(1);
     expect(promptsOpened).toBe(0);
-    expect(cli.stderr()).toContain("Non-interactive init requires --repository, --github-token-file");
+    expect(cli.stderr()).toContain("valid managed ChatGPT credential");
   });
 
   it("returns stable nonzero codes for unconfigured and damaged installs", async () => {

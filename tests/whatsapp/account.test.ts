@@ -2,13 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  ConversationSyncBatch,
-  IncomingMessage,
-  Status,
-  Update,
-  WhatsAppSession,
-} from "whatsappd";
+import type { ConversationSyncBatch, IncomingMessage, Status, Update, WhatsAppSession } from "whatsappd";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
@@ -168,6 +162,87 @@ describe("managed WhatsApp account", () => {
     reopenedArchive.close();
   });
 
+  it("waits when online arrives before the initial conversation sync batch", async () => {
+    const { root, archive } = fixture();
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const syncListeners = new Set<(batch: ConversationSyncBatch) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync(listener: (batch: ConversationSyncBatch) => void | Promise<void>) {
+        syncListeners.add(listener);
+        return () => syncListeners.delete(listener);
+      },
+      start: async () => {
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      identity: () => ({ jid: "15550000000@s.whatsapp.net" }),
+      stop: async () => undefined,
+    } as unknown as WhatsAppSession;
+    const account = createWhatsAppAccount({
+      storeDirectory: join(root, "whatsapp"),
+      archive,
+      sessionFactory: () => session,
+      syncTimeoutMillis: 1_000,
+    });
+
+    await account.authenticate({});
+    let settled = false;
+    const candidates = account.synchronizedChats().finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    for (const listener of syncListeners) {
+      await listener({
+        chats: [{ id: "late-sync@g.us", subject: "Late Sync", isGroup: true, lastMessageAt: 4_000 }],
+        contacts: [],
+        messages: [],
+      });
+    }
+    await expect(candidates).resolves.toEqual([
+      { jid: "late-sync@g.us", name: "Late Sync", kind: "group", lastActivityAt: 4_000 },
+    ]);
+
+    await account.stop();
+    archive.close();
+  });
+
+  it("bounds the initial conversation sync wait", async () => {
+    const { root, archive } = fixture();
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      start: async () => {
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      identity: () => ({ jid: "15550000000@s.whatsapp.net" }),
+      stop: async () => undefined,
+    } as unknown as WhatsAppSession;
+    const account = createWhatsAppAccount({
+      storeDirectory: join(root, "whatsapp"),
+      archive,
+      sessionFactory: () => session,
+      syncTimeoutMillis: 10,
+    });
+
+    await account.authenticate({});
+    await expect(account.synchronizedChats()).rejects.toMatchObject({ code: "timeout" });
+
+    await account.stop();
+    archive.close();
+  });
+
   it("archives each live arrival before downstream participation and archives confirmed sends", async () => {
     const { root, archive } = fixture();
     const fake = fakeSession();
@@ -180,12 +255,17 @@ describe("managed WhatsApp account", () => {
     const observed: string[] = [];
     account.session().onMessage((incoming) => {
       observed.push(incoming.id);
-      expect(archive.events(incoming.chatId).some(({ providerMessageId }) => providerMessageId === incoming.id)).toBe(true);
+      expect(archive.events(incoming.chatId).some(({ providerMessageId }) => providerMessageId === incoming.id)).toBe(
+        true,
+      );
     });
     account.session().onUpdate((update) => {
       observed.push(update.kind);
-      expect(archive.events(update.ref.chatId).some(({ kind }) =>
-        kind === (update.kind === "revoke" ? "revocation" : update.kind))).toBe(true);
+      expect(
+        archive
+          .events(update.ref.chatId)
+          .some(({ kind }) => kind === (update.kind === "revoke" ? "revocation" : update.kind)),
+      ).toBe(true);
     });
 
     for (const listener of fake.messageListeners) {
@@ -248,11 +328,13 @@ describe("managed WhatsApp account", () => {
       kind: "text",
       text: "One confirmed outbound fact.",
     });
-    expect(archive.events(ref.chatId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "reaction", providerMessageId: ref.id }),
-      expect.objectContaining({ kind: "edit", providerMessageId: ref.id }),
-      expect.objectContaining({ kind: "revocation", providerMessageId: ref.id }),
-    ]));
+    expect(archive.events(ref.chatId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "reaction", providerMessageId: ref.id }),
+        expect.objectContaining({ kind: "edit", providerMessageId: ref.id }),
+        expect.objectContaining({ kind: "revocation", providerMessageId: ref.id }),
+      ]),
+    );
     expect(archive.events("project-49@g.us").at(-1)).toMatchObject({
       kind: "arrival",
       payload: {
@@ -415,7 +497,9 @@ describe("managed WhatsApp account", () => {
       onMessage: () => () => undefined,
       onUpdate: () => () => undefined,
       onConversationSync: () => () => undefined,
-      start: async () => { throw new Error("connection refused"); },
+      start: async () => {
+        throw new Error("connection refused");
+      },
       stop: async () => undefined,
     } as unknown as WhatsAppSession;
     const failed = createWhatsAppAccount({
@@ -461,18 +545,21 @@ describe("managed WhatsApp account", () => {
       const { archive } = fixture();
       const account = createWhatsAppAccount({ storeDirectory, archive });
       try {
-        await account.authenticate({
-          onPairing: ({ qr, code }) => {
-            if (qr !== undefined) {
-              const renderer = createRequire(import.meta.url)("qrcode-terminal") as {
-                generate(value: string, options: { readonly small: boolean }): void;
-              };
-              renderer.generate(qr, { small: true });
-            } else if (code !== undefined) {
-              console.info(`Live WhatsApp pairing code: ${code}`);
-            }
+        await account.authenticate(
+          {
+            onPairing: ({ qr, code }) => {
+              if (qr !== undefined) {
+                const renderer = createRequire(import.meta.url)("qrcode-terminal") as {
+                  generate(value: string, options: { readonly small: boolean }): void;
+                };
+                renderer.generate(qr, { small: true });
+              } else if (code !== undefined) {
+                console.info(`Live WhatsApp pairing code: ${code}`);
+              }
+            },
           },
-        }, AbortSignal.timeout(120_000));
+          AbortSignal.timeout(120_000),
+        );
         await expect(account.synchronizedChats()).resolves.not.toHaveLength(0);
         expect(archive.events()).not.toHaveLength(0);
       } finally {

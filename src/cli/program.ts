@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "@commander-js/extra-typings";
 import * as prompts from "@clack/prompts";
 
-import { inspectManagedData, installManagedData, type InstallationInspection } from "../managed/installation.js";
+import { inspectManagedData, type InstallationInspection } from "../managed/installation.js";
 import { createManagedChatGptAuthentication } from "../managed/chatgpt-authentication.js";
 import { managedPaths, type ManagedPaths } from "../managed/paths.js";
 import { loadManagedRuntimeEnvironment } from "../managed/runtime-environment.js";
@@ -21,17 +22,16 @@ import {
   runChatGptReadinessCheck,
   type ChatGptReadinessReceipt,
 } from "../model/pi-subscription.js";
+import { discoverGitHubCredential, discoverOriginRepository, verifyGitHubRepositoryAccess } from "../setup/github.js";
+import { runFirstRunSetup, type FirstRunPrompts, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
+import { createWhatsAppAccount } from "../whatsapp/account.js";
 
 export interface CliOutput {
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
 }
 
-export interface SetupPrompts {
-  readonly managedChat: () => Promise<string>;
-  readonly repository: () => Promise<string>;
-  readonly githubToken: () => Promise<string>;
-}
+export type SetupPrompts = FirstRunPrompts;
 
 export interface CliDependencies {
   readonly output?: CliOutput;
@@ -40,6 +40,7 @@ export interface CliDependencies {
   readonly startRuntime?: StartRuntime;
   readonly importRuntime?: ImportRuntime;
   readonly chatGptOAuth?: ChatGptOAuthAdapter;
+  readonly firstRunServices?: Partial<FirstRunServices>;
   readonly signal?: AbortSignal;
   readonly readinessTimeoutMillis?: number;
   readonly readinessCheck?: (
@@ -81,28 +82,77 @@ const requiredPrompt = async (label: string, prompt: () => Promise<string | symb
   return trimmed;
 };
 
+const promptValue = async <Value>(prompt: Promise<Value | symbol>): Promise<Value> => {
+  const value = await prompt;
+  if (prompts.isCancel(value)) {
+    prompts.cancel("Setup cancelled.");
+    throw new Error("Setup cancelled.");
+  }
+  return value;
+};
+
 const defaultSetupPrompts: SetupPrompts = {
-  managedChat: () =>
-    requiredPrompt("Managed chat", () =>
-      prompts.text({
-        message: "WhatsApp chat JID to manage",
-        placeholder: "120363000000000000@g.us",
+  selectChat: async (candidates) =>
+    await promptValue(
+      prompts.autocomplete({
+        message: "Search the synchronized WhatsApp chats",
+        options: candidates.map((candidate) => ({
+          value: candidate.jid,
+          label: candidate.name,
+          hint: [
+            candidate.kind,
+            candidate.lastActivityAt === undefined
+              ? undefined
+              : `active ${new Date(candidate.lastActivityAt).toISOString()}`,
+            candidate.jid,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        })),
+        maxItems: 10,
       }),
     ),
-  repository: () =>
+  repository: (discovered) =>
     requiredPrompt("Repository", () =>
       prompts.text({
         message: "Default GitHub repository",
         placeholder: "owner/repository",
+        ...(discovered === undefined ? {} : { initialValue: discovered }),
       }),
     ),
-  githubToken: () =>
-    requiredPrompt("GitHub token", () =>
+  githubCredential: async (discovered) => {
+    if (discovered !== undefined) {
+      const reuse = await promptValue(
+        prompts.confirm({
+          message: `Use the GitHub credential from ${discovered.source}?`,
+          initialValue: true,
+        }),
+      );
+      if (reuse) return discovered;
+    }
+    const token = await requiredPrompt("GitHub token", () =>
       prompts.password({
         message: "Fine-grained GitHub personal access token",
         mask: "*",
       }),
-    ),
+    );
+    return { token, source: "secure prompt" };
+  },
+  review: async (review: SetupReview) => {
+    prompts.note(
+      [
+        `Data directory: ${review.dataDirectory}`,
+        `ChatGPT: ${review.chatGptCredentialSource}`,
+        `WhatsApp: ${review.whatsappCredentialSource}`,
+        `Managed chat: ${review.chat.name} (${review.chat.kind}, ${review.chat.jid})`,
+        `GitHub repository: ${review.repository}`,
+        `GitHub credential: ${review.githubCredentialSource}`,
+      ].join("\n"),
+      "Review Ambient Agent setup",
+    );
+    return await promptValue(prompts.confirm({ message: "Create this managed installation?", initialValue: true }));
+  },
+  validationError: (_field, message) => prompts.log.error(message),
 };
 
 const renderInspection = (
@@ -183,6 +233,22 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     (dependencies.setupPrompts !== undefined || (process.stdin.isTTY === true && process.stdout.isTTY === true));
   const authenticationFor = (paths: ManagedPaths) =>
     createManagedChatGptAuthentication(paths, dependencies.chatGptOAuth);
+  const serviceOverrides = dependencies.firstRunServices ?? {};
+  const firstRunServices: FirstRunServices = {
+    chatGptFor: serviceOverrides.chatGptFor ?? authenticationFor,
+    whatsappFor:
+      serviceOverrides.whatsappFor ??
+      ((paths, archive) =>
+        createWhatsAppAccount({
+          storeDirectory: paths.whatsapp,
+          archive,
+        })),
+    discoverRepository: serviceOverrides.discoverRepository ?? (() => discoverOriginRepository()),
+    discoverCredential: serviceOverrides.discoverCredential ?? (() => discoverGitHubCredential()),
+    verifyGitHub:
+      serviceOverrides.verifyGitHub ??
+      ((token, repository, signal) => verifyGitHubRepositoryAccess({ token, repository, signal })),
+  };
   const startRuntime =
     dependencies.startRuntime ??
     ((paths: ManagedPaths) => startGeneratedRuntime(paths, authenticationFor(paths), dependencies.importRuntime));
@@ -203,9 +269,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       "file.too-large",
       "file.changed-during-read",
     ]);
-    return inspection.diagnostics.every(
-      (item) => credentialPaths.has(item.path) && repairableCodes.has(item.code),
-    );
+    return inspection.diagnostics.every((item) => credentialPaths.has(item.path) && repairableCodes.has(item.code));
   };
   const deviceCodeCallbacks: DeviceCodeCallbacks = {
     onDeviceCode: (info) => {
@@ -218,6 +282,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       output.stdout(
         phase === "waiting" ? "Waiting for ChatGPT authorization...\n" : "ChatGPT authorization complete.\n",
       );
+    },
+  };
+  const whatsappCallbacks = {
+    onPairing: (pairing: { readonly qr?: string; readonly code?: string }) => {
+      if (pairing.qr !== undefined) {
+        const renderer = createRequire(import.meta.url)("qrcode-terminal") as {
+          generate(value: string, options: { readonly small: boolean }, callback: (rendered: string) => void): void;
+        };
+        renderer.generate(pairing.qr, { small: true }, (rendered) => output.stdout(`${rendered}\n`));
+      } else if (pairing.code !== undefined) {
+        output.stdout(`Enter WhatsApp pairing code ${pairing.code}.\n`);
+      }
     },
   };
   let exitCode = 0;
@@ -301,28 +377,23 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           `Refusing to replace damaged managed data at ${current.dataDirectory}; run ambient-agent doctor.`,
         );
       }
-      if (!interactive) {
-        const missing = [
-          options.chat === undefined ? "--chat" : undefined,
-          options.repository === undefined ? "--repository" : undefined,
-          options.githubTokenFile === undefined ? "--github-token-file" : undefined,
-        ].filter((flag): flag is string => flag !== undefined);
-        if (missing.length > 0) {
-          throw new Error(`Non-interactive init requires ${missing.join(", ")}.`);
-        }
-      }
-      const managedChat = options.chat ?? (await setupPrompts.managedChat());
-      const repository = options.repository ?? (await setupPrompts.repository());
-      const githubToken = options.githubTokenFile
-        ? await readGitHubToken(options.githubTokenFile)
-        : await setupPrompts.githubToken();
-      const result = await installManagedData({
+      const scriptedCredential =
+        options.githubTokenFile === undefined
+          ? undefined
+          : { token: await readGitHubToken(options.githubTokenFile), source: "token file" };
+      const result = await runFirstRunSetup({
         dataDirectory: global.dataDir,
-        managedChats: [managedChat],
-        defaultRepository: repository,
-        githubToken,
-        authenticateChatGpt: async (paths) =>
-          await authenticationFor(paths).authenticate(deviceCodeCallbacks, authenticationSignal()),
+        interactive,
+        services: firstRunServices,
+        prompts: setupPrompts,
+        scripted: {
+          ...(options.chat === undefined ? {} : { chat: options.chat }),
+          ...(options.repository === undefined ? {} : { repository: options.repository }),
+          ...(scriptedCredential === undefined ? {} : { githubCredential: scriptedCredential }),
+        },
+        chatGptCallbacks: deviceCodeCallbacks,
+        whatsappCallbacks,
+        signal: authenticationSignal(),
       });
       output.stdout(
         result.created

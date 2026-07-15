@@ -51,7 +51,13 @@ const atomicWriteManagedConfig = async (path: string, value: unknown): Promise<v
 };
 
 export const migrateManagedChatGptCredentialReference = async (path: string): Promise<void> => {
-  const config = await readManagedConfig(path);
+  let config: Awaited<ReturnType<typeof readManagedConfig>>;
+  try {
+    config = await readManagedConfig(path);
+  } catch (cause) {
+    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT") return;
+    throw cause;
+  }
   if (config.model.credential === "chatgpt-oauth") return;
   await atomicWriteManagedConfig(path, {
     ...config,

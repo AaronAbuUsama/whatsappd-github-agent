@@ -66,6 +66,17 @@ export interface InstallManagedDataInput extends ManagedPathEnvironment {
   readonly authenticateChatGpt: (paths: ManagedPaths) => Promise<void>;
 }
 
+export interface PreparedManagedData {
+  readonly managedChats: readonly string[];
+  readonly defaultRepository: string;
+  readonly githubToken: string;
+}
+
+export interface InstallPreparedManagedDataInput extends ManagedPathEnvironment {
+  readonly prepare: (paths: ManagedPaths) => Promise<PreparedManagedData>;
+  readonly signal?: AbortSignal;
+}
+
 export interface InstallManagedDataResult {
   readonly created: boolean;
   readonly inspection: InstallationInspection;
@@ -395,7 +406,9 @@ const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
     return { path: lockPath, stagingRoot };
   } catch (cause) {
     if (errorCode(cause) === "EEXIST") {
-      throw new Error(`Setup is already in progress for ${root}; wait for it to finish or clear the lock after confirming it stopped.`);
+      throw new Error(
+        `Setup is already in progress for ${root}; wait for it to finish or clear the lock after confirming it stopped.`,
+      );
     }
     throw cause;
   }
@@ -542,11 +555,7 @@ const writeSecureFile = async (path: string, contents: string): Promise<void> =>
 
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
 
-const createSkeleton = async (
-  paths: ManagedPaths,
-  config: ManagedConfig,
-  github: GitHubCredential,
-): Promise<void> => {
+const createPrivateStaging = async (paths: ManagedPaths): Promise<void> => {
   await mkdir(paths.root, { mode: DIRECTORY_MODE });
   await chmod(paths.root, DIRECTORY_MODE);
   await mkdir(paths.credentials, { mode: DIRECTORY_MODE });
@@ -557,13 +566,22 @@ const createSkeleton = async (
     chmod(paths.whatsapp, DIRECTORY_MODE),
     chmod(paths.logs, DIRECTORY_MODE),
   ]);
-  await writeSecureFile(paths.config, json(config));
-  await writeSecureFile(paths.githubCredential, json(github));
   await writeSecureFile(paths.applicationDatabase, "");
   await writeSecureFile(paths.flueDatabase, "");
 };
 
-export const installManagedData = async (input: InstallManagedDataInput): Promise<InstallManagedDataResult> => {
+const writePreparedConfiguration = async (
+  paths: ManagedPaths,
+  config: ManagedConfig,
+  github: GitHubCredential,
+): Promise<void> => {
+  await writeSecureFile(paths.config, json(config));
+  await writeSecureFile(paths.githubCredential, json(github));
+};
+
+export const installPreparedManagedData = async (
+  input: InstallPreparedManagedDataInput,
+): Promise<InstallManagedDataResult> => {
   const targetPaths = managedPaths(input);
   if ((input.platform ?? process.platform) === "win32") {
     throw new Error("Secure managed credential ACLs are not implemented on Windows; setup fails closed.");
@@ -574,17 +592,6 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
     throw new Error(`Refusing to replace damaged managed data at ${targetPaths.root}; run ambient-agent doctor.`);
   }
 
-  const configResult = v.safeParse(
-    ManagedConfigSchema,
-    createManagedConfig(input.managedChats, input.defaultRepository),
-  );
-  if (!configResult.success) throw new Error("Setup values do not form a valid Ambient Agent configuration.");
-  const githubResult = v.safeParse(GitHubCredentialSchema, {
-    schemaVersion: 1,
-    kind: "personal-token",
-    token: input.githubToken,
-  });
-  if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
   await mkdir(dirname(targetPaths.root), { recursive: true, mode: DIRECTORY_MODE });
   const lock = await acquireSetupLock(targetPaths.root);
 
@@ -596,11 +603,26 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
       throw new Error(`Refusing to replace existing managed data at ${targetPaths.root}.`);
     }
     const stagingPaths = managedPaths({ dataDirectory: stagingRoot });
-    await createSkeleton(stagingPaths, configResult.output, githubResult.output);
-    await input.authenticateChatGpt(stagingPaths);
+    await createPrivateStaging(stagingPaths);
+    const prepared = await input.prepare(stagingPaths);
+    const configResult = v.safeParse(
+      ManagedConfigSchema,
+      createManagedConfig(prepared.managedChats, prepared.defaultRepository),
+    );
+    if (!configResult.success) throw new Error("Setup values do not form a valid Ambient Agent configuration.");
+    const githubResult = v.safeParse(GitHubCredentialSchema, {
+      schemaVersion: 1,
+      kind: "personal-token",
+      token: prepared.githubToken,
+    });
+    if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
+    await writePreparedConfiguration(stagingPaths, configResult.output, githubResult.output);
     const stagingInspection = await inspectManagedData({ dataDirectory: stagingRoot });
     if (stagingInspection.state !== "configured") {
       throw new Error("Managed staging verification failed; setup did not commit any files.");
+    }
+    if (input.signal?.aborted) {
+      throw new Error("Setup was cancelled or timed out before promotion; no files changed.");
     }
     await rename(stagingRoot, targetPaths.root);
   } finally {
@@ -617,3 +639,16 @@ export const installManagedData = async (input: InstallManagedDataInput): Promis
   }
   return { created: true, inspection };
 };
+
+export const installManagedData = async (input: InstallManagedDataInput): Promise<InstallManagedDataResult> =>
+  await installPreparedManagedData({
+    ...input,
+    prepare: async (paths) => {
+      await input.authenticateChatGpt(paths);
+      return {
+        managedChats: input.managedChats,
+        defaultRepository: input.defaultRepository,
+        githubToken: input.githubToken,
+      };
+    },
+  });

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { inspectManagedData, installManagedData } from "../../src/managed/installation.ts";
+import { inspectManagedData, installManagedData, installPreparedManagedData } from "../../src/managed/installation.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import { createManagedChatGptCredentialStore } from "../../src/model/chatgpt-authentication.ts";
 
@@ -98,6 +98,33 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
 
     await expect(lstat(base.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(inspectManagedData(base)).resolves.toMatchObject({ state: "unconfigured" });
+  });
+
+  it("discovers setup values inside the private stage before atomically promoting them", async () => {
+    const base = await fixture();
+    let stagedRoot = "";
+    const result = await installPreparedManagedData({
+      dataDirectory: base.dataDirectory,
+      prepare: async (paths) => {
+        stagedRoot = paths.root;
+        expect(paths.root).not.toBe(base.dataDirectory);
+        expect((await lstat(paths.root)).mode & 0o777).toBe(0o700);
+        expect((await lstat(paths.credentials)).mode & 0o777).toBe(0o700);
+        expect((await lstat(paths.whatsapp)).mode & 0o777).toBe(0o700);
+        expect((await lstat(paths.applicationDatabase)).mode & 0o777).toBe(0o600);
+        await base.authenticateChatGpt(paths);
+        return {
+          managedChats: ["120363000@g.us"],
+          defaultRepository: "owner/repo",
+          githubToken: base.githubToken,
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ created: true, inspection: { state: "configured" } });
+    expect(stagedRoot).not.toBe(base.dataDirectory);
+    await expect(lstat(stagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(managedPaths(base).config, "utf8")).toContain("120363000@g.us");
   });
 
   it("validates the complete staging tree before committing it", async () => {
