@@ -94,9 +94,10 @@ describeEval(
           },
         },
       });
-      expect((updates[0]?.arguments as { labels?: string[] }).labels).toEqual(
-        expect.arrayContaining(["bug", "priority: high"]),
-      );
+      expect((updates[0]?.arguments as { labels?: string[] }).labels).toEqual(["bug", "priority: high"]);
+      expect(
+        (updates[0] as { result?: { issue?: { labels?: string[] } } } | undefined)?.result?.issue?.labels,
+      ).toEqual(["bug", "priority: high"]);
       const acknowledgements = calls.filter((call) => call.name === "say");
       expect(acknowledgements).toHaveLength(1);
       const acknowledgement = JSON.stringify(acknowledgements[0]?.arguments).toLowerCase();

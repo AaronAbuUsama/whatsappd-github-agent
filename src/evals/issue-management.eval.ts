@@ -79,6 +79,7 @@ describeEval(
         arguments: {
           number: 1,
           title: "Scheduler loses queued jobs after restart",
+          body: "Expected queued jobs to run after restart. Observed that they disappear.",
           labels: ["bug", "priority: high"],
           assignees: ["maintainer"],
           milestone: 3,
@@ -88,6 +89,7 @@ describeEval(
           issue: {
             number: 1,
             title: "Scheduler loses queued jobs after restart",
+            body: "Expected queued jobs to run after restart. Observed that they disappear.",
             labels: ["bug", "priority: high"],
             assignees: ["maintainer"],
             milestone: { number: 3, title: "Stable base", state: "open" },
