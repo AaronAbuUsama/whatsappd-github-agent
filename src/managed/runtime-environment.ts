@@ -40,7 +40,7 @@ export const loadManagedRuntimeEnvironment = async (
 
   Object.assign(environment, {
     GITHUB_ALLOWED_REPOS: config.github.allowedRepositories.join(","),
-    GITHUB_INGRESS_DB_PATH: paths.applicationDatabase,
+    APPLICATION_DB_PATH: paths.applicationDatabase,
     GITHUB_ISSUE_OPERATIONS_DB_PATH: paths.applicationDatabase,
     GITHUB_REPO: config.github.defaultRepository,
     GITHUB_TOKEN: github.token,

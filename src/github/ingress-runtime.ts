@@ -17,7 +17,7 @@ export const installGitHubIngressRuntime = (
   settings: GitHubIngressSettings,
   dispatch: (chatId: string, input: GitHubIssueOpenedInput) => Promise<DispatchReceipt>,
 ): GitHubIngressStore => {
-  const store = createGitHubIngressStore(settings.databasePath);
+  const store = createGitHubIngressStore(settings.databasePath, undefined, settings.legacyDatabasePath);
   configureGitHubIngressRuntime(
     createGitHubIngress({
       store,

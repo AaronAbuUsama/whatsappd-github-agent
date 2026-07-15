@@ -18,7 +18,7 @@ const tempRoot = mkdtempSync(join(tmpdir(), "ambience-flue-"));
 const buildRoot = mkdtempSync(join(fixtureRoot, ".test-build-"));
 const outputRoot = join(buildRoot, "dist");
 const databasePath = join(tempRoot, "flue.sqlite");
-const githubIngressDatabasePath = join(tempRoot, "github-ingress.db");
+const applicationDatabasePath = join(tempRoot, "application.sqlite");
 const githubWebhookSecret = "fixture-github-webhook-secret";
 
 let server: ChildProcessWithoutNullStreams | undefined;
@@ -42,7 +42,7 @@ async function startServer(extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
       ...process.env,
       GITHUB_WEBHOOK_SECRET: githubWebhookSecret,
       GITHUB_CHAT_ROUTES: "acme/widgets=github-ingress-29@g.us",
-      GITHUB_INGRESS_DB_PATH: githubIngressDatabasePath,
+      APPLICATION_DB_PATH: applicationDatabasePath,
       OPENAI_API_KEY: "",
       PORT: String(port),
       ...extraEnv,
@@ -336,9 +336,10 @@ describe("persisted Ambience admission", () => {
     const first = await githubDelivery({ deliveryId, body });
     const firstBody = await first.text();
     expect(first.status, firstBody).toBe(200);
-    const firstReceipt = JSON.parse(firstBody) as { status: string; dispatchId: string };
+    const firstReceipt = JSON.parse(firstBody) as { status: string; dispatchId: string; acceptedAt: string };
     expect(firstReceipt.status).toBe("dispatched");
     expect(firstReceipt.dispatchId).toBeTruthy();
+    expect(Number.isFinite(Date.parse(firstReceipt.acceptedAt))).toBe(true);
     await waitFor(
       async () => (await historyText(chatId)).includes("Private verified GitHub delivery processed without speaking."),
       "verified GitHub delivery settlement",
@@ -362,6 +363,7 @@ describe("persisted Ambience admission", () => {
         chatId,
         ambience: "ambience",
         dispatchId: firstReceipt.dispatchId,
+        acceptedAt: firstReceipt.acceptedAt,
         status: "dispatched",
       }),
     );
@@ -383,6 +385,28 @@ describe("persisted Ambience admission", () => {
 
     expect(response.status).toBe(401);
     expect(await githubIngressRecords()).not.toContainEqual(expect.objectContaining({ deliveryId }));
+  });
+
+  it("deduplicates one admitted GitHub delivery after process replacement", async () => {
+    const chatId = "github-ingress-29@g.us";
+    const deliveryId = "56-restart-deduplication";
+    const body = githubIssueOpenedPayload();
+    const first = await githubDelivery({ deliveryId, body });
+    expect(first.status, await first.text()).toBe(200);
+    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "first GitHub admission");
+
+    await stopServer();
+    await startServer();
+
+    const repeated = await githubDelivery({ deliveryId, body });
+    const repeatedBody = await repeated.text();
+    expect(repeated.status, repeatedBody).toBe(200);
+    expect(JSON.parse(repeatedBody)).toMatchObject({ status: "duplicate" });
+    const history = await historyText(chatId);
+    expect(history.match(new RegExp(deliveryId, "g"))).toHaveLength(1);
+    expect(await githubIngressRecords()).toContainEqual(
+      expect.objectContaining({ deliveryId, status: "dispatched", chatId }),
+    );
   });
 
   it("rejects semantically identical JSON when the signed bytes differ", async () => {

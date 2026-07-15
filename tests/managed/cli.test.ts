@@ -183,8 +183,8 @@ describe("managed CLI", () => {
     const expectedDirectory = await realpath(paths.data);
     const keys = [
       "AMBIENCE_WHATSAPP",
+      "APPLICATION_DB_PATH",
       "GITHUB_ALLOWED_REPOS",
-      "GITHUB_INGRESS_DB_PATH",
       "GITHUB_ISSUE_OPERATIONS_DB_PATH",
       "GITHUB_REPO",
       "GITHUB_TOKEN",
@@ -214,8 +214,8 @@ describe("managed CLI", () => {
           expect(process.cwd()).toBe(expectedDirectory);
           expect(process.env).toMatchObject({
             AMBIENCE_WHATSAPP: "1",
+            APPLICATION_DB_PATH: managed.applicationDatabase,
             GITHUB_ALLOWED_REPOS: "owner/repo",
-            GITHUB_INGRESS_DB_PATH: managed.applicationDatabase,
             GITHUB_ISSUE_OPERATIONS_DB_PATH: managed.applicationDatabase,
             GITHUB_REPO: "owner/repo",
             GITHUB_TOKEN: "github-secret-token",

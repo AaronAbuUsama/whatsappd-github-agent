@@ -14,10 +14,11 @@ Ambience is the proper name of the continuing Flue Agent. There is one Ambience 
 
 | Current code                                                                                                                            | What it proves                                                                                                            | Why it is not the stable base                                                                                                     |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories            | One continuing Flue Agent can privately process every Window, decide when to Say, and develop, file, or correct one issue | Discussion, state transitions, webhook feedback, and operator uncertainty controls remain in later DAG issues                     |
+| `src/agents/ambience.ts` registers versioned WhatsApp Participation and Issue Management Skills with cohesive Tool factories            | One continuing Flue Agent can privately process every Window and manage the supported issue journey                       | Operator uncertainty controls and the final packed runtime composition remain in later DAG issues                                 |
 | `src/app.ts` and `src/host/whatsapp-runtime.ts` still consume a process-local environment bridge prepared from the managed installation | The validated managed setup owns credentials and configuration without user-authored environment files                    | #11 still owns the final explicit composition root and complete packed command integration                                        |
-| `src/capabilities/issue-management/` owns direct search/read/create/update behavior and a durable Operation Identity ledger             | Authorized creation plus correction with existing labels, assignees, and milestones use positive-only reconciliation      | #55 extends discussion and lifecycle on this provider-neutral interface; #57 exposes operator resolution for Uncertain operations |
-| `package.json` exposes a publishable `ambient-agent` bin with managed `init`, `auth`, `status`, `doctor`, and foreground `start` paths  | A packed tarball installs and runs the managed composition root on the supported POSIX floor                              | The package is not published yet, `config` remains rollout work, and production Issue Management is not complete                  |
+| `src/capabilities/issue-management/` owns the supported issue journey and a durable Operation Identity ledger                           | Authorized creation, correction, discussion, and lifecycle mutations preserve explicit proof boundaries                  | #57 exposes operator resolution for Uncertain operations                                                                          |
+| `src/github/` verifies, routes, deduplicates, and admits provider deliveries through `application.sqlite`                               | A mapped delivery reaches one continuing Ambience with a retained Flue receipt across duplicate and restart cases         | #57 exposes operator resolution for any Uncertain admission                                                                       |
+| `package.json` exposes a publishable `ambient-agent` bin with managed `init`, `auth`, `status`, `doctor`, and foreground `start` paths  | A packed tarball installs and runs the managed composition root on the supported POSIX floor                              | The package is not published yet and #11 still owns final composition and `config` rollout                                        |
 
 The rollout replaces these paths. It does not layer a second production path beside them.
 
@@ -38,11 +39,14 @@ flowchart TD
     AMB --> ISSUE["Issue Management"]
     WACAP --> WA
     ISSUE --> GH["GitHub Issues"]
+    GHW["Verified GitHub webhook"] --> GHI["GitHub ingress admission"]
+    GHI --> FLUE
 
     APPDB[("application.sqlite")] --- ARC
     APPDB --- INBOX
     APPDB --- COAL
     APPDB --- RELAY
+    APPDB --- GHI
     FLUEDB[("flue.sqlite")] --- FLUE
     CREDS[("Managed credentials")] --- WA
     CREDS --- GH

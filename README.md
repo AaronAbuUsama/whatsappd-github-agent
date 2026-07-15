@@ -110,6 +110,7 @@ WhatsApp runtime phase. No model API-key environment variable is supported.
 - `GITHUB_ALLOWED_REPOS` limits every bounded workflow write.
 - `GITHUB_WEBHOOK_SECRET` authenticates ingress before payload parsing.
 - `GITHUB_CHAT_ROUTES` keeps repository-to-chat ownership application-owned.
+- `APPLICATION_DB_PATH` is the single SQLite boundary for archive, intake, GitHub ingress, and operation receipts.
 - `WHATSAPP_GROUP_ID(S)` and `WHATSAPP_ALLOW_DM` keep admission fail-closed.
 - `WHATSAPP_HISTORY_DB` retains full-fidelity history for the chat-bound tools.
 - The application-owned `credentials/chatgpt-oauth.json` record is the only

@@ -1,5 +1,6 @@
 import type { GitHubWebhookDelivery } from "@flue/github";
 import type { DispatchReceipt } from "@flue/runtime";
+import { resolve } from "node:path";
 import * as v from "valibot";
 
 import { githubIssueOpenedInputSchema, type GitHubIssueOpenedInput } from "../ambience/events.js";
@@ -32,6 +33,7 @@ const issueOpenedPayloadSchema = v.object({
 export interface GitHubIngressSettings {
   readonly webhookSecret: string;
   readonly databasePath: string;
+  readonly legacyDatabasePath?: string;
   readonly routes: ReadonlyMap<string, string>;
 }
 
@@ -79,9 +81,14 @@ export const loadGitHubIngressSettings = (
     );
   }
 
+  const databasePath = env.APPLICATION_DB_PATH?.trim() || "./application.sqlite";
+  const configuredLegacyPath = env.GITHUB_INGRESS_DB_PATH?.trim() || "./data/github-ingress.db";
+  const legacyDatabasePath =
+    configuredLegacyPath && resolve(configuredLegacyPath) !== resolve(databasePath) ? configuredLegacyPath : undefined;
   return {
     webhookSecret,
-    databasePath: env.GITHUB_INGRESS_DB_PATH?.trim() || "./data/github-ingress.db",
+    databasePath,
+    ...(legacyDatabasePath === undefined ? {} : { legacyDatabasePath }),
     routes,
   };
 };
@@ -98,6 +105,7 @@ export type GitHubIngressResult =
       readonly chatId: string;
       readonly ambience: "ambience";
       readonly dispatchId: string;
+      readonly acceptedAt: string;
     };
 
 export interface GitHubIngressLogger {
@@ -125,37 +133,38 @@ export const createGitHubIngress = (options: {
   return async (delivery: GitHubWebhookDelivery): Promise<GitHubIngressResult> => {
     const receivedAt = now().toISOString();
     if (!options.store.claim(delivery.deliveryId, delivery.name, receivedAt)) {
-      let record = options.store.get(delivery.deliveryId);
+      const record = options.store.get(delivery.deliveryId);
       if (!record) throw new Error(`Claimed GitHub delivery ${delivery.deliveryId} disappeared`);
-      if (record.status === "received" || record.status === "uncertain") {
-        const error = "Earlier processing was interrupted with Ambience admission outcome unknown";
-        const current =
-          record.status === "received"
-            ? options.store.markUncertain(delivery.deliveryId, error, now().toISOString())
-            : record;
-        if (current.status === "uncertain") {
-          logger.error({
-            event: "github.ingress.uncertain",
-            deliveryId: delivery.deliveryId,
-            repository: null,
-            chatId: null,
-            ambience: null,
-            dispatchId: null,
-            error,
-          });
-          return { status: "uncertain", record: current };
+      if (record.status === "received") {
+        if (record.eventName !== delivery.name) {
+          const error = `Delivery identifier was reused for ${delivery.name} after ${record.eventName}`;
+          const uncertain = options.store.markUncertain(delivery.deliveryId, error, now().toISOString());
+          logger.error({ event: "github.ingress.uncertain", deliveryId: delivery.deliveryId, error });
+          return { status: "uncertain", record: uncertain };
         }
-        record = current;
+        logger.info({ event: "github.ingress.resumed", deliveryId: delivery.deliveryId });
+      } else if (record.status === "uncertain") {
+        logger.error({
+          event: "github.ingress.uncertain",
+          deliveryId: delivery.deliveryId,
+          repository: record.repository ?? null,
+          chatId: record.chatId ?? null,
+          ambience: record.ambience ?? null,
+          dispatchId: record.dispatchId ?? null,
+          error: record.error ?? "Ambience admission outcome unknown",
+        });
+        return { status: "uncertain", record };
+      } else {
+        logger.info({
+          event: "github.ingress.duplicate",
+          deliveryId: delivery.deliveryId,
+          repository: record.repository ?? null,
+          chatId: record.chatId ?? null,
+          ambience: record.ambience ?? null,
+          dispatchId: record.dispatchId ?? null,
+        });
+        return { status: "duplicate", record };
       }
-      logger.info({
-        event: "github.ingress.duplicate",
-        deliveryId: delivery.deliveryId,
-        repository: record.repository ?? null,
-        chatId: record.chatId ?? null,
-        ambience: record.ambience ?? null,
-        dispatchId: record.dispatchId ?? null,
-      });
-      return { status: "duplicate", record };
     }
 
     if (delivery.name !== "issues" || delivery.payload.action !== "opened") {
@@ -228,46 +237,31 @@ export const createGitHubIngress = (options: {
       sender: payload.sender,
     });
 
+    options.store.beginDispatch(delivery.deliveryId, repository, chatId);
+    let receipt: DispatchReceipt;
     try {
-      const receipt = await options.dispatch(chatId, input);
+      receipt = await options.dispatch(chatId, input);
       options.store.settle(delivery.deliveryId, {
         status: "dispatched",
         repository,
         chatId,
         ambience: "ambience",
         dispatchId: receipt.dispatchId,
+        acceptedAt: receipt.acceptedAt,
         settledAt: now().toISOString(),
       });
-      logger.info({
-        event: "github.ingress.dispatched",
-        deliveryId: delivery.deliveryId,
-        repository,
-        chatId,
-        ambience: "ambience",
-        dispatchId: receipt.dispatchId,
-        runId: null,
-        runIdReason: "agent dispatches are not workflow runs",
-      });
-      return {
-        status: "dispatched",
-        deliveryId: delivery.deliveryId,
-        repository,
-        chatId,
-        ambience: "ambience",
-        dispatchId: receipt.dispatchId,
-      };
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : String(cause);
-      options.store.settle(delivery.deliveryId, {
-        status: "failed",
-        repository,
-        chatId,
-        ambience: "ambience",
-        error,
-        settledAt: now().toISOString(),
-      });
+      try {
+        options.store.markUncertain(delivery.deliveryId, error, now().toISOString());
+      } catch (ledgerCause) {
+        throw new AggregateError(
+          [cause, ledgerCause],
+          `GitHub delivery ${delivery.deliveryId} began Ambience admission, but Uncertain state could not be recorded.`,
+        );
+      }
       logger.error({
-        event: "github.ingress.failed",
+        event: "github.ingress.uncertain",
         deliveryId: delivery.deliveryId,
         repository,
         chatId,
@@ -277,5 +271,25 @@ export const createGitHubIngress = (options: {
       });
       throw cause;
     }
+    logger.info({
+      event: "github.ingress.dispatched",
+      deliveryId: delivery.deliveryId,
+      repository,
+      chatId,
+      ambience: "ambience",
+      dispatchId: receipt.dispatchId,
+      acceptedAt: receipt.acceptedAt,
+      runId: null,
+      runIdReason: "agent dispatches are not workflow runs",
+    });
+    return {
+      status: "dispatched",
+      deliveryId: delivery.deliveryId,
+      repository,
+      chatId,
+      ambience: "ambience",
+      dispatchId: receipt.dispatchId,
+      acceptedAt: receipt.acceptedAt,
+    };
   };
 };

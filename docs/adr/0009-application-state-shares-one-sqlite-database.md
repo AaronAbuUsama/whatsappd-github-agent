@@ -1,3 +1,5 @@
 # Application state shares one SQLite database
 
 All durable state owned by Ambient Agent—including Conversation Events and projections, Managed Chat Inbox and Window state, admission receipts, GitHub ingress, and provider-operation receipts—shares one application-owned SQLite database so related changes can commit atomically. Flue retains exclusive ownership of its own database and `whatsappd` retains exclusive ownership of WhatsApp credentials, but the executable places all three under one managed data directory; individual database-path environment variables are not part of the normal configuration interface.
+
+The former standalone ingress database—either an advertised `GITHUB_INGRESS_DB_PATH` or its old `./data/github-ingress.db` default—is a cutover input only. When it differs from `APPLICATION_DB_PATH`, startup imports its delivery ledger once, conservatively maps unfinished legacy attempts to Uncertain, records the completed import in `application.sqlite`, and leaves the source file untouched as a backup. All subsequent ingress writes use `application.sqlite`; delivery-identity conflicts fail closed instead of choosing one record silently.
