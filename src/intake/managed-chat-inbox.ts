@@ -36,6 +36,7 @@ export interface ManagedChatRecorder {
 export interface ManagedChatInbox {
   readonly recorder: ManagedChatRecorder;
   unwindowed(): readonly IncomingMessage[];
+  pendingArrival(chatId: string, messageId: string): IncomingMessage | undefined;
   pendingWindows(): readonly ConversationWindow[];
   createWindow(draft: ConversationWindowDraft): ConversationWindow;
 }
@@ -154,10 +155,29 @@ export const createManagedChatInbox = (
     },
     unwindowed: () =>
       archive.transaction(({ database }) => selectInbox(database, "WHERE i.window_id IS NULL").map(decodeIncoming)),
+    pendingArrival: (chatId, messageId) =>
+      archive.transaction(({ database }) => {
+        const row = database
+          .prepare(`
+            SELECT e.event_id, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
+                   e.direction, e.occurred_at_ms, e.payload_json
+              FROM managed_chat_inbox i
+              JOIN conversation_events e ON e.event_id = i.event_id
+             WHERE i.event_id = ? AND i.window_id IS NULL
+          `)
+          .get(`arrival:${chatId}:${messageId}`) as unknown as InboxEventRow | undefined;
+        return row === undefined ? undefined : decodeIncoming(row);
+      }),
     pendingWindows: () =>
       archive.transaction(({ database }) => {
         const rows = database
-          .prepare("SELECT window_id, chat_id, reason FROM managed_chat_windows ORDER BY created_at_ms, rowid")
+          .prepare(`
+            SELECT w.window_id, w.chat_id, w.reason
+              FROM managed_chat_windows w
+              JOIN managed_chat_inbox i ON i.window_id = w.window_id
+             GROUP BY w.rowid
+             ORDER BY MIN(i.inbox_sequence), w.rowid
+          `)
           .all() as unknown as WindowRow[];
         return rows.map(({ window_id }) => readWindow(database, window_id));
       }),
@@ -190,6 +210,21 @@ export const createManagedChatInbox = (
           throw new Error("A Managed Chat arrival already belongs to a different Window assignment.");
         }
         if (assigned.size > 0) throw new Error("A Managed Chat arrival cannot belong to more than one Window.");
+
+        const oldestPending = database
+          .prepare(`
+            SELECT event_id FROM managed_chat_inbox
+             WHERE chat_id = ? AND window_id IS NULL
+             ORDER BY inbox_sequence
+             LIMIT ?
+          `)
+          .all(draft.chatId, eventIds.length) as unknown as Array<{ readonly event_id: string }>;
+        if (
+          oldestPending.length !== eventIds.length ||
+          oldestPending.some(({ event_id }, index) => event_id !== eventIds[index])
+        ) {
+          throw new Error("A Managed Chat Window must claim the oldest pending arrivals in observed order.");
+        }
 
         const windowId = createId();
         database

@@ -288,6 +288,37 @@ describe("Coalescer", () => {
     }),
   );
 
+  it.effect("does not consume new arrivals when the durable startup backlog cannot be read", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<IncomingMessage>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      const createAttempts = yield* Ref.make(0);
+      const unreadableStore = Layer.succeed(WindowStore, {
+        pendingWindows: Effect.fail(new WindowStoreError({ cause: new Error("injected replay read failure") })),
+        create: (draft) =>
+          Ref.update(createAttempts, (count) => count + 1).pipe(Effect.as({ id: "must-not-exist", ...draft })),
+      });
+
+      yield* Effect.forkScoped(
+        Coalescer.run.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              queueEventSource(source),
+              recordingWindowDispatcher(turns),
+              unreadableStore,
+              configLayer({ botIds: [BOT], debounceWindow: WINDOW }),
+            ),
+          ),
+        ),
+      );
+      yield* Queue.offer(source, mkMsg("cannot overtake unread backlog"));
+      yield* TestClock.adjust(Duration.minutes(1));
+
+      expect(yield* Ref.get(createAttempts)).toBe(0);
+      expect(yield* Ref.get(turns)).toEqual([]);
+    }),
+  );
+
   it.effect("fail-stops one chat after Window persistence fails so later arrivals cannot overtake it", () =>
     Effect.gen(function* () {
       const source = yield* Queue.unbounded<IncomingMessage>();

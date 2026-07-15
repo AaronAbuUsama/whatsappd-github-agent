@@ -100,11 +100,9 @@ GitHub is only the test capability; the **architecture is the deliverable**.
 
 ## 3. Done (committed on `main`)
 
-- `f886a13` — feat(coalescer): the full Coalescer build. `src/coalescer/{events,
-  config,ports,buffer,coalescer,mocks,demo}.ts`, `tests/coalescer/{coalescer,
-  buffer}.test.ts`, `docs/COALESCER-DESIGN.md`. Includes the resilience hardening
-  (`fire` catches failures AND defects, lets interruption through; empty windows
-  never fire; `appendBounded` age-anchored on max timestamp for out-of-order msgs).
+- `f886a13` — feat(coalescer): the original in-memory Coalescer build, including
+  count/age eviction artifacts that #50 later removed. Its resilience work made
+  dispatch catch failures and defects while preserving interruption.
 - `80ed4c6` — refactor(coalescer): the Tier-1 simplification (dead config removed,
   `Array.takeRight`, shared `delegateAndNarrate`, `startSelfGating` test helper).
 - `1f2a921` — docs(handoff): this file.

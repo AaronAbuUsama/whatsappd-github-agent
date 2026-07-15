@@ -150,7 +150,8 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
     for (const message of batch.messages) options.archive.append(conversationArrival(message));
   };
   const unsubscribeMessage = session.onMessage(async (message) => {
-    options.archive.append(conversationArrival(message));
+    const inserted = options.archive.append(conversationArrival(message));
+    if (!inserted) return;
     for (const subscriber of messageSubscribers) await subscriber(message);
   });
   const unsubscribeUpdate = session.onUpdate(async (update) => {

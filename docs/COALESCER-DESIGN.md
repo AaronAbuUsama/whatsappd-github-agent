@@ -17,6 +17,8 @@ the in-process whatsappd event stream and Flue Ambience admission.
 - Each accepted Inbox arrival is assigned once, in observed order, to a stable
   Window ID. A Window is persisted before dispatch.
 - Unwindowed arrivals and pending Windows are replayed on runtime startup.
+- If the durable startup backlog cannot be read, intake fail-stops before newer
+  arrivals can overtake it.
 - A failed Ambience dispatch is logged and does not wedge the chat actor. A local
   Window-store failure fail-stops that chat so a later arrival cannot overtake
   the durable pending batch; restart replay resumes in Inbox order.

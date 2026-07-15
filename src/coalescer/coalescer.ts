@@ -52,6 +52,12 @@ const stopAfterStoreError =
       Effect.andThen(Effect.never),
     );
 
+const stopAfterReplayReadError = (cause: unknown): Effect.Effect<never> =>
+  Effect.logError("Managed Chat Window replay read failed; intake is fail-stopped").pipe(
+    Effect.annotateLogs({ cause: String(cause) }),
+    Effect.andThen(Effect.never),
+  );
+
 const fire = (dispatcher: WindowDispatcherService, window: ConversationWindow): Effect.Effect<void> =>
   window.messages.length === 0
     ? Effect.void
@@ -166,9 +172,8 @@ export const run: Effect.Effect<
 
   yield* store.pendingWindows.pipe(
     Effect.flatMap((windows) => Effect.forEach(windows, (window) => fire(dispatcher, window), { discard: true })),
-    Effect.catch((cause) =>
-      Effect.logError("Managed Chat Window replay failed").pipe(Effect.annotateLogs({ cause: String(cause) })),
-    ),
+    Effect.catch(stopAfterReplayReadError),
+    Effect.catchDefect(stopAfterReplayReadError),
   );
 
   yield* events.pipe(

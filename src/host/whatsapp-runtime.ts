@@ -92,7 +92,10 @@ export const runWhatsAppSession = (
   return Coalescer.run.pipe(
     Effect.provide(
       Layer.mergeAll(
-        whatsappEventSource(session, options.gate.allowed, () => options.inbox.unwindowed()),
+        whatsappEventSource(session, options.gate.allowed, {
+          replay: () => options.inbox.unwindowed(),
+          accepted: (message) => options.inbox.pendingArrival(message.chatId, message.id),
+        }),
         makeAmbienceWindowDispatcher(options.dispatch),
         managedChatWindowStore(options.inbox),
         configLayer({ ...options.coalescer, botIds }),

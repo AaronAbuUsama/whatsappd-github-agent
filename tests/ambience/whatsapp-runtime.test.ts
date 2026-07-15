@@ -33,8 +33,10 @@ afterEach(() => {
 const temporaryArchive = () => {
   const directory = mkdtempSync(join(tmpdir(), "ambience-whatsapp-"));
   dirs.push(directory);
+  const applicationDatabase = join(directory, "application.sqlite");
   return {
-    archive: createConversationArchive(join(directory, "application.sqlite")),
+    applicationDatabase,
+    archive: createConversationArchive(applicationDatabase),
     storeDirectory: join(directory, "whatsapp"),
   };
 };
@@ -111,6 +113,16 @@ const inbound = (
     reply: async () => ({ id: "unused", chatId: CHAT, fromMe: true }),
     ...overrides,
   }) as WhatsAppMessage;
+
+const location = (): WhatsAppMessage =>
+  ({
+    ...inbound({ id: "location-31", text: undefined }),
+    kind: "location",
+    name: "Project HQ",
+    address: "1 Stable Way",
+    lat: 5.5,
+    lng: -0.2,
+  }) as unknown as WhatsAppMessage;
 
 describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
   it("uses one managed session for gated ingress, history, Ambience dispatch, and explicit say", async () => {
@@ -224,14 +236,11 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     archive.close();
   });
 
-  it("replays an accepted arrival that landed before the Coalescer started", async () => {
-    const { archive, storeDirectory } = temporaryArchive();
+  it("replays an unwindowed accepted arrival after the application database is reopened", async () => {
+    const { applicationDatabase, archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
     const gate = makeChatGate({ groupIds: CHAT });
-    const inbox = createManagedChatInbox(archive, {
-      allowed: gate.allowed,
-      createId: () => "window-replayed-31",
-    });
+    const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
     const account = createWhatsAppAccount({
       storeDirectory,
       archive: inbox.recorder,
@@ -243,16 +252,32 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       await listener(inbound({ id: "before-coalescer-31", text: "survives the startup gap" }));
     }
     expect(inbox.unwindowed().map(({ id }) => id)).toEqual(["before-coalescer-31"]);
+    await account.stop();
+    archive.close();
+
+    const reopenedArchive = createConversationArchive(applicationDatabase);
+    const reopenedInbox = createManagedChatInbox(reopenedArchive, {
+      allowed: gate.allowed,
+      createId: () => "window-replayed-31",
+    });
+    const restartedFake = fakeSession();
+    const restartedAccount = createWhatsAppAccount({
+      storeDirectory,
+      archive: reopenedInbox.recorder,
+      sessionFactory: () => restartedFake.session,
+    });
+    await restartedAccount.authenticate({});
+    expect(reopenedInbox.unwindowed().map(({ id }) => id)).toEqual(["before-coalescer-31"]);
 
     const dispatches: AmbienceDispatchRequest[] = [];
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.forkScoped(
-            runWhatsAppSession(account.session(), {
+            runWhatsAppSession(restartedAccount.session(), {
               gate,
-              history: archive,
-              inbox,
+              history: reopenedArchive,
+              inbox: reopenedInbox,
               coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
               dispatch: async (request) => {
                 dispatches.push(request);
@@ -274,14 +299,97 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
               }),
             },
           ]);
-          expect(inbox.unwindowed()).toEqual([]);
-          expect(inbox.pendingWindows()).toEqual([expect.objectContaining({ id: "window-replayed-31", chatId: CHAT })]);
+          expect(reopenedInbox.unwindowed()).toEqual([]);
+          expect(reopenedInbox.pendingWindows()).toEqual([
+            expect.objectContaining({ id: "window-replayed-31", chatId: CHAT }),
+          ]);
         }),
       ),
     );
 
+    await restartedAccount.stop();
+    reopenedArchive.close();
+  });
+
+  it("keeps a non-text Window payload identical when the durable Window replays after restart", async () => {
+    const { applicationDatabase, archive, storeDirectory } = temporaryArchive();
+    const gate = makeChatGate({ groupIds: CHAT });
+    const inbox = createManagedChatInbox(archive, {
+      allowed: gate.allowed,
+      createId: () => "window-location-31",
+    });
+    const fake = fakeSession();
+    const account = createWhatsAppAccount({
+      storeDirectory,
+      archive: inbox.recorder,
+      sessionFactory: () => fake.session,
+    });
+    await account.authenticate({});
+    const firstDispatches: AmbienceDispatchRequest[] = [];
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(
+            runWhatsAppSession(account.session(), {
+              gate,
+              history: archive,
+              inbox,
+              coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+              dispatch: async (request) => {
+                firstDispatches.push(request);
+                return { dispatchId: "dispatch-location-31", acceptedAt: "2026-07-15T00:00:00.000Z" };
+              },
+            }),
+          );
+          yield* Effect.yieldNow;
+          yield* Effect.promise(async () => {
+            for (const listener of fake.messageListeners) await listener(location());
+          });
+          yield* Effect.sleep(Duration.millis(30));
+        }),
+      ),
+    );
+    expect(firstDispatches).toHaveLength(1);
+    expect(firstDispatches[0]!.input).toMatchObject({
+      windowId: "window-location-31",
+      messages: [{ id: "location-31", text: "Project HQ — 1 Stable Way — 5.5, -0.2" }],
+    });
     await account.stop();
     archive.close();
+
+    const reopenedArchive = createConversationArchive(applicationDatabase);
+    const reopenedInbox = createManagedChatInbox(reopenedArchive, { allowed: gate.allowed });
+    const restartedFake = fakeSession();
+    const restartedAccount = createWhatsAppAccount({
+      storeDirectory,
+      archive: reopenedInbox.recorder,
+      sessionFactory: () => restartedFake.session,
+    });
+    await restartedAccount.authenticate({});
+    const replayDispatches: AmbienceDispatchRequest[] = [];
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(
+            runWhatsAppSession(restartedAccount.session(), {
+              gate,
+              history: reopenedArchive,
+              inbox: reopenedInbox,
+              dispatch: async (request) => {
+                replayDispatches.push(request);
+                return { dispatchId: "dispatch-location-replay-31", acceptedAt: "2026-07-15T00:01:00.000Z" };
+              },
+            }),
+          );
+          yield* Effect.sleep(Duration.millis(10));
+        }),
+      ),
+    );
+
+    expect(replayDispatches).toEqual(firstDispatches);
+    await restartedAccount.stop();
+    reopenedArchive.close();
   });
 });
 

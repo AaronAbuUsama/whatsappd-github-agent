@@ -99,16 +99,24 @@ describe("Managed Chat Inbox", () => {
     const path = fixture();
     const archive = createConversationArchive(path);
     let nextWindow = 0;
+    let currentTime = 5_000;
     const inbox = createManagedChatInbox(archive, {
       allowed: () => true,
       createId: () => `window-stable-${++nextWindow}`,
-      now: () => 5_000,
+      now: () => currentTime,
     });
     inbox.recorder.append(conversationArrival(message("m1", { timestamp: 3_000 })));
     inbox.recorder.append(conversationArrival(message("m2", { timestamp: 1_000 })));
     inbox.recorder.append(conversationArrival(message("m3", { timestamp: 2_000 })));
 
     expect(inbox.unwindowed().map(({ id }) => id)).toEqual(["m1", "m2", "m3"]);
+    expect(() =>
+      inbox.createWindow({
+        chatId: "managed@g.us",
+        messages: inbox.unwindowed().slice(1, 2),
+        reason: "debounce",
+      }),
+    ).toThrow("must claim the oldest pending arrivals in observed order");
     const window = inbox.createWindow({
       chatId: "managed@g.us",
       messages: inbox.unwindowed().slice(0, 2),
@@ -131,6 +139,7 @@ describe("Managed Chat Inbox", () => {
         reason: "debounce",
       }),
     ).toThrow("already belongs to a different Window assignment");
+    currentTime = 4_000;
     const secondWindow = inbox.createWindow({
       chatId: "managed@g.us",
       messages: inbox.unwindowed(),
