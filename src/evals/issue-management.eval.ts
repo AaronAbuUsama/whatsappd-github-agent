@@ -57,6 +57,59 @@ describeEval(
       ]);
     });
 
+    it("corrects and organizes one existing issue, then acknowledges it once", async ({ run }) => {
+      const result = await run({
+        message: window("UPDATE_EXISTING_ISSUE"),
+        fixture: {
+          resetGitHub: true,
+          resetWhatsApp: true,
+          githubOptions: {
+            labels: ["bug", "priority: high"],
+            assignees: ["maintainer"],
+            milestones: [{ number: 3, title: "Stable base", state: "open" }],
+          },
+          githubIssues: [{ title: "Schedular looses jobs", body: "Restart is bad.", labels: ["bug"] }],
+        },
+      });
+      const calls = toolCalls(result);
+      const updates = calls.filter((call) => call.name === "github_update_issue");
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({
+        status: "ok",
+        arguments: {
+          number: 1,
+          title: "Scheduler loses queued jobs after restart",
+          labels: ["bug", "priority: high"],
+          assignees: ["maintainer"],
+          milestone: 3,
+        },
+        result: {
+          status: "updated",
+          issue: {
+            number: 1,
+            title: "Scheduler loses queued jobs after restart",
+            labels: ["bug", "priority: high"],
+            assignees: ["maintainer"],
+            milestone: { number: 3, title: "Stable base", state: "open" },
+          },
+        },
+      });
+      expect(calls.filter((call) => call.name === "say")).toEqual([
+        expect.objectContaining({
+          status: "ok",
+          arguments: { text: "Updated issue #1 with the corrected title and repository organization." },
+        }),
+      ]);
+      expect(result.output.githubEvents.map((event) => (event as { kind?: string }).kind)).toEqual([
+        "get",
+        "list-options",
+        "update",
+      ]);
+      expect(result.output.githubOperations).toContainEqual(
+        expect.objectContaining({ kind: "update-issue", issueNumber: 1, status: "completed" }),
+      );
+    });
+
     it("asks one focused question when the report is incomplete", async ({ run }) => {
       const result = await run({
         message: window("INCOMPLETE_ISSUE"),

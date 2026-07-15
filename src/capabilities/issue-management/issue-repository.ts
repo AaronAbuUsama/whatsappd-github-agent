@@ -3,6 +3,8 @@ export interface RepositoryRef {
   readonly repo: string;
 }
 
+export const MAX_PUBLIC_ISSUE_BODY_LENGTH = 65_000;
+
 export interface IssueRef {
   readonly repository: RepositoryRef;
   readonly number: number;
@@ -16,6 +18,29 @@ export interface IssueSummary extends IssueRef {
 
 export interface Issue extends IssueSummary {
   readonly body: string;
+  readonly labels: string[];
+  readonly assignees: string[];
+  readonly milestone: IssueMilestone | null;
+}
+
+export interface IssueMilestone {
+  readonly number: number;
+  readonly title: string;
+  readonly state: "open" | "closed";
+}
+
+export interface IssueRepositoryOptions {
+  readonly labels: string[];
+  readonly assignees: string[];
+  readonly milestones: IssueMilestone[];
+}
+
+export interface IssueUpdate {
+  readonly title?: string;
+  readonly body?: string;
+  readonly labels?: string[];
+  readonly assignees?: string[];
+  readonly milestone?: number | null;
 }
 
 export interface IssueDraft {
@@ -36,7 +61,18 @@ export interface IssueRepository {
     readonly signal?: AbortSignal;
   }): Promise<readonly IssueSummary[]>;
   get(input: IssueRef & { readonly signal?: AbortSignal }): Promise<Issue>;
+  options(input: {
+    readonly repository: RepositoryRef;
+    readonly signal?: AbortSignal;
+  }): Promise<IssueRepositoryOptions>;
   create(input: IssueDraft & { readonly operation: OperationIdentity; readonly signal?: AbortSignal }): Promise<Issue>;
+  update(
+    input: IssueRef & {
+      readonly changes: IssueUpdate;
+      readonly operation: OperationIdentity;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<Issue>;
   findCreated(input: {
     readonly repository: RepositoryRef;
     readonly operation: OperationIdentity;

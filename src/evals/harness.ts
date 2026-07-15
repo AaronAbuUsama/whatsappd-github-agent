@@ -15,13 +15,30 @@ export interface FixtureHistorySeed {
   chatId?: string;
 }
 
+export interface FixtureIssueMilestone {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+}
+
 export interface FlueAgentEvalInput {
   message: string;
   fixture?: {
     resetWhatsApp?: boolean;
     resetGitHub?: boolean;
     history?: FixtureHistorySeed[];
-    githubIssues?: Array<{ title: string; body: string }>;
+    githubIssues?: Array<{
+      title: string;
+      body: string;
+      labels?: string[];
+      assignees?: string[];
+      milestone?: FixtureIssueMilestone | null;
+    }>;
+    githubOptions?: {
+      labels: string[];
+      assignees: string[];
+      milestones: FixtureIssueMilestone[];
+    };
   };
 }
 
@@ -92,6 +109,13 @@ const seedFixture = async (
   }
   if (fixture.resetGitHub === true) {
     await checkedFetch(`${baseUrl}/test/github/events`, { method: "DELETE" });
+  }
+  if (fixture.githubOptions !== undefined) {
+    await checkedFetch(`${baseUrl}/test/github/options`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.githubOptions),
+    });
   }
   for (const [index, seed] of (fixture.history ?? []).entries()) {
     const chatId = seed.scope === "current" ? instanceId : (seed.chatId ?? `eval-other-${crypto.randomUUID()}@g.us`);

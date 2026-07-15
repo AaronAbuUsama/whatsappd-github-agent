@@ -12,7 +12,7 @@ const token = process.env.ISSUE_MANAGEMENT_SANDBOX_TOKEN?.trim();
 const sandbox = process.env.ISSUE_MANAGEMENT_SANDBOX_REPOSITORY?.trim();
 
 describe.skipIf(!token || !sandbox)("Issue Management sandbox contract", () => {
-  it("searches, creates once, and observes the exact issue through the real GitHub adapter", async () => {
+  it("creates, observes, and corrects one issue through the real GitHub adapter", async () => {
     const operationId = `sandbox-${randomUUID()}`;
     const title = `[Ambient Agent sandbox] ${operationId}`;
     const operations = createIssueOperationStore(":memory:");
@@ -51,6 +51,47 @@ describe.skipIf(!token || !sandbox)("Issue Management sandbox contract", () => {
       await expect(
         repository.findCreated({ repository: { owner, repo }, operation: { id: operationId } }),
       ).resolves.toEqual([expect.objectContaining({ number: createdNumber, title })]);
+
+      const available = await repository.options({ repository: { owner, repo } });
+      const updateOperationId = `sandbox-update-${randomUUID()}`;
+      const correctedTitle = `${title} corrected`;
+      const correctedBody = "Gated provider contract updated through production Issue Management.";
+      const update = createIssueManagementTools({
+        repository,
+        operations,
+        policy: createIssueManagementPolicy(sandbox!, [sandbox!]),
+        createOperationId: () => updateOperationId,
+      }).find((tool) => tool.name === "github_update_issue")!;
+      await expect(
+        update.run({
+          input: {
+            number: createdNumber,
+            title: correctedTitle,
+            body: correctedBody,
+            labels: available.labels.slice(0, 1),
+          },
+        }),
+      ).resolves.toMatchObject({
+        status: "updated",
+        operationId: updateOperationId,
+        issue: { number: createdNumber, title: correctedTitle, body: correctedBody },
+      });
+      expect(operations.get(updateOperationId)).toMatchObject({
+        kind: "update-issue",
+        issueNumber: createdNumber,
+        status: "completed",
+      });
+      await expect(repository.get({ repository: { owner, repo }, number: createdNumber })).resolves.toMatchObject({
+        title: correctedTitle,
+        body: correctedBody,
+        labels: available.labels.slice(0, 1),
+      });
+      await expect(
+        repository.findCreated({ repository: { owner, repo }, operation: { id: operationId } }),
+      ).resolves.toEqual([expect.objectContaining({ number: createdNumber, body: correctedBody })]);
+      await expect(
+        repository.findCreated({ repository: { owner, repo }, operation: { id: updateOperationId } }),
+      ).resolves.toEqual([expect.objectContaining({ number: createdNumber, body: correctedBody })]);
     } finally {
       if (issueNumber !== undefined) {
         const [owner, repo] = sandbox!.split("/") as [string, string];
@@ -64,5 +105,5 @@ describe.skipIf(!token || !sandbox)("Issue Management sandbox contract", () => {
       }
       operations.close();
     }
-  }, 30_000);
+  }, 45_000);
 });

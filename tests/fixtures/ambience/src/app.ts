@@ -8,6 +8,10 @@ import { join } from "node:path";
 import type { IncomingMessage as WhatsAppMessage } from "whatsappd";
 
 import { makeAmbienceWindowDispatcher, dispatchAmbience } from "../../../../src/ambience/dispatch.js";
+import type {
+  IssueMilestone,
+  IssueRepositoryOptions,
+} from "../../../../src/capabilities/issue-management/issue-repository.js";
 import { createIssueOperationStore } from "../../../../src/capabilities/issue-management/operation-store.js";
 import {
   configureIssueManagementRuntime,
@@ -60,6 +64,12 @@ const respond = async (context: Context) => {
     if (serialized.includes("github_create_issue")) {
       return fauxAssistantMessage("Private Issue Management receipt retained without an extra mutation.");
     }
+    if (serialized.includes("github_update_issue")) {
+      return fauxAssistantMessage(
+        fauxToolCall("say", { text: "Updated issue #1 with the corrected title and repository organization." }),
+        { stopReason: "toolUse" },
+      );
+    }
     if (serialized.includes("github_search_issues") || serialized.includes("github_read_issue")) {
       return fauxAssistantMessage("Private Issue Management read retained without speaking.");
     }
@@ -75,6 +85,19 @@ const respond = async (context: Context) => {
       {
         stopReason: "toolUse",
       },
+    );
+  }
+  if (serialized.includes("UPDATE_EXISTING_ISSUE")) {
+    return fauxAssistantMessage(
+      fauxToolCall("github_update_issue", {
+        number: 1,
+        title: "Scheduler loses queued jobs after restart",
+        body: "Expected queued jobs to run after restart. Observed that they disappear.",
+        labels: ["bug", "priority: high"],
+        assignees: ["maintainer"],
+        milestone: 3,
+      }),
+      { stopReason: "toolUse" },
     );
   }
   if (serialized.includes("CREATE_COMPLETE_FEATURE")) {
@@ -253,8 +276,18 @@ app.post("/test/whatsapp/fail-next-send", (context) => {
 });
 app.get("/test/github/events", (context) => context.json(fakeIssues.events()));
 app.get("/test/github/operations", (context) => context.json(issueOperations.list()));
+app.put("/test/github/options", async (context) => {
+  fakeIssues.setOptions(await context.req.json<IssueRepositoryOptions>());
+  return context.body(null, 204);
+});
 app.post("/test/github/issues", async (context) => {
-  const input = await context.req.json<{ title: string; body: string }>();
+  const input = await context.req.json<{
+    title: string;
+    body: string;
+    labels?: string[];
+    assignees?: string[];
+    milestone?: IssueMilestone | null;
+  }>();
   return context.json(fakeIssues.seed({ repository: { owner: "acme", repo: "widgets" }, ...input }), 201);
 });
 app.get("/test/github/ingress", (context) => context.json(githubIngressStore.list()));
