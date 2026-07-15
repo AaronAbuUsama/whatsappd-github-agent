@@ -15,7 +15,7 @@ describe("npm release publishing", () => {
     expect(result).toEqual({
       published: true,
       tag: "latest",
-      marker: "New tag: ambient-agent@0.2.0",
+      changesetsTagAnnouncement: "New tag: ambient-agent@0.2.0",
     });
     expect(commands).toEqual([
       { executable: "npm", args: ["view", "ambient-agent@0.2.0", "version", "--json"] },

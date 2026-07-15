@@ -770,9 +770,7 @@ describe("production Issue Management tools", () => {
     });
     const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
 
-    await expect(
-      tool("github_read_issue_discussion").run({ input: { number: issue.number } }),
-    ).resolves.toMatchObject({
+    await expect(tool("github_read_issue_discussion").run({ input: { number: issue.number } })).resolves.toMatchObject({
       issue: { number: issue.number, state: "open", stateReason: null },
       comments: [{ id: original.id, body: "Existing discussion", author: "octocat" }],
     });
@@ -932,7 +930,12 @@ describe("production Issue Management tools", () => {
       expect(repository.events().filter((event) => event.kind === kind)).toHaveLength(1);
     }
     expect(repository.events().filter((event) => event.kind === "find-comment-operation")).toHaveLength(2);
-    expect(operations.list().map((operation) => [operation.operationId, operation.status]).sort()).toEqual([
+    expect(
+      operations
+        .list()
+        .map((operation) => [operation.operationId, operation.status])
+        .sort(),
+    ).toEqual([
       ["ambiguous-create", "completed"],
       ["ambiguous-delete", "uncertain"],
       ["ambiguous-state", "uncertain"],
@@ -960,12 +963,12 @@ describe("production Issue Management tools", () => {
     expect(repository.events().filter((event) => event.kind === "create-comment")).toHaveLength(1);
     expect(operations.get("comment-not-observed")).toMatchObject({ status: "uncertain" });
 
-    await expect(
-      setState.run({ input: { number: issue.number, state: "open", reason: "completed" } }),
-    ).rejects.toThrow("Open issues require reason reopened");
-    await expect(
-      setState.run({ input: { number: issue.number, state: "open", reason: "reopened" } }),
-    ).rejects.toThrow("already has state open");
+    await expect(setState.run({ input: { number: issue.number, state: "open", reason: "completed" } })).rejects.toThrow(
+      "Open issues require reason reopened",
+    );
+    await expect(setState.run({ input: { number: issue.number, state: "open", reason: "reopened" } })).rejects.toThrow(
+      "already has state open",
+    );
     expect(repository.events().filter((event) => event.kind === "set-issue-state")).toEqual([]);
   });
 

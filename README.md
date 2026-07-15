@@ -80,7 +80,7 @@ Ambience does not receive one universal command Tool. Each kind of work arrives 
 Skill explains the judgment and policy, typed Tools provide direct abilities, and provider adapters remain private.
 
 This is the reusable design pattern. The current product applies it to software delivery in WhatsApp, but the same
-Agent + Skill + Tool + durable-admission structure can support other ambient agentic systems.
+Ambient Agent + Capability + Admission pattern can support other ambient agentic systems.
 
 ## How it works
 
@@ -231,15 +231,16 @@ export default defineAgent(({ id }) => ({
 - Use a **Tool** for a direct typed application function: read a pull request, search issues, add a comment, or Say.
 - Use an **Action** when a reusable operation needs its own narrowly instructed agent harness.
 - Use a **Bounded Workflow** for independent, inspectable work such as implementing an issue or performing a substantial
-  review. A Workflow finishes or fails and returns control to Ambience; it does not become a second chat participant.
+  review. A Bounded Workflow finishes or fails and returns control to Ambience; it does not become a second chat
+  participant.
 
-The stable base currently ships Tools only. Actions and software-delivery Workflows are extension seams, not hidden
-features.
+The stable base currently ships Tools only. Actions and software-delivery Bounded Workflows are extension seams, not
+hidden features.
 
 ### Rules that keep extensions trustworthy
 
 - Bind chat-specific Tools to `chatId` when constructing them; do not accept an arbitrary chat ID from the model.
-- Keep standing Agent instructions short. Put changing process and policy in versioned Skills.
+- Keep Instructions short. Put changing process and policy in versioned Skills.
 - Keep provider clients behind Capability-owned interfaces.
 - Give every external mutation an application-owned Operation Identity before crossing the provider boundary.
 - Never turn a lost response into an automatic retry. Observe first; preserve an honest `Uncertain` state when causation
@@ -292,8 +293,14 @@ green checks are not presented as proof of real provider delivery.
 
 Add a Changeset with `pnpm changeset` whenever a pull request changes the published package. After changes merge to
 `main`, GitHub Actions maintains a `Release packages` pull request containing the version and changelog. Merging that
-reviewed release pull request publishes the package to npm through Trusted Publishing; the repository does not store a
-long-lived npm token.
+reviewed release pull request asks npm to publish through Trusted Publishing; the repository does not store a long-lived
+npm token.
+
+npm publishing additionally requires the `ambient-agent` package to trust this repository and
+`.github/workflows/release.yml` in npm's package settings. That external binding is not proven by the deterministic test
+suite. The first successful live publish is the proof that GitHub OIDC and npm registry acceptance work together. A
+Changesets pull request created by `GITHUB_TOKEN` may also require a maintainer to approve its CI run; approve it and wait
+for current-head Node 22 and Node 24 checks before merging.
 
 ## Documentation
 
@@ -306,9 +313,9 @@ long-lived npm token.
 
 ## Current limits
 
-This release does not yet provide pull-request review, coding Workflows, planning, delivery automation, cross-chat Agent
-memory, media understanding, active-active ownership, horizontal failover, or cross-host recovery. The supported runtime
-is one foreground Node process owning one managed local installation.
+This release does not yet provide pull-request review, implementation Bounded Workflows, planning, delivery automation,
+cross-chat Agent memory, media understanding, active-active ownership, horizontal failover, or cross-host recovery. The
+supported runtime is one foreground Node process owning one managed local installation.
 
 Ambient Agent uses `whatsappd`, which ultimately connects through the unofficial WhatsApp Web protocol. Automated use
 may carry account risk. Use a dedicated account and a repository with appropriately restricted permissions while the
