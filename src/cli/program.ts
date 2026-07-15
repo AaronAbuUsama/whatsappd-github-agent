@@ -53,8 +53,7 @@ import {
 import { runFirstRunSetup, type FirstRunPrompts, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
 import { createWhatsAppAccount } from "../whatsapp/account.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
-import { createManagedChatAdmissionOperator, createManagedChatInbox } from "../intake/managed-chat-inbox.js";
-import { createFlueAdmissionEvidenceSource } from "../intake/admission-relay.js";
+import { createManagedChatInbox, inspectWindowDeliveryCounts } from "../intake/managed-chat-inbox.js";
 import { createIssueOperationStore } from "../capabilities/issue-management/operation-store.js";
 import { createOctokitIssueRepository } from "../host/github-issue-repository.js";
 
@@ -81,11 +80,16 @@ export interface CliDependencies {
   ) => Promise<ChatGptReadinessReceipt>;
   readonly uncertainWorkFor?: (paths: ManagedPaths) => Promise<UncertainWorkController>;
   readonly inspectUncertainWork?: (databasePath: string) => UncertainWorkStatus;
+  readonly inspectWindowDeliveries?: (databasePath: string) => WindowDeliveryCounts;
   readonly runtimeHealthFor?: (paths: ManagedPaths) => Promise<AmbientRuntimeHealth>;
 }
 
 export type StartRuntime = (paths: ManagedPaths) => Promise<void>;
 export type ImportRuntime = (specifier: string) => Promise<unknown>;
+export interface WindowDeliveryCounts {
+  readonly pending: number;
+  readonly failed: number;
+}
 
 const defaultOutput: CliOutput = {
   stdout: (text) => process.stdout.write(text),
@@ -222,6 +226,7 @@ const renderInspection = (
   observedRuntime: AmbientRuntimeHealth | undefined,
   liveCheck: ChatGptReadinessReceipt | undefined,
   uncertainWork: UncertainWorkStatus | undefined,
+  windowDeliveries: WindowDeliveryCounts | undefined,
   uncertainDoctor: UncertainDoctorReport | undefined,
   uncertainAction: UncertainActionResult | undefined,
   json: boolean,
@@ -253,6 +258,7 @@ const renderInspection = (
         modelAuthentication: authentication,
         liveCheck,
         uncertainWork,
+        windowDeliveries,
         uncertainDoctor,
         uncertainAction,
       },
@@ -297,12 +303,13 @@ const renderInspection = (
     );
   }
   if (uncertainWork !== undefined) {
-    lines.push(
-      `Uncertain work: ${uncertainWork.health} (${uncertainWork.admissions} admissions, ${uncertainWork.externalMutations} external mutations)`,
-    );
+    lines.push(`Uncertain work: ${uncertainWork.health} (${uncertainWork.externalMutations} external mutations)`);
     if (uncertainWork.total > 0) {
       lines.push("  Fix: Run ambient-agent doctor, then choose --retry, --accept-observed, or --abandon explicitly.");
     }
+  }
+  if (windowDeliveries !== undefined) {
+    lines.push(`Window batches: ${windowDeliveries.pending} pending, ${windowDeliveries.failed} failed`);
   }
   if (uncertainDoctor !== undefined) {
     for (const item of uncertainDoctor.diagnoses) {
@@ -386,18 +393,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const token = (await readManagedGitHubCredential(paths.githubCredential)).token;
       const archive = createConversationArchive(paths.applicationDatabase);
       try {
+        // Opening the inbox performs the one-way Window-ledger migration (ADR 0014).
         createManagedChatInbox(archive, { allowed: () => false });
       } finally {
         archive.close();
       }
       return createUncertainWorkController({
-        admissions: createManagedChatAdmissionOperator(paths.applicationDatabase),
         operations: createIssueOperationStore(paths.applicationDatabase),
-        admissionEvidence: createFlueAdmissionEvidenceSource(paths.flueDatabase),
         repository: createOctokitIssueRepository(token),
       });
     });
   const inspectUncertainWork = dependencies.inspectUncertainWork ?? inspectUncertainWorkStatus;
+  const inspectWindowDeliveries = dependencies.inspectWindowDeliveries ?? inspectWindowDeliveryCounts;
   const runtimeHealthFor =
     dependencies.runtimeHealthFor ??
     (async (paths) => {
@@ -482,6 +489,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     readonly observedRuntime?: AmbientRuntimeHealth;
     readonly liveCheck?: ChatGptReadinessReceipt;
     readonly uncertainWork?: UncertainWorkStatus;
+    readonly windowDeliveries?: WindowDeliveryCounts;
     readonly uncertainDoctor?: UncertainDoctorReport;
     readonly uncertainAction?: UncertainActionResult;
   }> => {
@@ -566,6 +574,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
     }
     let uncertainWork: UncertainWorkStatus | undefined;
+    let windowDeliveries: WindowDeliveryCounts | undefined;
     let uncertainDoctor: UncertainDoctorReport | undefined;
     let uncertainAction: UncertainActionResult | undefined;
     const applicationDatabaseReady = checks.some(
@@ -574,6 +583,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     if (inspection.state === "configured" && applicationDatabaseReady && uncertainty !== undefined) {
       if (uncertainty.mode === "status") {
         uncertainWork = inspectUncertainWork(paths.applicationDatabase);
+        windowDeliveries = inspectWindowDeliveries(paths.applicationDatabase);
       } else {
         const controller = await uncertainWorkFor(paths);
         try {
@@ -596,6 +606,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         observedRuntime,
         liveCheck,
         uncertainWork,
+        windowDeliveries,
         uncertainDoctor,
         uncertainAction,
         json,
@@ -608,6 +619,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       observedRuntime,
       liveCheck,
       uncertainWork,
+      windowDeliveries,
       uncertainDoctor,
       uncertainAction,
     };
@@ -852,8 +864,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--json", "emit machine-readable JSON")
     .option("--refresh", "verify and safely rotate an expired ChatGPT credential")
     .option("--live", "make gated real GitHub and model readiness requests")
-    .option("--retry <ref>", "explicitly retry admission:<windowId> or mutation:<operationId>")
-    .option("--abandon <ref>", "explicitly abandon unresolved work while preserving its audit")
+    .option("--retry <ref>", "explicitly retry mutation:<operationId> under a fresh Operation Identity")
+    .option("--abandon <ref>", "explicitly abandon mutation:<operationId> while preserving its audit")
     .option("--accept-observed <ref>", "accept observed desired state for an external mutation")
     .action(async (options) => {
       const actions = [options.retry, options.abandon, options.acceptObserved].filter(

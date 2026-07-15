@@ -1,157 +1,73 @@
-import { existsSync } from "node:fs";
-
 import type { DispatchReceipt } from "@flue/runtime";
-import type { ConversationRecord, ConversationStreamStore } from "@flue/runtime/adapter";
-import { sqlite } from "@flue/runtime/node";
 
 import type { ConversationWindow } from "../coalescer/events.js";
-import type { ManagedChatInbox, WindowAdmission } from "./managed-chat-inbox.js";
+import type { ManagedChatInbox } from "./managed-chat-inbox.js";
 
-export interface AdmissionEvidenceSource {
-  readonly find: (window: ConversationWindow) => Promise<DispatchReceipt | undefined>;
+export interface DispatchRetryPolicy {
+  /** Total dispatch attempts before the Window settles as failed. */
+  readonly attempts: number;
+  /** Backoff before attempt `attempt + 1` (attempt is 1-based). */
+  readonly delayMs: (attempt: number) => number;
 }
 
-export type ReconciliationResult =
-  | {
-      readonly status: "unresolved";
-      readonly admission: Extract<WindowAdmission, { readonly status: "uncertain" }>;
-    }
-  | {
-      readonly status: "admitted";
-      readonly admission: Extract<WindowAdmission, { readonly status: "admitted" }>;
-    };
+export const defaultDispatchRetryPolicy: DispatchRetryPolicy = {
+  attempts: 3,
+  delayMs: (attempt) => attempt * 1_000,
+};
 
 const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
+const sleep = (millis: number): Promise<void> =>
+  millis <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, millis));
+
 /**
- * Cross the application-to-Flue seam once. Any failure after dispatching is
- * durable is ambiguous: record Uncertain and let the caller fail-stop this
- * chat. If the receipt write itself fails, make one safe application-state
- * transition to Uncertain; if storage is unavailable too, dispatching remains
- * durable and the next process start performs that conservative transition.
+ * Cross the application-to-Flue seam with at-least-once semantics (ADR 0014).
+ * Bounded retries settle the Window as `done` or terminally `failed`; a lost
+ * `done` write only logs — the Window stays `pending` and the next startup
+ * re-dispatches it, an acceptable duplicate wake.
  */
 export const admitWindow = async (
   inbox: ManagedChatInbox,
   window: ConversationWindow,
   dispatch: () => Promise<DispatchReceipt>,
+  retry: DispatchRetryPolicy = defaultDispatchRetryPolicy,
 ): Promise<void> => {
-  const attempt = inbox.beginAdmission(window.id);
   let receipt: DispatchReceipt;
-  try {
-    receipt = await dispatch();
-  } catch (cause) {
+  for (let attempt = 1; ; attempt += 1) {
     try {
-      inbox.markUncertain(window.id, attempt.attemptId, errorMessage(cause));
-    } catch (ledgerCause) {
-      throw new AggregateError(
-        [cause, ledgerCause],
-        `Flue dispatch failed and the Uncertain state could not be recorded for ${window.id}.`,
-      );
-    }
-    throw cause;
-  }
-  try {
-    inbox.markAdmitted(window.id, attempt.attemptId, receipt);
-  } catch (cause) {
-    const reason = `Flue returned dispatch ${receipt.dispatchId}, but its admission receipt could not be recorded: ${errorMessage(cause)}`;
-    try {
-      inbox.markUncertain(window.id, attempt.attemptId, reason);
-    } catch (ledgerCause) {
-      throw new AggregateError(
-        [cause, ledgerCause],
-        `Flue accepted Window ${window.id}, but neither its receipt nor Uncertain state could be recorded.`,
-      );
-    }
-    throw cause;
-  }
-};
-
-const dispatchReceiptFrom = (record: ConversationRecord, window: ConversationWindow): DispatchReceipt | undefined => {
-  if (record.type !== "signal" || record.signalType !== "dispatch_input") return undefined;
-  if (record.attributes?.agent !== "ambience" || record.attributes.id !== window.chatId) return undefined;
-  if (
-    typeof record.dispatchId !== "string" ||
-    !record.dispatchId ||
-    record.attributes.dispatchId !== record.dispatchId
-  ) {
-    return undefined;
-  }
-  const acceptedAt = record.attributes.acceptedAt;
-  if (typeof acceptedAt !== "string" || !Number.isFinite(Date.parse(acceptedAt))) return undefined;
-  try {
-    const input = JSON.parse(record.content) as Record<string, unknown>;
-    if (input.type !== "whatsapp.window" || input.windowId !== window.id || input.chatId !== window.chatId) {
-      return undefined;
-    }
-  } catch {
-    return undefined;
-  }
-  return { dispatchId: record.dispatchId, acceptedAt };
-};
-
-/** Read Flue's public canonical stream without mutating it. */
-export const findFlueAdmissionReceipt = async (
-  store: ConversationStreamStore,
-  window: ConversationWindow,
-  maxRecords = 100_000,
-): Promise<DispatchReceipt | undefined> => {
-  const path = `agents/ambience/${window.chatId}`;
-  let offset = "-1";
-  const receipts = new Map<string, DispatchReceipt>();
-  let recordsRead = 0;
-  while (true) {
-    const page = await store.read(path, { offset, limit: 1_000 });
-    for (const batch of page.batches) {
-      for (const record of batch.records) {
-        recordsRead += 1;
-        if (recordsRead > maxRecords) {
-          throw new Error(`Flue admission reconciliation exceeded its ${maxRecords}-record read bound.`);
+      receipt = await dispatch();
+      break;
+    } catch (cause) {
+      if (attempt >= Math.max(1, retry.attempts)) {
+        const reason = errorMessage(cause);
+        try {
+          inbox.markFailed(window.id, reason);
+        } catch (ledgerCause) {
+          throw new AggregateError(
+            [cause, ledgerCause],
+            `Flue dispatch failed and the failed state could not be recorded for ${window.id}.`,
+          );
         }
-        const receipt = dispatchReceiptFrom(record, window);
-        if (receipt !== undefined) receipts.set(`${receipt.dispatchId}\0${receipt.acceptedAt}`, receipt);
+        console.error(
+          JSON.stringify({ event: "window.dispatch.failed", windowId: window.id, chatId: window.chatId, attempt, reason }),
+        );
+        throw cause;
       }
+      await sleep(retry.delayMs(attempt));
     }
-    if (page.upToDate) break;
-    if (page.nextOffset === offset) throw new Error(`Flue canonical history did not advance while reading ${path}.`);
-    offset = page.nextOffset;
   }
-  if (receipts.size > 1) {
-    throw new Error(`Flue canonical history contains multiple admission receipts for Window ${window.id}.`);
+  try {
+    inbox.markDone(window.id, receipt);
+  } catch (cause) {
+    // Dispatch succeeded; the Window stays pending and startup re-dispatches it.
+    console.error(
+      JSON.stringify({
+        event: "window.done-write.failed",
+        windowId: window.id,
+        chatId: window.chatId,
+        dispatchId: receipt.dispatchId,
+        reason: errorMessage(cause),
+      }),
+    );
   }
-  return receipts.values().next().value;
-};
-
-/**
- * Open a separate adapter handle and read canonical evidence only. Missing
- * storage or an absent Window is inconclusive, never evidence for retry.
- */
-export const createFlueAdmissionEvidenceSource = (databasePath: string): AdmissionEvidenceSource => ({
-  find: async (window) => {
-    if (!existsSync(databasePath)) return undefined;
-    const adapter = sqlite(databasePath);
-    try {
-      const stores = await adapter.connect();
-      return await findFlueAdmissionReceipt(stores.conversationStreamStore, window);
-    } finally {
-      await adapter.close?.();
-    }
-  },
-});
-
-export const reconcileUncertainAdmission = async (
-  inbox: ManagedChatInbox,
-  windowId: string,
-  evidence: AdmissionEvidenceSource,
-): Promise<ReconciliationResult> => {
-  const admission = inbox.admission(windowId);
-  if (admission?.status !== "uncertain") {
-    throw new Error(`Managed Chat Window ${windowId} is not Uncertain.`);
-  }
-  const window = inbox.window(windowId);
-  if (window === undefined) throw new Error(`Managed Chat Window ${windowId} does not exist.`);
-  const receipt = await evidence.find(window);
-  if (receipt === undefined) return { status: "unresolved", admission };
-  const reconciled = inbox.reconcileAdmission(windowId, receipt);
-  if (reconciled.status !== "admitted") throw new Error(`Managed Chat Window ${windowId} was not reconciled.`);
-  return { status: "admitted", admission: reconciled };
 };

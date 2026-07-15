@@ -11,7 +11,7 @@ export const channel = createGitHubChannel({
   webhook: async ({ delivery }) => {
     const result = await handleGitHubDelivery(delivery);
     return new Response(JSON.stringify(result), {
-      status: result.status === "uncertain" ? 409 : 200,
+      status: 200,
       headers: { "content-type": "application/json; charset=UTF-8" },
     });
   },

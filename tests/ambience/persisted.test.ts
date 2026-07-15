@@ -231,9 +231,8 @@ async function coalescerMessage(chatId: string, text: string, overrides: Partial
 
 type FixtureAdmission =
   | { status: "pending"; windowId: string; chatId: string }
-  | { status: "dispatching"; windowId: string; attemptId: string; chatId: string }
-  | { status: "admitted"; windowId: string; dispatchId: string; acceptedAt: string; chatId: string }
-  | { status: "uncertain"; windowId: string; attemptId: string; reason: string; chatId: string };
+  | { status: "done"; windowId: string; dispatchId: string; acceptedAt: string; chatId: string }
+  | { status: "failed"; windowId: string; reason: string; chatId: string };
 
 async function failNextAdmissionAfterAcceptance(): Promise<void> {
   const response = await fetch(`${origin}/test/admission/fail-after-acceptance`, { method: "POST" });
@@ -244,15 +243,6 @@ async function admissionRecords(chatId: string): Promise<readonly FixtureAdmissi
   const response = await fetch(`${origin}/test/admission?chatId=${encodeURIComponent(chatId)}`);
   expect(response.status).toBe(200);
   return (await response.json()) as readonly FixtureAdmission[];
-}
-
-async function reconcileAdmission(windowId: string): Promise<Record<string, unknown>> {
-  const response = await fetch(`${origin}/test/admission/${encodeURIComponent(windowId)}/reconcile`, {
-    method: "POST",
-  });
-  const body = await response.text();
-  expect(response.status, body).toBe(200);
-  return JSON.parse(body) as Record<string, unknown>;
 }
 
 async function whatsappEvents(): Promise<readonly FakeWhatsAppEvent[]> {
@@ -337,7 +327,7 @@ describe("persisted Ambience admission", () => {
     const firstBody = await first.text();
     expect(first.status, firstBody).toBe(200);
     const firstReceipt = JSON.parse(firstBody) as { status: string; dispatchId: string; acceptedAt: string };
-    expect(firstReceipt.status).toBe("dispatched");
+    expect(firstReceipt.status).toBe("done");
     expect(firstReceipt.dispatchId).toBeTruthy();
     expect(Number.isFinite(Date.parse(firstReceipt.acceptedAt))).toBe(true);
     await waitFor(
@@ -364,7 +354,7 @@ describe("persisted Ambience admission", () => {
         ambience: "ambience",
         dispatchId: firstReceipt.dispatchId,
         acceptedAt: firstReceipt.acceptedAt,
-        status: "dispatched",
+        status: "done",
       }),
     );
     expect(serverOutput).toContain(`"deliveryId":"${deliveryId}"`);
@@ -405,7 +395,7 @@ describe("persisted Ambience admission", () => {
     const history = await historyText(chatId);
     expect(history.match(new RegExp(deliveryId, "g"))).toHaveLength(1);
     expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({ deliveryId, status: "dispatched", chatId }),
+      expect.objectContaining({ deliveryId, status: "done", chatId }),
     );
   });
 
@@ -670,61 +660,49 @@ describe("persisted Ambience admission", () => {
   });
 });
 
-describe("restart and uncertainty boundaries", () => {
-  it("reconciles one real Flue acceptance after the application loses its receipt without a duplicate turn", async () => {
-    const chatId = "restart-uncertain-admission-32@g.us";
-    const marker = "REAL_FLUE_RECEIPT_MUST_NOT_REPEAT_32";
+describe("restart and at-least-once boundaries", () => {
+  it("retries a lost post-acceptance receipt with at most one duplicate wake and never blocks the chat", async () => {
+    const chatId = "restart-at-least-once-32@g.us";
+    const marker = "LOST_RECEIPT_REDISPATCHES_32";
     await failNextAdmissionAfterAcceptance();
 
     await coalescerMessage(chatId, marker, { mentions: ["bot@s.whatsapp.net"] });
+    // The first dispatch reached Flue before the injected failure; the bounded
+    // retry dispatches once more, so the same Window wakes Ambience twice —
+    // the ADR 0014 duplicate wake — and then settles as done.
     await waitFor(
-      async () =>
-        (await historyText(chatId)).includes(marker) &&
-        (await historyText(chatId)).includes("Private ambient context retained without speaking."),
-      "the real Flue-accepted turn to settle after its application receipt was lost",
+      async () => (await admissionRecords(chatId)).some(({ status }) => status === "done"),
+      "the Window to settle done after the bounded retry",
     );
-    await waitFor(
-      async () => (await admissionRecords(chatId)).some(({ status }) => status === "uncertain"),
-      "the application admission to become Uncertain",
-    );
-    const [uncertain] = await admissionRecords(chatId);
-    expect(uncertain).toMatchObject({
-      status: "uncertain",
+    const [settled] = await admissionRecords(chatId);
+    expect(settled).toMatchObject({
+      status: "done",
       chatId,
-      reason: "injected failure after Flue acceptance",
+      dispatchId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      acceptedAt: expect.stringMatching(/^20\d\d-/),
     });
-    const before = await historyText(chatId);
-    expect(before.match(new RegExp(marker, "g"))).toHaveLength(1);
-    expect(before.match(/Private ambient context retained without speaking\./g)).toHaveLength(1);
+    await waitFor(
+      async () => ((await historyText(chatId)).match(new RegExp(marker, "g")) ?? []).length === 2,
+      "both accepted dispatches of the duplicate wake to land in canonical history",
+    );
 
     await stopServer("SIGKILL");
     await startServer();
     await new Promise((resolve) => setTimeout(resolve, 250));
 
+    // Done is terminal: restart does not re-dispatch the settled Window.
     const afterRestart = await historyText(chatId);
-    expect(afterRestart.match(new RegExp(marker, "g"))).toHaveLength(1);
-    expect(afterRestart.match(/Private ambient context retained without speaking\./g)).toHaveLength(1);
-    expect(await admissionRecords(chatId)).toEqual([uncertain]);
+    expect(afterRestart.match(new RegExp(marker, "g"))).toHaveLength(2);
+    expect(await admissionRecords(chatId)).toEqual([settled]);
 
-    const reconciliation = await reconcileAdmission(uncertain!.windowId);
-    expect(reconciliation).toMatchObject({
-      status: "admitted",
-      admission: {
-        status: "admitted",
-        windowId: uncertain!.windowId,
-        dispatchId: expect.stringMatching(/^[0-9a-f-]{36}$/),
-        acceptedAt: expect.stringMatching(/^20\d\d-/),
-      },
-    });
-    expect(await admissionRecords(chatId)).toEqual([
-      expect.objectContaining({
-        status: "admitted",
-        windowId: uncertain!.windowId,
-        chatId,
-      }),
-    ]);
-    const afterReconciliation = await historyText(chatId);
-    expect(afterReconciliation.match(new RegExp(marker, "g"))).toHaveLength(1);
+    // The chat keeps flowing after the episode.
+    const followUp = "CHAT_CONTINUES_AFTER_DUPLICATE_32";
+    await coalescerMessage(chatId, followUp, { mentions: ["bot@s.whatsapp.net"] });
+    await waitFor(
+      async () => (await historyText(chatId)).includes(followUp),
+      "the next batch to dispatch normally after the duplicate wake",
+    );
+    expect((await admissionRecords(chatId)).every(({ status }) => status === "done")).toBe(true);
   });
 
   it("does not replay an admitted coalesced Window after process replacement", async () => {

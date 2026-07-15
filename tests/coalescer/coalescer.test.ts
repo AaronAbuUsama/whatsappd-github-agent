@@ -288,11 +288,11 @@ describe("Coalescer", () => {
     }),
   );
 
-  it.effect("isolates a failed startup admission to its chat while another chat replays and stays live", () =>
+  it.effect("logs a failed startup replay and keeps that chat live alongside the others", () =>
     Effect.gen(function* () {
       const source = yield* Queue.unbounded<IncomingMessage>();
       const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
-      const chatA = "blocked-a@g.us";
+      const chatA = "failed-replay-a@g.us";
       const chatB = "live-b@g.us";
       const pendingA: ConversationWindow = {
         id: "window-a-pending",
@@ -313,8 +313,8 @@ describe("Coalescer", () => {
       });
       const dispatcher = Layer.succeed(WindowDispatcher, {
         dispatch: (window) =>
-          window.chatId === chatA
-            ? Effect.fail(new WindowDispatchError({ cause: new Error("A outcome unknown") }))
+          window.id === "window-a-pending"
+            ? Effect.fail(new WindowDispatchError({ cause: new Error("A dispatch failed terminally") }))
             : Ref.update(turns, (current) => [...current, window]),
       });
 
@@ -337,8 +337,11 @@ describe("Coalescer", () => {
       yield* Queue.offer(source, mkMsg("B later", { chatId: chatB, mentions: [BOT] }));
       yield* TestClock.adjust(Duration.zero);
 
-      expect((yield* Ref.get(turns)).map(({ id }) => id)).toEqual(["window-b-pending", "window-live-1"]);
-      expect((yield* Ref.get(turns)).flatMap(texts)).toEqual(["B pending", "B later"]);
+      // The failed replay never blocks chat A: both chats keep dispatching live work.
+      const fired = yield* Ref.get(turns);
+      expect(fired.map(({ id }) => id).sort()).toEqual(["window-b-pending", "window-live-1", "window-live-2"].sort());
+      expect(fired.flatMap(texts)).toContain("A later");
+      expect(fired.flatMap(texts)).toContain("B later");
     }),
   );
 
@@ -422,7 +425,7 @@ describe("Coalescer", () => {
     }),
   );
 
-  it.effect("fail-stops a chat after admission dies so a later Window cannot overtake it", () =>
+  it.effect("continues a chat after a dispatch dies so a later Window still fires", () =>
     Effect.gen(function* () {
       const source = yield* Queue.unbounded<IncomingMessage>();
       const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
@@ -457,8 +460,8 @@ describe("Coalescer", () => {
 
       yield* Queue.offer(source, mkMsg("second"));
       yield* TestClock.adjust(Duration.minutes(1));
-      expect(yield* Ref.get(calls)).toBe(1);
-      expect(yield* Ref.get(turns)).toEqual([]);
+      expect(yield* Ref.get(calls)).toBe(2);
+      expect((yield* Ref.get(turns)).flatMap(texts)).toEqual(["second"]);
     }),
   );
 });

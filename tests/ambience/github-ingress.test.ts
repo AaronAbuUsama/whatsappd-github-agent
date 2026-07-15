@@ -95,9 +95,8 @@ describe("GitHub ingress delivery ledger", () => {
       expect(store.claim("delivery-29", "issues", "2026-07-13T00:00:00.000Z")).toBe(true);
       expect(store.claim("delivery-29", "issues", "2026-07-13T00:00:01.000Z")).toBe(false);
 
-      store.beginDispatch("delivery-29", "acme/widgets", "chat-29@g.us");
       store.settle("delivery-29", {
-        status: "dispatched",
+        status: "done",
         repository: "acme/widgets",
         chatId: "chat-29@g.us",
         ambience: "ambience",
@@ -114,21 +113,23 @@ describe("GitHub ingress delivery ledger", () => {
         ambience: "ambience",
         dispatchId: "dispatch-29",
         acceptedAt: "2026-07-13T00:00:01.000Z",
-        status: "dispatched",
+        status: "done",
         receivedAt: "2026-07-13T00:00:00.000Z",
         settledAt: "2026-07-13T00:00:02.000Z",
       });
+      expect(() =>
+        store.settle("delivery-29", { status: "failed", error: "late", settledAt: "2026-07-13T00:00:03.000Z" }),
+      ).toThrow("cannot settle as failed");
     } finally {
       store.close();
     }
   });
 
-  it("surfaces an interrupted claim as uncertain without blind redispatch", async () => {
+  it("reprocesses an interrupted received delivery when the provider redelivers it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-agent-github-ingress-"));
     const path = join(root, "application.sqlite");
     const interrupted = createGitHubIngressStore(path, () => new Date("2026-07-13T00:00:00.000Z"));
     interrupted.claim("interrupted-29", "issues", "2026-07-13T00:00:00.000Z");
-    interrupted.beginDispatch("interrupted-29", "acme/widgets", "chat-29@g.us");
     interrupted.close();
     const store = createGitHubIngressStore(path, () => new Date("2026-07-13T00:00:01.000Z"));
     try {
@@ -138,47 +139,26 @@ describe("GitHub ingress delivery ledger", () => {
         routes: new Map([["acme/widgets", "chat-29@g.us"]]),
         dispatch: async () => {
           admissions += 1;
-          return { dispatchId: "must-not-dispatch", acceptedAt: "2026-07-13T00:00:00.000Z" };
+          return { dispatchId: "dispatch-redelivered", acceptedAt: "2026-07-13T00:00:01.000Z" };
         },
         logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
         now: () => new Date("2026-07-13T00:00:01.000Z"),
       });
 
-      const result = await ingress({
-        name: "issues",
-        deliveryId: "interrupted-29",
-        payload: { action: "opened" },
-      } as GitHubWebhookDelivery);
-
-      expect(result.status).toBe("uncertain");
-      expect(admissions).toBe(0);
-      expect(store.get("interrupted-29")).toMatchObject({
-        status: "uncertain",
-        error: "Process ended after Ambience admission began; outcome unknown",
+      await expect(ingress(issueOpenedDelivery("interrupted-29"))).resolves.toMatchObject({
+        status: "done",
+        dispatchId: "dispatch-redelivered",
       });
-      expect(
-        (
-          await ingress({
-            name: "issues",
-            deliveryId: "interrupted-29",
-            payload: { action: "opened" },
-          } as GitHubWebhookDelivery)
-        ).status,
-      ).toBe("uncertain");
-      expect(admissions).toBe(0);
+      expect(admissions).toBe(1);
+      expect(store.get("interrupted-29")).toMatchObject({ status: "done" });
     } finally {
       store.close();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("safely resumes a received delivery after restart and records dispatching before Flue", async () => {
-    const root = await mkdtemp(join(tmpdir(), "ambient-agent-github-ingress-resume-"));
-    const path = join(root, "application.sqlite");
-    const beforeRestart = createGitHubIngressStore(path);
-    beforeRestart.claim("resume-56", "issues", "2026-07-15T00:00:00.000Z");
-    beforeRestart.close();
-    const store = createGitHubIngressStore(path);
+  it("retries a failing dispatch within its bound and then settles the delivery as done", async () => {
+    const store = createGitHubIngressStore(":memory:");
     try {
       let admissions = 0;
       const ingress = createGitHubIngress({
@@ -186,30 +166,25 @@ describe("GitHub ingress delivery ledger", () => {
         routes: new Map([["acme/widgets", "chat-56@g.us"]]),
         dispatch: async () => {
           admissions += 1;
-          expect(store.get("resume-56")).toMatchObject({
-            status: "dispatching",
-            repository: "acme/widgets",
-            chatId: "chat-56@g.us",
-          });
+          if (admissions < 3) throw new Error("transient Flue failure");
           return { dispatchId: "dispatch-56", acceptedAt: "2026-07-15T00:00:01.000Z" };
         },
         logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
-        now: () => new Date("2026-07-15T00:00:02.000Z"),
+        retry: { attempts: 3, delayMs: () => 0 },
       });
 
-      await expect(ingress(issueOpenedDelivery("resume-56"))).resolves.toMatchObject({
-        status: "dispatched",
+      await expect(ingress(issueOpenedDelivery("retry-56"))).resolves.toMatchObject({
+        status: "done",
         dispatchId: "dispatch-56",
       });
-      expect(admissions).toBe(1);
-      expect(store.get("resume-56")).toMatchObject({ status: "dispatched", dispatchId: "dispatch-56" });
+      expect(admissions).toBe(3);
+      expect(store.get("retry-56")).toMatchObject({ status: "done", dispatchId: "dispatch-56" });
     } finally {
       store.close();
-      await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("records a dispatching failure as uncertain and never automatically repeats it", async () => {
+  it("settles an exhausted dispatch as terminally failed and deduplicates its redelivery", async () => {
     const store = createGitHubIngressStore(":memory:");
     try {
       let admissions = 0;
@@ -221,22 +196,27 @@ describe("GitHub ingress delivery ledger", () => {
           throw new Error("Flue response was lost");
         },
         logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+        retry: { attempts: 2, delayMs: () => 0 },
       });
 
-      await expect(ingress(issueOpenedDelivery("uncertain-56"))).rejects.toThrow("Flue response was lost");
-      expect(store.get("uncertain-56")).toMatchObject({
-        status: "uncertain",
+      await expect(ingress(issueOpenedDelivery("failed-56"))).resolves.toMatchObject({
+        status: "failed",
+        record: { status: "failed", error: "Flue response was lost" },
+      });
+      expect(admissions).toBe(2);
+      expect(store.get("failed-56")).toMatchObject({
+        status: "failed",
         repository: "acme/widgets",
         chatId: "chat-56@g.us",
       });
-      await expect(ingress(issueOpenedDelivery("uncertain-56"))).resolves.toMatchObject({ status: "uncertain" });
-      expect(admissions).toBe(1);
+      await expect(ingress(issueOpenedDelivery("failed-56"))).resolves.toMatchObject({ status: "duplicate" });
+      expect(admissions).toBe(2);
     } finally {
       store.close();
     }
   });
 
-  it("deduplicates a concurrent redelivery without disturbing the active admission", async () => {
+  it("deduplicates a concurrent redelivery without a second dispatch", async () => {
     const store = createGitHubIngressStore(":memory:");
     try {
       let release!: () => void;
@@ -258,17 +238,17 @@ describe("GitHub ingress delivery ledger", () => {
       const first = ingress(issueOpenedDelivery("concurrent-56"));
       await expect(ingress(issueOpenedDelivery("concurrent-56"))).resolves.toMatchObject({
         status: "duplicate",
-        record: { status: "dispatching" },
+        record: { status: "received" },
       });
       release();
-      await expect(first).resolves.toMatchObject({ status: "dispatched", dispatchId: "dispatch-concurrent" });
+      await expect(first).resolves.toMatchObject({ status: "done", dispatchId: "dispatch-concurrent" });
       expect(admissions).toBe(1);
     } finally {
       store.close();
     }
   });
 
-  it("migrates the predecessor ledger conservatively without losing settled delivery evidence", async () => {
+  it("migrates every predecessor ledger status per the ADR 0014 mapping", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-agent-github-ingress-migration-"));
     const path = join(root, "application.sqlite");
     try {
@@ -281,33 +261,44 @@ describe("GitHub ingress delivery ledger", () => {
           chat_id TEXT,
           ambience TEXT,
           dispatch_id TEXT,
-          status TEXT NOT NULL CHECK (status IN ('received', 'unsupported', 'uncorrelated', 'dispatched', 'uncertain', 'failed')),
+          accepted_at TEXT,
+          status TEXT NOT NULL CHECK (status IN ('received', 'dispatching', 'unsupported', 'uncorrelated', 'dispatched', 'uncertain', 'failed')),
           error TEXT,
           received_at TEXT NOT NULL,
           settled_at TEXT
         ) STRICT;
         INSERT INTO github_ingress_deliveries
           (delivery_id, event_name, status, received_at)
-        VALUES ('legacy-unknown', 'issues', 'received', '2026-07-14T00:00:00.000Z');
+        VALUES ('legacy-received', 'issues', 'received', '2026-07-14T00:00:00.000Z');
         INSERT INTO github_ingress_deliveries
-          (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, status, received_at, settled_at)
+          (delivery_id, event_name, repository, chat_id, ambience, status, received_at)
+        VALUES ('legacy-dispatching', 'issues', 'acme/widgets', 'chat@g.us', 'ambience', 'dispatching', '2026-07-14T00:00:00.000Z');
+        INSERT INTO github_ingress_deliveries
+          (delivery_id, event_name, repository, chat_id, ambience, status, error, received_at, settled_at)
+        VALUES ('legacy-uncertain', 'issues', 'acme/widgets', 'chat@g.us', 'ambience', 'uncertain',
+                'Ambience admission outcome unknown', '2026-07-14T00:00:00.000Z', '2026-07-14T00:00:01.000Z');
+        INSERT INTO github_ingress_deliveries
+          (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at, status, received_at, settled_at)
         VALUES ('legacy-dispatched', 'issues', 'acme/widgets', 'chat@g.us', 'ambience', 'dispatch-old',
-                'dispatched', '2026-07-14T00:00:00.000Z', '2026-07-14T00:00:01.000Z');
+                '2026-07-14T00:00:00.500Z', 'dispatched', '2026-07-14T00:00:00.000Z', '2026-07-14T00:00:01.000Z');
+        INSERT INTO github_ingress_deliveries
+          (delivery_id, event_name, status, error, received_at, settled_at)
+        VALUES ('legacy-failed', 'issues', 'failed', 'terminal error', '2026-07-14T00:00:00.000Z', '2026-07-14T00:00:01.000Z');
       `);
       legacy.close();
 
       const store = createGitHubIngressStore(path, () => new Date("2026-07-15T00:00:00.000Z"));
-      expect(store.get("legacy-unknown")).toMatchObject({
-        status: "uncertain",
-        error: "Legacy ingress record predates the dispatching boundary; admission outcome unknown",
-      });
+      expect(store.get("legacy-received")).toMatchObject({ status: "received" });
+      expect(store.get("legacy-dispatching")).toMatchObject({ status: "received" });
+      expect(store.get("legacy-uncertain")).toMatchObject({ status: "received" });
+      expect(store.get("legacy-uncertain")?.error).toBeUndefined();
+      expect(store.get("legacy-uncertain")?.settledAt).toBeUndefined();
       expect(store.get("legacy-dispatched")).toMatchObject({
-        status: "dispatched",
+        status: "done",
         dispatchId: "dispatch-old",
+        acceptedAt: "2026-07-14T00:00:00.500Z",
       });
-      expect(store.claim("new-delivery", "issues", "2026-07-15T00:00:00.000Z")).toBe(true);
-      store.beginDispatch("new-delivery", "acme/widgets", "chat@g.us");
-      expect(store.get("new-delivery")).toMatchObject({ status: "dispatching" });
+      expect(store.get("legacy-failed")).toMatchObject({ status: "failed", error: "terminal error" });
       store.close();
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -361,12 +352,9 @@ describe("GitHub ingress delivery ledger", () => {
         () => new Date("2026-07-15T00:00:00.000Z"),
         settings.legacyDatabasePath,
       );
-      expect(store.get("legacy-in-flight")).toMatchObject({
-        status: "uncertain",
-        error: "Imported legacy ingress attempt; admission outcome unknown",
-      });
+      expect(store.get("legacy-in-flight")).toMatchObject({ status: "received" });
       expect(store.get("legacy-complete")).toMatchObject({
-        status: "dispatched",
+        status: "done",
         dispatchId: "dispatch-complete",
       });
       store.close();

@@ -70,10 +70,8 @@ const LEGACY_APPLICATION_CORE_SCHEMA = [
 const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
   ["managed_chat_windows", ["window_id", "chat_id", "reason", "created_at_ms"]],
   ["managed_chat_inbox", ["inbox_sequence", "event_id", "chat_id", "window_id", "accepted_at_ms"]],
-  [
-    "managed_chat_admissions",
-    ["window_id", "status", "attempt_id", "dispatch_id", "accepted_at", "reason", "updated_at_ms"],
-  ],
+  ["managed_chat_admissions", ["window_id", "status", "dispatch_id", "accepted_at", "reason", "updated_at_ms"]],
+  // Pre-ADR-0014 audit tables remain readable until the one-way migration drops them.
   ["managed_chat_admission_resolutions", ["window_id", "attempt_id", "resolution", "operator_reason", "resolved_at"]],
   ["managed_chat_admission_examinations", ["window_id", "attempt_id", "examined_at"]],
   [

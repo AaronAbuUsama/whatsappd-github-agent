@@ -306,7 +306,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
           expect(reopenedInbox.unwindowed()).toEqual([]);
           expect(reopenedInbox.pendingWindows()).toEqual([]);
           expect(reopenedInbox.admission("window-replayed-31")).toEqual({
-            status: "admitted",
+            status: "done",
             windowId: "window-replayed-31",
             dispatchId: "dispatch-replayed-31",
             acceptedAt: "2026-07-15T00:00:00.000Z",
@@ -319,7 +319,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     reopenedArchive.close();
   });
 
-  it("replays a pending Window after restart only when no admission attempt began", async () => {
+  it("replays a pending Window with its stable identity after restart", async () => {
     const { applicationDatabase, archive } = temporaryArchive();
     const gate = makeChatGate({ groupIds: CHAT });
     const inbox = createManagedChatInbox(archive, {
@@ -369,7 +369,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       },
     ]);
     expect(reopened.admission(pending.id)).toEqual({
-      status: "admitted",
+      status: "done",
       windowId: pending.id,
       dispatchId: "dispatch-pending-31",
       acceptedAt: "2026-07-15T00:00:30.000Z",
@@ -455,7 +455,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
 
     expect(replayDispatches).toEqual([]);
     expect(reopenedInbox.admission("window-location-31")).toEqual({
-      status: "admitted",
+      status: "done",
       windowId: "window-location-31",
       dispatchId: "dispatch-location-31",
       acceptedAt: "2026-07-15T00:00:00.000Z",

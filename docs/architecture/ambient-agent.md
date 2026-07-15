@@ -82,7 +82,7 @@ src/
 │   ├── conversation-archive.ts        # append and projection queries
 │   ├── managed-chat-inbox.ts          # pending Managed Chat processing state
 │   ├── coalescer.ts                   # per-chat Window formation
-│   ├── admission-relay.ts             # Flue receipt and uncertainty state machine
+│   ├── admission-relay.ts             # at-least-once Flue dispatch with bounded retries
 │   └── sqlite-intake-store.ts         # one transaction across archive and inbox
 ├── configuration/
 │   ├── schema.ts                      # validated non-secret configuration
@@ -99,7 +99,7 @@ src/
         ├── config.ts                  # inspect/change configuration
         ├── start.ts                   # foreground generated Flue server
         ├── status.ts                  # read-only runtime state
-        └── doctor.ts                  # integrity and Uncertain-delivery diagnosis
+        └── doctor.ts                  # integrity and Uncertain-mutation diagnosis
 ```
 
 Folder placement is secondary to the module interfaces. The load-bearing rule is that provider adapters remain private behind the Capability or intake module that owns the behavior.
@@ -162,35 +162,29 @@ receive normalized Conversation Event
 
 The Coalescer claims pending items per chat and assigns each accepted event to exactly one stable Window. It cannot evict a message merely to respect a memory bound; backpressure and explicit failure are preferable to silent loss.
 
-The Admission Relay owns the cross-database handoff:
+The Admission Relay owns the cross-database handoff. A dispatched Window is an
+at-least-once wake, not exactly-once cargo (ADR 0014): the Conversation
+Archive, not the Flue transcript, is Ambience's memory, so a duplicate wake is
+harmless by construction and a missed wake is recoverable from the archive.
 
 ```ts
 type WindowDelivery =
   | { status: "pending"; windowId: string }
-  | { status: "dispatching"; windowId: string; attemptId: string }
-  | {
-      status: "admitted";
-      windowId: string;
-      dispatchId: string;
-      acceptedAt: string;
-    }
-  | {
-      status: "uncertain";
-      windowId: string;
-      attemptId: string;
-      reason: string;
-    };
+  | { status: "done"; windowId: string; dispatchId: string; acceptedAt: string }
+  | { status: "failed"; windowId: string; reason: string };
 ```
 
-1. Record `dispatching` before crossing into Flue.
-2. Include the stable `windowId` in the dispatched input.
-3. Await Flue's `DispatchReceipt`.
-4. Record `dispatchId` and `acceptedAt`, then settle the Window as `admitted`.
-5. Replay only work proven never to have crossed the seam.
-6. Convert crash-interrupted or otherwise ambiguous attempts to `uncertain`; never automatically dispatch them again.
-7. Let `doctor` search canonical Agent history for positive evidence. Failure to find the Window does not prove it was never accepted, so an unresolved case requires an explicit operator resolution.
-
-An Uncertain Window is also a durable per-chat ordering barrier. Later Inbox arrivals remain withheld while unrelated chats continue. After positive reconciliation, the runtime reopens that chat from its durable backlog before accepting newer work.
+1. Include the stable `windowId` in the dispatched input.
+2. Await Flue's `DispatchReceipt` with bounded retries and backoff.
+3. Record `dispatchId` and `acceptedAt`, settling the Window as `done`. A lost
+   `done` write only logs; the Window stays `pending` and the next startup
+   re-dispatches it — the tolerated duplicate wake.
+4. When the bounded retries are exhausted, settle the Window as `failed` with
+   its logged cause. Failure is terminal and log-only: no chat blocking, no
+   operator ceremony, and nothing is surfaced to the agent.
+5. Startup re-dispatches every Window still `pending` with its original
+   message timestamps; whether a delayed reading still deserves a response is
+   Ambience's judgment, not infrastructure's.
 
 After Flue returns its receipt, its file-backed persistence adapter owns queue ordering, canonical conversation state, processing recovery, and conservative handling of interrupted tool work. Exactly one live Node process owns a given Ambience instance.
 
@@ -237,10 +231,9 @@ npx ambient-agent status       # read-only state and health
 npx ambient-agent doctor       # offline configuration, credential and DB diagnostics
 npx ambient-agent doctor --refresh # opt-in credential refresh verification
 npx ambient-agent doctor --live    # opt-in real GitHub and model checks through production auth
-npx ambient-agent doctor --retry admission:<windowId> # explicit requeue after observation
 npx ambient-agent doctor --retry mutation:<operationId> # explicit new Operation Identity
 npx ambient-agent doctor --accept-observed mutation:<operationId>
-npx ambient-agent doctor --abandon admission:<windowId>|mutation:<operationId>
+npx ambient-agent doctor --abandon mutation:<operationId>
 ```
 
 Commander 15 with `@commander-js/extra-typings` owns command parsing; Clack owns interactive prompts. The package requires Node `>=22.19.0`, the effective current Flue floor. A system process manager owns background supervision.
@@ -255,13 +248,16 @@ Evaluation uses the production Flue HTTP interface through `@flue/sdk` and `vite
 - Archive and Managed Chat Inbox insertion are atomic.
 - Every accepted live message belongs to exactly one Window.
 - Ordering is stable per chat and independent across chats.
-- `pending`, `dispatching`, `admitted`, and `uncertain` transitions obey their invariants across restart injection points.
-- No Uncertain admission or GitHub mutation is automatically repeated.
-- `status` reads Uncertain counts without opening a writable database handle or exposing stored content and errors.
-- On the documented stopped-runtime boundary, `status` counts durable `dispatching` admissions and `attempting` mutations as degraded; `doctor` conservatively promotes them to Uncertain before provider reads and never repeats them automatically.
-- `doctor` examines at most 25 items per invocation, rotates examination order so unresolved work cannot starve later records, reserves capacity for both admissions and mutations, caps each GitHub read at ten seconds, and caps canonical Flue inspection at 100,000 records. Canonical receipts and provider Operation Identity reconcile automatically; desired state alone requires explicit acceptance.
+- `pending`, `done`, and `failed` transitions obey their invariants across restart injection points: `done` and `failed` are terminal, and everything still `pending` re-dispatches at startup.
+- A dispatch failure runs bounded retries, then settles the Window as terminally `failed` with a logged cause; the chat never blocks and the next batch dispatches normally.
+- A crash between Flue's acceptance and the `done` write re-dispatches at startup: at most one duplicate wake, tolerated by ADR 0014.
+- The five-state legacy admission ledger migrates losslessly: `admitted`→`done`, `abandoned`→`failed`, `pending`/`dispatching`/`uncertain`→`pending`.
+- No Uncertain GitHub mutation is automatically repeated.
+- `status` reads pending/failed Window batch counts and Uncertain mutation counts without opening a writable database handle or exposing stored content and errors.
+- On the documented stopped-runtime boundary, `status` counts durable `attempting` mutations as degraded; `doctor` conservatively promotes them to Uncertain before provider reads and never repeats them automatically.
+- `doctor` examines at most 25 mutations per invocation, rotates examination order so unresolved work cannot starve later records, caps each GitHub read at ten seconds. Provider Operation Identity reconciles automatically; desired state alone requires explicit acceptance.
 - A provider-success/local-ledger-failure split remains Uncertain. It is never converted into a terminal provider failure merely because completion persistence failed.
-- Explicit admission retry archives the Uncertain attempt and returns the Window to `pending`; explicit GitHub retry archives the prior operation and performs the same stored mutation under a fresh Operation Identity. Explicit abandonment is terminal and retained in the audit.
+- Explicit GitHub retry archives the prior operation and performs the same stored mutation under a fresh Operation Identity. Explicit abandonment is terminal and retained in the audit.
 - These transitions prove local, single-owner process replacement only. They add no PID liveness checks, stale-lock protocol, cross-process coordinator, or cross-host recovery.
 - Issue and comment Tools enforce repository scope and return structured provider state.
 - Configuration rejects embedded secrets, unsafe permissions, and missing references.
@@ -322,7 +318,7 @@ The rollout is complete only when all of the following are true:
 - All application and Flue state is placed beneath the managed data directory with safe credential permissions.
 - Every observed or sent WhatsApp message is durably archived; only configured Managed Chats enter Ambience.
 - Coalescing is lossless and one stable Window is never silently abandoned.
-- A returned Flue receipt is durably recorded, accepted work survives process replacement, and ambiguous handoffs are visible without blind replay.
+- A returned Flue receipt is durably recorded, accepted work survives process replacement, and a Window still pending at startup re-dispatches with at most one duplicate wake (ADR 0014).
 - Ambience is configured through short Instructions plus WhatsApp Participation and Issue Management Skills and Tools.
 - The complete supported issue and comment lifecycle works against a scoped real GitHub repository.
 - Behavior evals cover silence, timely participation, issue judgment, cross-Window context, duplicate prevention, and chat isolation.

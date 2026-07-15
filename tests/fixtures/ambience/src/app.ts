@@ -26,10 +26,6 @@ import { loadGitHubIngressSettings } from "../../../../src/github/ingress.js";
 import { installGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
 import { createFakeIssueRepository } from "../../../../src/host/fake-issue-repository.js";
 import { createFakeWhatsAppHost } from "../../../../src/host/fake-whatsapp-host.js";
-import {
-  createFlueAdmissionEvidenceSource,
-  reconcileUncertainAdmission,
-} from "../../../../src/intake/admission-relay.js";
 import { createConversationArchive } from "../../../../src/intake/conversation-archive.js";
 import { conversationArrival } from "../../../../src/intake/conversation-event.js";
 import { createManagedChatInbox, managedChatWindowStore } from "../../../../src/intake/managed-chat-inbox.js";
@@ -206,14 +202,18 @@ Effect.runFork(
       Effect.provide(
         Layer.mergeAll(
           queueEventSource(source),
-          makeAmbienceWindowDispatcher(inbox, async (request) => {
-            const receipt = await dispatchAmbience(request);
-            if (failAfterFlueAcceptance) {
-              failAfterFlueAcceptance = false;
-              throw new Error("injected failure after Flue acceptance");
-            }
-            return receipt;
-          }),
+          makeAmbienceWindowDispatcher(
+            inbox,
+            async (request) => {
+              const receipt = await dispatchAmbience(request);
+              if (failAfterFlueAcceptance) {
+                failAfterFlueAcceptance = false;
+                throw new Error("injected failure after Flue acceptance");
+              }
+              return receipt;
+            },
+            { attempts: 3, delayMs: () => 0 },
+          ),
           managedChatWindowStore(inbox),
           configLayer({ botIds: ["bot@s.whatsapp.net"], debounceWindow: Duration.millis(25) }),
         ),
@@ -256,14 +256,6 @@ app.get("/test/admission", (context) => {
       : [];
   });
   return context.json(admissions);
-});
-app.post("/test/admission/:windowId/reconcile", async (context) => {
-  const result = await reconcileUncertainAdmission(
-    inbox,
-    context.req.param("windowId"),
-    createFlueAdmissionEvidenceSource(process.env.FLUE_DB_PATH ?? "./flue.sqlite"),
-  );
-  return context.json(result);
 });
 app.get("/test/whatsapp/events", (context) => context.json(fakeWhatsApp.events()));
 app.delete("/test/whatsapp/events", (context) => {

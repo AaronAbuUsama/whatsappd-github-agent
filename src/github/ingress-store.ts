@@ -2,14 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export type GitHubIngressStatus =
-  | "received"
-  | "dispatching"
-  | "unsupported"
-  | "uncorrelated"
-  | "dispatched"
-  | "uncertain"
-  | "failed";
+export type GitHubIngressStatus = "received" | "unsupported" | "uncorrelated" | "done" | "failed";
 
 export interface GitHubIngressRecord {
   readonly deliveryId: string;
@@ -55,12 +48,11 @@ const hydrate = (row: GitHubIngressRow): GitHubIngressRecord => ({
 
 export interface GitHubIngressStore {
   claim(deliveryId: string, eventName: string, receivedAt: string): boolean;
-  beginDispatch(deliveryId: string, repository: string, chatId: string): void;
   settle(
     deliveryId: string,
     update:
       | {
-          readonly status: "dispatched";
+          readonly status: "done";
           readonly repository: string;
           readonly chatId: string;
           readonly ambience: "ambience";
@@ -80,7 +72,6 @@ export interface GitHubIngressStore {
           readonly settledAt: string;
         },
   ): void;
-  markUncertain(deliveryId: string, error: string, settledAt: string): GitHubIngressRecord;
   get(deliveryId: string): GitHubIngressRecord | undefined;
   list(): readonly GitHubIngressRecord[];
   close(): void;
@@ -103,19 +94,26 @@ export const createGitHubIngressStore = (
       ambience TEXT,
       dispatch_id TEXT,
       accepted_at TEXT,
-      status TEXT NOT NULL CHECK (status IN ('received', 'dispatching', 'unsupported', 'uncorrelated', 'dispatched', 'uncertain', 'failed')),
+      status TEXT NOT NULL CHECK (status IN ('received', 'unsupported', 'uncorrelated', 'done', 'failed')),
       error TEXT,
       received_at TEXT NOT NULL,
       settled_at TEXT
     ) STRICT
+  `;
+  // Legacy statuses map to at-least-once semantics (ADR 0014): a settled
+  // dispatch is done; anything in flight or ambiguous returns to received so a
+  // provider redelivery reprocesses it — a duplicate wake is tolerated.
+  const legacyStatusMapping = `
+    CASE WHEN status = 'dispatched' THEN 'done'
+         WHEN status IN ('received', 'dispatching', 'uncertain') THEN 'received'
+         ELSE status END
   `;
   const existing = database
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'github_ingress_deliveries'")
     .get() as { sql: string } | undefined;
   if (existing === undefined) {
     database.exec(createTable);
-  } else if (!existing.sql.includes("'dispatching'")) {
-    const legacyReason = "Legacy ingress record predates the dispatching boundary; admission outcome unknown";
+  } else if (!existing.sql.includes("'done'")) {
     try {
       database.exec(`
         BEGIN IMMEDIATE;
@@ -123,11 +121,12 @@ export const createGitHubIngressStore = (
         ${createTable};
         INSERT INTO github_ingress_deliveries
           (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at, status, error, received_at, settled_at)
-        SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, NULL,
-               CASE WHEN status = 'received' THEN 'uncertain' ELSE status END,
-               CASE WHEN status = 'received' THEN '${legacyReason}' ELSE error END,
+        SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id,
+               ${existing.sql.includes("accepted_at") ? "accepted_at" : "NULL"},
+               ${legacyStatusMapping},
+               CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE error END,
                received_at,
-               CASE WHEN status = 'received' THEN received_at ELSE settled_at END
+               CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE settled_at END
           FROM github_ingress_deliveries_legacy;
         DROP TABLE github_ingress_deliveries_legacy;
         COMMIT;
@@ -196,14 +195,10 @@ export const createGitHubIngressStore = (
             (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
              status, error, received_at, settled_at)
           SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, ${acceptedAt},
-                 CASE WHEN status IN ('received', 'dispatching') THEN 'uncertain' ELSE status END,
-                 CASE WHEN status IN ('received', 'dispatching')
-                      THEN 'Imported legacy ingress attempt; admission outcome unknown'
-                      ELSE error END,
+                 ${legacyStatusMapping},
+                 CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE error END,
                  received_at,
-                 CASE WHEN status IN ('received', 'dispatching')
-                      THEN COALESCE(settled_at, received_at)
-                      ELSE settled_at END
+                 CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE settled_at END
             FROM legacy_github_ingress.github_ingress_deliveries;
         `);
         database
@@ -222,15 +217,6 @@ export const createGitHubIngressStore = (
       }
     }
   }
-  database
-    .prepare(`
-      UPDATE github_ingress_deliveries
-         SET status = 'uncertain',
-             error = 'Process ended after Ambience admission began; outcome unknown',
-             settled_at = ?
-       WHERE status = 'dispatching'
-    `)
-    .run(now().toISOString());
 
   const claimStatement = database.prepare(`
     INSERT OR IGNORE INTO github_ingress_deliveries
@@ -240,13 +226,6 @@ export const createGitHubIngressStore = (
   const settleStatement = database.prepare(`
     UPDATE github_ingress_deliveries
        SET status = ?, repository = ?, chat_id = ?, ambience = ?, dispatch_id = ?, accepted_at = ?, error = ?, settled_at = ?
-     WHERE delivery_id = ?
-       AND ((status = 'received' AND ? IN ('unsupported', 'uncorrelated', 'failed'))
-         OR (status = 'dispatching' AND ? = 'dispatched'))
-  `);
-  const beginDispatchStatement = database.prepare(`
-    UPDATE github_ingress_deliveries
-       SET status = 'dispatching', repository = ?, chat_id = ?, ambience = 'ambience'
      WHERE delivery_id = ? AND status = 'received'
   `);
   const getStatement = database.prepare(`
@@ -254,11 +233,6 @@ export const createGitHubIngressStore = (
            status, error, received_at, settled_at
       FROM github_ingress_deliveries
      WHERE delivery_id = ?
-  `);
-  const markUncertainStatement = database.prepare(`
-    UPDATE github_ingress_deliveries
-       SET status = 'uncertain', error = ?, settled_at = ?
-     WHERE delivery_id = ? AND status IN ('received', 'dispatching')
   `);
   const listStatement = database.prepare(`
     SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
@@ -270,15 +244,8 @@ export const createGitHubIngressStore = (
   return {
     claim: (deliveryId, eventName, receivedAt) =>
       claimStatement.run(deliveryId, eventName, receivedAt).changes === 1,
-    beginDispatch: (deliveryId, repository, chatId) => {
-      const result = beginDispatchStatement.run(repository, chatId, deliveryId);
-      if (result.changes !== 1) throw new Error(`GitHub delivery ${deliveryId} is not pending admission.`);
-    },
     settle: (deliveryId, update) => {
-      if (
-        update.status === "dispatched" &&
-        (!update.dispatchId || !Number.isFinite(Date.parse(update.acceptedAt)))
-      ) {
+      if (update.status === "done" && (!update.dispatchId || !Number.isFinite(Date.parse(update.acceptedAt)))) {
         throw new Error(`GitHub delivery ${deliveryId} has an invalid Flue admission receipt.`);
       }
       const result = settleStatement.run(
@@ -291,19 +258,8 @@ export const createGitHubIngressStore = (
         update.error ?? null,
         update.settledAt,
         deliveryId,
-        update.status,
-        update.status,
       );
       if (result.changes !== 1) throw new Error(`GitHub delivery ${deliveryId} cannot settle as ${update.status}.`);
-    },
-    markUncertain: (deliveryId, error, settledAt) => {
-      const result = markUncertainStatement.run(error, settledAt, deliveryId);
-      if (result.changes !== 1) {
-        throw new Error(`GitHub delivery ${deliveryId} is not pending or dispatching.`);
-      }
-      const row = getStatement.get(deliveryId) as GitHubIngressRow | undefined;
-      if (!row) throw new Error(`Unknown GitHub delivery ${deliveryId}`);
-      return hydrate(row);
     },
     get: (deliveryId) => {
       const row = getStatement.get(deliveryId) as GitHubIngressRow | undefined;

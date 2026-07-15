@@ -661,11 +661,11 @@ describe("managed CLI", () => {
       runtimeState: "degraded",
       uncertainWork: {
         health: "degraded",
-        admissions: 0,
         externalMutations: 1,
         total: 1,
         mutationKinds: { "update-issue": 1 },
       },
+      windowDeliveries: { pending: 0, failed: 0 },
     });
     expect(status.stdout()).not.toContain("private issue body");
     expect(status.stdout()).not.toContain("credential material");
@@ -730,7 +730,6 @@ describe("managed CLI", () => {
     const controller: UncertainWorkController = {
       status: () => ({
         health: "healthy",
-        admissions: 0,
         externalMutations: 0,
         total: 0,
         mutationKinds: {},

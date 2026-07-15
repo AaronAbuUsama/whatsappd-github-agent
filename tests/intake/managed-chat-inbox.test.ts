@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
-import { createManagedChatInbox } from "../../src/intake/managed-chat-inbox.ts";
+import { createManagedChatInbox, inspectWindowDeliveryCounts } from "../../src/intake/managed-chat-inbox.ts";
 import type { IncomingMessage } from "whatsappd";
 
 const roots: string[] = [];
@@ -158,51 +158,85 @@ describe("Managed Chat Inbox", () => {
     reopenedArchive.close();
   });
 
-  it("classifies pre-ledger Windows as Uncertain instead of blindly replaying them", () => {
+  it("settles a pending Window as done or failed exactly once, terminally", () => {
     const path = fixture();
     const archive = createConversationArchive(path);
+    let nextWindow = 0;
     const inbox = createManagedChatInbox(archive, {
       allowed: () => true,
-      createId: () => "legacy-window",
+      createId: () => `window-${++nextWindow}`,
+      now: () => 1_000,
     });
     inbox.recorder.append(conversationArrival(message("m1")));
-    const window = inbox.createWindow({
-      chatId: "managed@g.us",
-      messages: inbox.unwindowed(),
-      reason: "debounce",
+    const done = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    inbox.recorder.append(conversationArrival(message("m2")));
+    const failed = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+
+    inbox.markDone(done.id, { dispatchId: "dispatch-1", acceptedAt: "2026-07-15T01:00:00.000Z" });
+    inbox.markFailed(failed.id, "Flue unreachable after bounded retries");
+
+    expect(inbox.admission(done.id)).toEqual({
+      status: "done",
+      windowId: "window-1",
+      dispatchId: "dispatch-1",
+      acceptedAt: "2026-07-15T01:00:00.000Z",
     });
-    archive.transaction(({ database }) => database.exec("DROP TABLE managed_chat_admissions"));
+    expect(inbox.admission(failed.id)).toEqual({
+      status: "failed",
+      windowId: "window-2",
+      reason: "Flue unreachable after bounded retries",
+    });
+    expect(inbox.pendingWindows()).toEqual([]);
+    expect(() => inbox.markDone(done.id, { dispatchId: "again", acceptedAt: "2026-07-15T01:01:00.000Z" })).toThrow(
+      "cannot transition to done from done",
+    );
+    expect(() => inbox.markFailed(done.id, "late failure")).toThrow("cannot transition to failed from done");
+    expect(() => inbox.markDone(failed.id, { dispatchId: "late", acceptedAt: "2026-07-15T01:01:00.000Z" })).toThrow(
+      "cannot transition to done from failed",
+    );
     archive.close();
 
     const reopenedArchive = createConversationArchive(path);
     const reopened = createManagedChatInbox(reopenedArchive, { allowed: () => true });
     expect(reopened.pendingWindows()).toEqual([]);
-    expect(reopened.admission(window.id)).toEqual({
-      status: "uncertain",
-      windowId: "legacy-window",
-      attemptId: "legacy:legacy-window",
-      reason: "Window predates the admission ledger; prior delivery is unknown",
-    });
+    expect(reopened.admissions("failed")).toEqual([
+      { status: "failed", windowId: "window-2", reason: "Flue unreachable after bounded retries" },
+    ]);
     reopenedArchive.close();
   });
 
-  it("migrates the pre-operator admission schema without changing existing state", () => {
+  it("never blocks a chat: later arrivals stay reachable beside a failed Window", () => {
+    const archive = createConversationArchive(fixture());
+    const inbox = createManagedChatInbox(archive, { allowed: () => true, createId: () => "window-failed" });
+    inbox.recorder.append(conversationArrival(message("m1")));
+    const window = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    inbox.markFailed(window.id, "dispatch failed after bounded retries");
+
+    inbox.recorder.append(conversationArrival(message("m2")));
+    expect(inbox.unwindowed().map(({ id }) => id)).toEqual(["m2"]);
+    expect(inbox.pendingArrival("managed@g.us", "m2")?.id).toBe("m2");
+    archive.close();
+  });
+
+  it("migrates every legacy five-state admission row per the ADR 0014 mapping", () => {
     const path = fixture();
     const archive = createConversationArchive(path);
+    let nextWindow = 0;
     const inbox = createManagedChatInbox(archive, {
       allowed: () => true,
-      createId: () => "pre-operator-window",
+      createId: () => `legacy-${++nextWindow}`,
     });
-    inbox.recorder.append(conversationArrival(message("m1")));
-    inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    for (const id of ["m1", "m2", "m3", "m4", "m5"]) {
+      inbox.recorder.append(conversationArrival(message(id)));
+      inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    }
     archive.transaction(({ database }) =>
       database.exec(`
-        DROP TABLE managed_chat_admission_resolutions;
         DROP INDEX managed_chat_admissions_status_idx;
         ALTER TABLE managed_chat_admissions RENAME TO managed_chat_admissions_new;
         CREATE TABLE managed_chat_admissions (
           window_id TEXT PRIMARY KEY,
-          status TEXT NOT NULL CHECK (status IN ('pending', 'dispatching', 'admitted', 'uncertain')),
+          status TEXT NOT NULL CHECK (status IN ('pending', 'dispatching', 'admitted', 'uncertain', 'abandoned')),
           attempt_id TEXT,
           dispatch_id TEXT,
           accepted_at TEXT,
@@ -213,74 +247,66 @@ describe("Managed Chat Inbox", () => {
             (status = 'pending' AND attempt_id IS NULL AND dispatch_id IS NULL AND accepted_at IS NULL AND reason IS NULL)
             OR (status = 'dispatching' AND attempt_id IS NOT NULL AND dispatch_id IS NULL AND accepted_at IS NULL AND reason IS NULL)
             OR (status = 'admitted' AND attempt_id IS NOT NULL AND dispatch_id IS NOT NULL AND accepted_at IS NOT NULL AND reason IS NULL)
-            OR (status = 'uncertain' AND attempt_id IS NOT NULL AND dispatch_id IS NULL AND accepted_at IS NULL AND reason IS NOT NULL)
+            OR (status IN ('uncertain', 'abandoned') AND attempt_id IS NOT NULL AND dispatch_id IS NULL AND accepted_at IS NULL AND reason IS NOT NULL)
           )
-        );
-        INSERT INTO managed_chat_admissions SELECT * FROM managed_chat_admissions_new;
+        ) STRICT;
         DROP TABLE managed_chat_admissions_new;
+        INSERT INTO managed_chat_admissions (window_id, status, attempt_id, dispatch_id, accepted_at, reason, updated_at_ms) VALUES
+          ('legacy-1', 'pending', NULL, NULL, NULL, NULL, 1),
+          ('legacy-2', 'dispatching', 'attempt-2', NULL, NULL, NULL, 2),
+          ('legacy-3', 'admitted', 'attempt-3', 'dispatch-3', '2026-07-14T00:00:00.000Z', NULL, 3),
+          ('legacy-4', 'uncertain', 'attempt-4', NULL, NULL, 'provider outcome unknown', 4),
+          ('legacy-5', 'abandoned', 'attempt-5', NULL, NULL, 'operator abandoned this Window', 5);
+        CREATE TABLE managed_chat_admission_resolutions (window_id TEXT PRIMARY KEY);
+        CREATE TABLE managed_chat_admission_examinations (window_id TEXT PRIMARY KEY);
       `),
     );
     archive.close();
 
     const reopenedArchive = createConversationArchive(path);
     const reopened = createManagedChatInbox(reopenedArchive, { allowed: () => true });
-    expect(reopened.admission("pre-operator-window")).toEqual({
-      status: "pending",
-      windowId: "pre-operator-window",
-    });
+    expect(reopened.admissions()).toEqual([
+      { status: "pending", windowId: "legacy-1" },
+      { status: "pending", windowId: "legacy-2" },
+      {
+        status: "done",
+        windowId: "legacy-3",
+        dispatchId: "dispatch-3",
+        acceptedAt: "2026-07-14T00:00:00.000Z",
+      },
+      { status: "pending", windowId: "legacy-4" },
+      { status: "failed", windowId: "legacy-5", reason: "operator abandoned this Window" },
+    ]);
+    expect(reopened.pendingWindows().map(({ id }) => id)).toEqual(["legacy-1", "legacy-2", "legacy-4"]);
     reopenedArchive.transaction(({ database }) => {
       const sql = database
         .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'managed_chat_admissions'")
         .get() as { readonly sql: string };
-      expect(sql.sql).toContain("'abandoned'");
-      expect(
-        database
-          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'managed_chat_admission_resolutions'")
-          .get(),
-      ).toBeDefined();
+      expect(sql.sql).not.toContain("uncertain");
+      expect(sql.sql).not.toContain("dispatching");
+      expect(sql.sql).not.toContain("abandoned");
+      for (const table of ["managed_chat_admission_resolutions", "managed_chat_admission_examinations"]) {
+        expect(
+          database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+        ).toBeUndefined();
+      }
     });
     reopenedArchive.close();
   });
 
-  it("keeps later same-chat arrivals behind an Uncertain Window across restart", () => {
+  it("counts pending and failed batches read-only for status", () => {
     const path = fixture();
+    expect(inspectWindowDeliveryCounts(path)).toEqual({ pending: 0, failed: 0 });
     const archive = createConversationArchive(path);
-    const inbox = createManagedChatInbox(archive, {
-      allowed: () => true,
-      createId: () => "uncertain-window",
-      createAttemptId: () => "uncertain-attempt",
-    });
+    let nextWindow = 0;
+    const inbox = createManagedChatInbox(archive, { allowed: () => true, createId: () => `window-${++nextWindow}` });
     inbox.recorder.append(conversationArrival(message("m1")));
-    const window = inbox.createWindow({
-      chatId: "managed@g.us",
-      messages: inbox.unwindowed(),
-      reason: "debounce",
-    });
-    const attempt = inbox.beginAdmission(window.id);
-    inbox.markUncertain(window.id, attempt.attemptId, "provider outcome unknown");
+    inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
     inbox.recorder.append(conversationArrival(message("m2")));
-    expect(inbox.unwindowed()).toEqual([]);
-    expect(inbox.pendingArrival("managed@g.us", "m2")).toBeUndefined();
+    const failing = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    inbox.markFailed(failing.id, "dispatch failed after bounded retries");
     archive.close();
 
-    const reopenedArchive = createConversationArchive(path);
-    const reopened = createManagedChatInbox(reopenedArchive, { allowed: () => true });
-    expect(reopened.unwindowed()).toEqual([]);
-    expect(reopened.pendingArrival("managed@g.us", "m2")).toBeUndefined();
-    expect(reopened.pendingWindows()).toEqual([]);
-
-    reopened.reconcileAdmission(window.id, {
-      dispatchId: "dispatch-observed",
-      acceptedAt: "2026-07-15T01:10:00.000Z",
-    });
-    expect(reopened.unwindowed()).toEqual([]);
-    expect(reopened.pendingArrival("managed@g.us", "m2")).toBeUndefined();
-    reopenedArchive.close();
-
-    const resumedArchive = createConversationArchive(path);
-    const resumed = createManagedChatInbox(resumedArchive, { allowed: () => true });
-    expect(resumed.unwindowed().map(({ id }) => id)).toEqual(["m2"]);
-    expect(resumed.pendingArrival("managed@g.us", "m2")?.id).toBe("m2");
-    resumedArchive.close();
+    expect(inspectWindowDeliveryCounts(path)).toEqual({ pending: 1, failed: 1 });
   });
 });

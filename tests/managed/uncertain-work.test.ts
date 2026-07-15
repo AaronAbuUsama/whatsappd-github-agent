@@ -10,11 +10,7 @@ import {
 } from "../../src/capabilities/issue-management/operation-store.ts";
 import { createFakeIssueRepository } from "../../src/host/fake-issue-repository.ts";
 import { commentProviderBody, issueOperationMarker, issueProviderBody } from "../../src/host/issue-operation-footer.ts";
-import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
-import { conversationArrival } from "../../src/intake/conversation-event.ts";
-import { createManagedChatAdmissionOperator, createManagedChatInbox } from "../../src/intake/managed-chat-inbox.ts";
 import { createUncertainWorkController, inspectUncertainWorkStatus } from "../../src/managed/uncertain-work.ts";
-import type { IncomingMessage } from "whatsappd";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -25,34 +21,6 @@ const fixture = (): string => {
   const root = mkdtempSync(join(tmpdir(), "ambient-uncertain-work-"));
   roots.push(root);
   return join(root, "application.sqlite");
-};
-
-const message = (id: string, chatId = "managed@g.us"): IncomingMessage =>
-  ({
-    id,
-    chatId,
-    from: "15551112222@s.whatsapp.net",
-    fromMe: false,
-    timestamp: 1,
-    live: true,
-    isGroup: true,
-    kind: "text",
-    text: "private report content",
-    reply: async () => ({ id: "reply", chatId: "managed@g.us", fromMe: true }),
-  }) as IncomingMessage;
-
-const seedUncertainAdmission = (path: string, windowId: string, attemptId: string, chatId = "managed@g.us"): void => {
-  const archive = createConversationArchive(path);
-  const inbox = createManagedChatInbox(archive, {
-    allowed: () => true,
-    createId: () => windowId,
-    createAttemptId: () => attemptId,
-  });
-  inbox.recorder.append(conversationArrival(message(`message-${windowId}`, chatId)));
-  const window = inbox.createWindow({ chatId, messages: inbox.unwindowed(), reason: "debounce" });
-  const attempt = inbox.beginAdmission(window.id);
-  inbox.markUncertain(window.id, attempt.attemptId, "private provider failure detail");
-  archive.close();
 };
 
 const seedUncertainOperation = (
@@ -75,8 +43,6 @@ const seedUncertainOperation = (
 describe("Uncertain work operator boundary", () => {
   it("diagnoses every external mutation kind with reads only and separates attributable from observed success", async () => {
     const path = fixture();
-    seedUncertainAdmission(path, "window-uncertain", "attempt-uncertain");
-    const admissions = createManagedChatAdmissionOperator(path);
     const operations = createIssueOperationStore(path);
     const repository = createFakeIssueRepository();
     const ref = { owner: "acme", repo: "widgets" } as const;
@@ -153,17 +119,14 @@ describe("Uncertain work operator boundary", () => {
     });
 
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: { find: async () => undefined },
       repository,
       now: () => new Date("2026-07-15T02:00:00.000Z"),
     });
     expect(controller.status()).toEqual({
       health: "degraded",
-      admissions: 1,
       externalMutations: 6,
-      total: 7,
+      total: 6,
       mutationKinds: {
         "create-issue": 1,
         "update-issue": 1,
@@ -177,7 +140,6 @@ describe("Uncertain work operator boundary", () => {
     const report = await controller.diagnose();
     expect(report.diagnoses).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ ref: "admission:window-uncertain", outcome: "unresolved" }),
         expect.objectContaining({
           ref: "mutation:create-issue",
           outcome: "reconciled",
@@ -212,19 +174,17 @@ describe("Uncertain work operator boundary", () => {
         ),
     ).toBe(false);
     expect(JSON.stringify(report)).not.toContain("private");
-    expect(report.after).toMatchObject({ admissions: 1, externalMutations: 3, total: 4 });
+    expect(report.after).toMatchObject({ externalMutations: 3, total: 3 });
 
     await expect(controller.acceptObserved("mutation:update-issue")).resolves.toMatchObject({ outcome: "accepted" });
     await expect(controller.acceptObserved("mutation:delete-comment")).resolves.toMatchObject({ outcome: "accepted" });
     await expect(controller.acceptObserved("mutation:set-state")).resolves.toMatchObject({ outcome: "accepted" });
-    expect(controller.status()).toMatchObject({ admissions: 1, externalMutations: 0, total: 1 });
+    expect(controller.status()).toMatchObject({ health: "healthy", externalMutations: 0, total: 0 });
     controller.close();
   });
 
   it("requires an explicit retry, creates a replacement identity, and preserves the prior audit record", async () => {
     const path = fixture();
-    seedUncertainAdmission(path, "window-retry", "attempt-before-retry");
-    const admissions = createManagedChatAdmissionOperator(path);
     const operations = createIssueOperationStore(path);
     const repository = createFakeIssueRepository();
     const issue = repository.seed({ repository: { owner: "acme", repo: "widgets" }, title: "Issue", body: "Body" });
@@ -235,9 +195,7 @@ describe("Uncertain work operator boundary", () => {
       target: { body: "Retry this exact comment" },
     });
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: { find: async () => undefined },
       repository,
       createOperationId: () => "comment-after-retry",
       now: () => new Date("2026-07-15T03:00:00.000Z"),
@@ -259,67 +217,28 @@ describe("Uncertain work operator boundary", () => {
       replacementOperationId: "comment-after-retry",
     });
     expect(operations.get("comment-after-retry")).toMatchObject({ status: "completed" });
-
-    await expect(controller.retry("admission:window-retry")).resolves.toEqual({
-      ref: "admission:window-retry",
-      outcome: "retry-authorized",
-    });
-    expect(admissions.resolutions("window-retry")).toEqual([
-      {
-        windowId: "window-retry",
-        attemptId: "attempt-before-retry",
-        resolution: "retried",
-        operatorReason: "Operator explicitly authorized retry",
-        resolvedAt: "2026-07-15T03:00:00.000Z",
-      },
-    ]);
     expect(controller.status()).toMatchObject({ health: "healthy", total: 0 });
     controller.close();
   });
 
-  it("reconciles an Uncertain admission only from a canonical Flue receipt", async () => {
-    const path = fixture();
-    seedUncertainAdmission(path, "window-reconciled", "attempt-reconciled");
-    const admissions = createManagedChatAdmissionOperator(path);
-    const operations = createIssueOperationStore(path);
+  it("rejects the retired admission:<windowId> ref form", async () => {
+    const operations = createIssueOperationStore(fixture());
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: {
-        find: async (window) =>
-          window.id === "window-reconciled"
-            ? { dispatchId: "dispatch-canonical", acceptedAt: "2026-07-15T03:30:00.000Z" }
-            : undefined,
-      },
       repository: createFakeIssueRepository(),
-      now: () => new Date("2026-07-15T03:31:00.000Z"),
     });
 
-    await expect(controller.diagnose()).resolves.toMatchObject({
-      diagnoses: [
-        {
-          ref: "admission:window-reconciled",
-          category: "admission",
-          outcome: "reconciled",
-          evidence: "canonical-admission-receipt",
-        },
-      ],
-      after: { health: "healthy", total: 0 },
-    });
-    expect(admissions.resolutions("window-reconciled")).toEqual([
-      expect.objectContaining({
-        attemptId: "attempt-reconciled",
-        resolution: "reconciled",
-        operatorReason: "Canonical Flue admission receipt observed",
-      }),
-    ]);
+    await expect(controller.retry("admission:window-1" as never)).rejects.toThrow(
+      "Uncertain work must be identified as mutation:<operationId>.",
+    );
+    expect(() => controller.abandon("admission:window-1" as never)).toThrow(
+      "Uncertain work must be identified as mutation:<operationId>.",
+    );
     controller.close();
   });
 
-  it("abandons an unresolved admission without deleting its attempt audit", () => {
+  it("abandons an unresolved mutation without deleting its audit", () => {
     const path = fixture();
-    seedUncertainAdmission(path, "window-abandon", "attempt-abandon");
-    const admissions = createManagedChatAdmissionOperator(path);
     const operations = createIssueOperationStore(path);
     seedUncertainOperation(operations, {
       operationId: "mutation-abandon",
@@ -328,21 +247,11 @@ describe("Uncertain work operator boundary", () => {
       target: { commentId: 9 },
     });
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: { find: async () => undefined },
       repository: createFakeIssueRepository(),
       now: () => new Date("2026-07-15T04:00:00.000Z"),
     });
 
-    expect(controller.abandon("admission:window-abandon")).toMatchObject({ outcome: "abandoned" });
-    expect(admissions.resolutions("window-abandon")).toEqual([
-      expect.objectContaining({
-        attemptId: "attempt-abandon",
-        resolution: "abandoned",
-        operatorReason: "Operator explicitly abandoned unresolved work",
-      }),
-    ]);
     expect(controller.abandon("mutation:mutation-abandon")).toMatchObject({ outcome: "abandoned" });
     expect(operations.get("mutation-abandon")).toMatchObject({
       status: "abandoned",
@@ -352,19 +261,8 @@ describe("Uncertain work operator boundary", () => {
     controller.close();
   });
 
-  it("reports stopped in-flight work as degraded and promotes orphan mutations before diagnosis", async () => {
+  it("reports stopped in-flight mutations as degraded and promotes orphans before diagnosis", async () => {
     const path = fixture();
-    const archive = createConversationArchive(path);
-    const inbox = createManagedChatInbox(archive, {
-      allowed: () => true,
-      createId: () => "dispatching-window",
-      createAttemptId: () => "dispatching-attempt",
-    });
-    inbox.recorder.append(conversationArrival(message("dispatching-message")));
-    const window = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
-    inbox.beginAdmission(window.id);
-    archive.close();
-
     const interrupted = createIssueOperationStore(path);
     interrupted.begin({
       operationId: "attempting-operation",
@@ -377,26 +275,17 @@ describe("Uncertain work operator boundary", () => {
 
     expect(inspectUncertainWorkStatus(path)).toMatchObject({
       health: "degraded",
-      admissions: 1,
       externalMutations: 1,
-      total: 2,
+      total: 1,
     });
 
-    const reopenedArchive = createConversationArchive(path);
-    createManagedChatInbox(reopenedArchive, { allowed: () => false });
-    reopenedArchive.close();
     const operations = createIssueOperationStore(path);
     expect(operations.get("attempting-operation")).toMatchObject({
       status: "uncertain",
       error: "Process restarted after the provider mutation began",
     });
     const repository = createFakeIssueRepository();
-    const controller = createUncertainWorkController({
-      admissions: createManagedChatAdmissionOperator(path),
-      operations,
-      admissionEvidence: { find: async () => undefined },
-      repository,
-    });
+    const controller = createUncertainWorkController({ operations, repository });
     await controller.diagnose();
     expect(repository.events().some((event) => event.kind === "create")).toBe(false);
     controller.close();
@@ -404,8 +293,6 @@ describe("Uncertain work operator boundary", () => {
 
   it("keeps a successful retry Uncertain when only local completion persistence fails", async () => {
     const path = fixture();
-    seedUncertainAdmission(path, "window-settlement", "attempt-settlement");
-    const admissions = createManagedChatAdmissionOperator(path);
     const persisted = createIssueOperationStore(path);
     const repository = createFakeIssueRepository();
     const issue = repository.seed({ repository: { owner: "acme", repo: "widgets" }, title: "Issue", body: "Body" });
@@ -422,9 +309,7 @@ describe("Uncertain work operator boundary", () => {
       },
     };
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: { find: async () => undefined },
       repository,
       createOperationId: () => "comment-after-settlement-failure",
       now: () => new Date("2026-07-15T06:00:00.000Z"),
@@ -450,12 +335,16 @@ describe("Uncertain work operator boundary", () => {
 
   it("retries a validated empty issue body and rotates bounded diagnosis fairly", async () => {
     const path = fixture();
-    for (let index = 0; index < 30; index += 1) {
-      seedUncertainAdmission(path, `window-fair-${index}`, `attempt-fair-${index}`, `chat-fair-${index}@g.us`);
-    }
-    const admissions = createManagedChatAdmissionOperator(path);
     const operations = createIssueOperationStore(path);
     const repository = createFakeIssueRepository();
+    for (let index = 0; index < 30; index += 1) {
+      seedUncertainOperation(operations, {
+        operationId: `mutation-fair-${index}`,
+        kind: "delete-comment",
+        issueNumber: 1,
+        target: { commentId: 1_000 + index },
+      });
+    }
     const issue = repository.seed({ repository: { owner: "acme", repo: "widgets" }, title: "Clear body", body: "Old" });
     seedUncertainOperation(operations, {
       operationId: "clear-body",
@@ -464,9 +353,7 @@ describe("Uncertain work operator boundary", () => {
       target: { body: "" },
     });
     const controller = createUncertainWorkController({
-      admissions,
       operations,
-      admissionEvidence: { find: async () => undefined },
       repository,
       createOperationId: () => "clear-body-retry",
       now: () => new Date("2026-07-15T07:00:00.000Z"),
@@ -475,12 +362,9 @@ describe("Uncertain work operator boundary", () => {
     const first = await controller.diagnose();
     expect(first.examined).toBe(25);
     expect(first.deferred).toBe(6);
-    expect(first.diagnoses).toContainEqual(expect.objectContaining({ ref: "mutation:clear-body" }));
-    const firstAdmissions = new Set(
-      first.diagnoses.filter((item) => item.category === "admission").map((item) => item.ref),
-    );
+    const firstRefs = new Set(first.diagnoses.map((item) => item.ref));
     const second = await controller.diagnose();
-    expect(second.diagnoses.some((item) => item.category === "admission" && !firstAdmissions.has(item.ref))).toBe(true);
+    expect(second.diagnoses.some((item) => !firstRefs.has(item.ref))).toBe(true);
 
     await expect(controller.retry("mutation:clear-body")).resolves.toMatchObject({ outcome: "retried" });
     await expect(

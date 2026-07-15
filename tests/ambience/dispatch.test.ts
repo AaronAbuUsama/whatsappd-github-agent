@@ -43,20 +43,14 @@ const awaitRef = <A>(ref: Ref.Ref<A>, predicate: (value: A) => boolean) =>
 describe("production Coalescer-to-Ambience dispatch", () => {
   it("dispatches one complete coalesced window to the continuing instance identified by chatId", async () => {
     const admissions = new Map<string, WindowAdmission>();
-    let attemptSequence = 0;
     const inbox = {
-      beginAdmission: (windowId: string) => {
-        const admission = { status: "dispatching" as const, windowId, attemptId: `attempt-${++attemptSequence}` };
-        admissions.set(windowId, admission);
-        return admission;
+      markDone: (windowId: string, receipt: { dispatchId: string; acceptedAt: string }) => {
+        admissions.set(windowId, { status: "done", windowId, ...receipt });
       },
-      markAdmitted: (windowId: string, _attemptId: string, receipt: { dispatchId: string; acceptedAt: string }) => {
-        admissions.set(windowId, { status: "admitted", windowId, ...receipt });
+      markFailed: (windowId: string, reason: string) => {
+        admissions.set(windowId, { status: "failed", windowId, reason });
       },
-      markUncertain: (windowId: string, attemptId: string, reason: string) => {
-        admissions.set(windowId, { status: "uncertain", windowId, attemptId, reason });
-      },
-    } as ManagedChatInbox;
+    } as unknown as ManagedChatInbox;
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -100,7 +94,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
             },
           ]);
           expect(admissions.get("window-1")).toEqual({
-            status: "admitted",
+            status: "done",
             windowId: "window-1",
             dispatchId: "dispatch-27",
             acceptedAt: "2026-07-13T00:00:00.000Z",

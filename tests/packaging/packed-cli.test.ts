@@ -314,7 +314,6 @@ describe("packed ambient-agent executable", () => {
     const sourceInbox = createManagedChatInbox(sourceArchive, {
       allowed: () => true,
       createId: () => "backup-terminal-window",
-      createAttemptId: () => "backup-terminal-attempt",
       now: () => 58_000,
     });
     const arrival = (id: string, text: string, timestamp: number): InboundMessage =>
@@ -336,8 +335,7 @@ describe("packed ambient-agent executable", () => {
       messages: sourceInbox.unwindowed(),
       reason: "debounce",
     });
-    const terminalAttempt = sourceInbox.beginAdmission(terminalWindow.id);
-    sourceInbox.markAdmitted(terminalWindow.id, terminalAttempt.attemptId, {
+    sourceInbox.markDone(terminalWindow.id, {
       dispatchId: "backup-terminal-dispatch",
       acceptedAt: "2026-07-15T08:58:00.000Z",
     });
@@ -430,7 +428,7 @@ describe("packed ambient-agent executable", () => {
         `)
         .get(),
     ).toEqual({
-      status: "admitted",
+      status: "done",
       window_id: "backup-terminal-window",
       dispatch_id: "backup-terminal-dispatch",
       accepted_at: "2026-07-15T08:58:00.000Z",
@@ -479,9 +477,9 @@ describe("packed ambient-agent executable", () => {
       "AFTER_RESTORE_58",
     ]);
     expect(restoredInbox.unwindowed()).toEqual([]);
-    expect(restoredInbox.admissions("admitted")).toHaveLength(3);
-    expect(restoredInbox.admissions("admitted")).toContainEqual({
-      status: "admitted",
+    expect(restoredInbox.admissions("done")).toHaveLength(3);
+    expect(restoredInbox.admissions("done")).toContainEqual({
+      status: "done",
       windowId: "backup-terminal-window",
       dispatchId: "backup-terminal-dispatch",
       acceptedAt: "2026-07-15T08:58:00.000Z",

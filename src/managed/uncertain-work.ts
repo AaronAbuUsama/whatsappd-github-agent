@@ -15,23 +15,18 @@ import type {
   IssueOperationRecord,
   IssueOperationStore,
 } from "../capabilities/issue-management/operation-store.js";
-import type { ConversationWindow } from "../coalescer/events.js";
-import type { AdmissionEvidenceSource } from "../intake/admission-relay.js";
-import type { ManagedChatAdmissionOperator, UncertainAdmissionRecord } from "../intake/managed-chat-inbox.js";
 
-export type UncertainWorkRef = `admission:${string}` | `mutation:${string}`;
+/** Only GitHub mutations remain Uncertain work; Window delivery is at-least-once (ADR 0014). */
+export type UncertainWorkRef = `mutation:${string}`;
 
 export interface UncertainWorkStatus {
   readonly health: "healthy" | "degraded";
-  readonly admissions: number;
   readonly externalMutations: number;
   readonly total: number;
   readonly mutationKinds: Readonly<Partial<Record<IssueOperationKind, number>>>;
 }
 
 export type UncertainEvidence =
-  | "canonical-admission-receipt"
-  | "no-canonical-admission-receipt"
   | "operation-identity"
   | "desired-state-only"
   | "no-attributable-evidence"
@@ -40,7 +35,6 @@ export type UncertainEvidence =
 
 export interface UncertainDiagnosis {
   readonly ref: UncertainWorkRef;
-  readonly category: "admission" | "external-mutation";
   readonly kind?: IssueOperationKind;
   readonly outcome: "reconciled" | "observed" | "unresolved" | "error";
   readonly evidence: UncertainEvidence;
@@ -56,7 +50,7 @@ export interface UncertainDoctorReport {
 
 export interface UncertainActionResult {
   readonly ref: UncertainWorkRef;
-  readonly outcome: "reconciled" | "accepted" | "retry-authorized" | "retried" | "abandoned" | "uncertain" | "failed";
+  readonly outcome: "reconciled" | "accepted" | "retried" | "abandoned" | "uncertain" | "failed";
   readonly replacementRef?: UncertainWorkRef;
 }
 
@@ -70,9 +64,7 @@ export interface UncertainWorkController {
 }
 
 export interface UncertainWorkControllerOptions {
-  readonly admissions: ManagedChatAdmissionOperator;
   readonly operations: IssueOperationStore;
-  readonly admissionEvidence: AdmissionEvidenceSource;
   readonly repository: IssueRepository;
   readonly createOperationId?: () => string;
   readonly now?: () => Date;
@@ -80,27 +72,15 @@ export interface UncertainWorkControllerOptions {
 
 export const inspectUncertainWorkStatus = (databasePath: string): UncertainWorkStatus => {
   if (!existsSync(databasePath)) {
-    return { health: "healthy", admissions: 0, externalMutations: 0, total: 0, mutationKinds: {} };
+    return { health: "healthy", externalMutations: 0, total: 0, mutationKinds: {} };
   }
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
-    const tableExists = (name: string): boolean =>
-      database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
-    const admissions = tableExists("managed_chat_admissions")
-      ? Number(
-          (
-            database
-              .prepare(
-                "SELECT COUNT(*) AS count FROM managed_chat_admissions WHERE status IN ('uncertain', 'dispatching')",
-              )
-              .get() as {
-              readonly count: number;
-            }
-          ).count,
-        )
-      : 0;
     const mutationKinds: Partial<Record<IssueOperationKind, number>> = {};
-    if (tableExists("github_issue_operations")) {
+    const tableExists =
+      database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'github_issue_operations'").get() !==
+      undefined;
+    if (tableExists) {
       const rows = database
         .prepare(
           "SELECT kind, COUNT(*) AS count FROM github_issue_operations WHERE status IN ('uncertain', 'attempting') GROUP BY kind",
@@ -109,12 +89,10 @@ export const inspectUncertainWorkStatus = (databasePath: string): UncertainWorkS
       for (const row of rows) mutationKinds[row.kind] = Number(row.count);
     }
     const externalMutations = Object.values(mutationKinds).reduce((total, count) => total + (count ?? 0), 0);
-    const total = admissions + externalMutations;
     return {
-      health: total === 0 ? "healthy" : "degraded",
-      admissions,
+      health: externalMutations === 0 ? "healthy" : "degraded",
       externalMutations,
-      total,
+      total: externalMutations,
       mutationKinds,
     };
   } finally {
@@ -123,16 +101,15 @@ export const inspectUncertainWorkStatus = (databasePath: string): UncertainWorkS
 };
 
 const operationRef = (operationId: string): UncertainWorkRef => `mutation:${operationId}`;
-const admissionRef = (windowId: string): UncertainWorkRef => `admission:${windowId}`;
 
-const parseRef = (ref: UncertainWorkRef): { readonly category: "admission" | "mutation"; readonly id: string } => {
+const parseRef = (ref: UncertainWorkRef): string => {
   const separator = ref.indexOf(":");
   const category = ref.slice(0, separator);
   const id = ref.slice(separator + 1).trim();
-  if (!id || (category !== "admission" && category !== "mutation")) {
-    throw new Error("Uncertain work must be identified as admission:<windowId> or mutation:<operationId>.");
+  if (!id || category !== "mutation") {
+    throw new Error("Uncertain work must be identified as mutation:<operationId>.");
   }
-  return { category, id };
+  return id;
 };
 
 const repositoryRef = (value: string): RepositoryRef => {
@@ -212,38 +189,15 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
   const now = options.now ?? (() => new Date());
   const createOperationId = options.createOperationId ?? randomUUID;
   const currentStatus = (): UncertainWorkStatus => {
-    const admissions = options.admissions.uncertain().length;
     const uncertain = options.operations.list().filter((operation) => operation.status === "uncertain");
     const mutationKinds: Partial<Record<IssueOperationKind, number>> = {};
     for (const operation of uncertain) mutationKinds[operation.kind] = (mutationKinds[operation.kind] ?? 0) + 1;
-    const total = admissions + uncertain.length;
     return {
-      health: total === 0 ? "healthy" : "degraded",
-      admissions,
+      health: uncertain.length === 0 ? "healthy" : "degraded",
       externalMutations: uncertain.length,
-      total,
+      total: uncertain.length,
       mutationKinds,
     };
-  };
-
-  const diagnoseAdmission = async (admission: UncertainAdmissionRecord): Promise<UncertainDiagnosis> => {
-    const ref = admissionRef(admission.windowId);
-    const window: ConversationWindow = {
-      id: admission.windowId,
-      chatId: admission.chatId,
-      reason: admission.windowReason,
-      messages: [],
-    };
-    try {
-      const receipt = await options.admissionEvidence.find(window);
-      if (receipt === undefined) {
-        return { ref, category: "admission", outcome: "unresolved", evidence: "no-canonical-admission-receipt" };
-      }
-      options.admissions.reconcile(admission.windowId, receipt, now().toISOString());
-      return { ref, category: "admission", outcome: "reconciled", evidence: "canonical-admission-receipt" };
-    } catch {
-      return { ref, category: "admission", outcome: "error", evidence: "provider-read-failed" };
-    }
   };
 
   const complete = (operation: IssueOperationRecord, issueNumber: number): UncertainDiagnosis => {
@@ -256,7 +210,6 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
     });
     return {
       ref: operationRef(operation.operationId),
-      category: "external-mutation",
       kind: operation.kind,
       outcome: "reconciled",
       evidence: "operation-identity",
@@ -269,7 +222,6 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
     evidence: UncertainEvidence,
   ): UncertainDiagnosis => ({
     ref: operationRef(operation.operationId),
-    category: "external-mutation",
     kind: operation.kind,
     outcome,
     evidence,
@@ -345,14 +297,9 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
   };
 
   const diagnoseRef = async (ref: UncertainWorkRef): Promise<UncertainDiagnosis> => {
-    const parsed = parseRef(ref);
-    if (parsed.category === "admission") {
-      const admission = options.admissions.uncertain().find((candidate) => candidate.windowId === parsed.id);
-      if (admission === undefined) throw new Error(`Admission ${parsed.id} is not Uncertain.`);
-      return await diagnoseAdmission(admission);
-    }
-    const operation = options.operations.get(parsed.id);
-    if (operation?.status !== "uncertain") throw new Error(`Issue operation ${parsed.id} is not Uncertain.`);
+    const operationId = parseRef(ref);
+    const operation = options.operations.get(operationId);
+    if (operation?.status !== "uncertain") throw new Error(`Issue operation ${operationId} is not Uncertain.`);
     return await diagnoseMutation(operation);
   };
 
@@ -524,24 +471,8 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
     status: currentStatus,
     diagnose: async () => {
       const before = currentStatus();
-      const allAdmissions = options.admissions.uncertain();
-      const allOperations = options.operations.uncertainForDiagnosis(MAX_DIAGNOSES_PER_RUN);
-      const bothKinds = allAdmissions.length > 0 && allOperations.length > 0;
-      const admissionFloor = bothKinds ? Math.ceil(MAX_DIAGNOSES_PER_RUN / 2) : MAX_DIAGNOSES_PER_RUN;
-      const operationFloor = bothKinds ? Math.floor(MAX_DIAGNOSES_PER_RUN / 2) : MAX_DIAGNOSES_PER_RUN;
-      const admissions = allAdmissions.slice(0, admissionFloor);
-      const operations = allOperations.slice(0, operationFloor);
-      let remaining = MAX_DIAGNOSES_PER_RUN - admissions.length - operations.length;
-      if (remaining > 0) {
-        admissions.push(...allAdmissions.slice(admissions.length, admissions.length + remaining));
-        remaining = MAX_DIAGNOSES_PER_RUN - admissions.length - operations.length;
-      }
-      if (remaining > 0) operations.push(...allOperations.slice(operations.length, operations.length + remaining));
+      const operations = options.operations.uncertainForDiagnosis(MAX_DIAGNOSES_PER_RUN);
       const diagnoses: UncertainDiagnosis[] = [];
-      for (const admission of admissions) {
-        options.admissions.markExamined(admission.windowId, admission.attemptId, now().toISOString());
-        diagnoses.push(await diagnoseAdmission(admission));
-      }
       for (const operation of operations) {
         options.operations.markExamined(operation.operationId, now().toISOString());
         diagnoses.push(await diagnoseMutation(operation));
@@ -555,46 +486,35 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
       };
     },
     retry: async (ref) => {
-      const parsed = parseRef(ref);
+      const operationId = parseRef(ref);
       const observed = await diagnoseRef(ref);
       if (observed.outcome === "reconciled") return { ref, outcome: "reconciled" };
       if (observed.outcome === "observed") {
         throw new Error(`Observed desired state for ${ref}; use --accept-observed or --abandon instead of retrying.`);
       }
-      if (parsed.category === "admission") {
-        options.admissions.retry(parsed.id, "Operator explicitly authorized retry", now().toISOString());
-        return { ref, outcome: "retry-authorized" };
-      }
-      const operation = options.operations.get(parsed.id)!;
+      const operation = options.operations.get(operationId)!;
       return await retryMutation(operation);
     },
     abandon: (ref) => {
-      const parsed = parseRef(ref);
-      if (parsed.category === "admission") {
-        options.admissions.abandon(parsed.id, "Operator explicitly abandoned unresolved work", now().toISOString());
-      } else {
-        options.operations.resolveUncertain({
-          operationId: parsed.id,
-          status: "abandoned",
-          resolution: "abandoned",
-          settledAt: now().toISOString(),
-        });
-      }
+      const operationId = parseRef(ref);
+      options.operations.resolveUncertain({
+        operationId,
+        status: "abandoned",
+        resolution: "abandoned",
+        settledAt: now().toISOString(),
+      });
       return { ref, outcome: "abandoned" };
     },
     acceptObserved: async (ref) => {
-      const parsed = parseRef(ref);
-      if (parsed.category !== "mutation") {
-        throw new Error("Admission success requires a canonical Flue receipt and cannot be accepted by observation.");
-      }
+      const operationId = parseRef(ref);
       const observed = await diagnoseRef(ref);
       if (observed.outcome === "reconciled") return { ref, outcome: "reconciled" };
       if (observed.outcome !== "observed") {
         throw new Error(`No desired-state observation is available for ${ref}.`);
       }
-      const operation = options.operations.get(parsed.id)!;
+      const operation = options.operations.get(operationId)!;
       options.operations.resolveUncertain({
-        operationId: parsed.id,
+        operationId,
         status: "completed",
         resolution: "accepted-observed",
         settledAt: now().toISOString(),
@@ -603,7 +523,6 @@ export const createUncertainWorkController = (options: UncertainWorkControllerOp
       return { ref, outcome: "accepted" };
     },
     close: () => {
-      options.admissions.close();
       options.operations.close();
     },
   };

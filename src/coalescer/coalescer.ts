@@ -31,12 +31,11 @@ type WindowDispatcherService = {
   readonly dispatch: (window: ConversationWindow) => Effect.Effect<void, unknown>;
 };
 
-const stopAfterDispatchError =
+const continueAfterDispatchError =
   (window: ConversationWindow) =>
-  (cause: unknown): Effect.Effect<never> =>
-    Effect.logError(`Ambience admission failed for ${window.chatId}; the chat is fail-stopped`).pipe(
+  (cause: unknown): Effect.Effect<void> =>
+    Effect.logError(`Ambience dispatch failed for ${window.chatId}; the batch settled and the chat continues`).pipe(
       Effect.annotateLogs({ cause: String(cause), windowId: window.id }),
-      Effect.andThen(Effect.never),
     );
 
 const stopAfterStoreError =
@@ -58,7 +57,7 @@ const fire = (dispatcher: WindowDispatcherService, window: ConversationWindow): 
     ? Effect.void
     : dispatcher
         .dispatch(window)
-        .pipe(Effect.catch(stopAfterDispatchError(window)), Effect.catchDefect(stopAfterDispatchError(window)));
+        .pipe(Effect.catch(continueAfterDispatchError(window)), Effect.catchDefect(continueAfterDispatchError(window)));
 
 /**
  * Build the per-chat actor loop for a given config + window dispatcher. Returns a function
@@ -151,11 +150,9 @@ export const run: Effect.Effect<
   const store = yield* WindowStore;
   const chatLoop = makeChatLoop(config, dispatcher, store);
   const registry = yield* Ref.make(HashMap.empty<string, Queue.Queue<IncomingMessage>>());
-  const blockedChats = yield* Ref.make<ReadonlySet<string>>(new Set());
 
   const routeTo = (msg: IncomingMessage): Effect.Effect<void, never, Scope.Scope> =>
     Effect.gen(function* () {
-      if ((yield* Ref.get(blockedChats)).has(msg.chatId)) return;
       const existing = HashMap.get(yield* Ref.get(registry), msg.chatId);
       if (Option.isSome(existing)) {
         yield* Queue.offer(existing.value, msg);
@@ -178,21 +175,11 @@ export const run: Effect.Effect<
     windowsByChat.set(window.chatId, windows);
   }
 
-  const blockReplay = (window: ConversationWindow, cause: unknown): Effect.Effect<void> =>
-    Effect.logError(`Ambience startup admission failed for ${window.chatId}; only that chat is fail-stopped`).pipe(
-      Effect.annotateLogs({ cause: String(cause), windowId: window.id }),
-      Effect.andThen(Ref.update(blockedChats, (current) => new Set(current).add(window.chatId))),
-    );
-
+  // A failed replay logs and the chat continues with its next Window (ADR 0014).
   const replayChat = (windows: readonly ConversationWindow[], index = 0): Effect.Effect<void> => {
     const window = windows[index];
     if (window === undefined) return Effect.void;
-    const dispatch = window.messages.length === 0 ? Effect.void : dispatcher.dispatch(window);
-    return dispatch.pipe(
-      Effect.andThen(replayChat(windows, index + 1)),
-      Effect.catch((cause) => blockReplay(window, cause)),
-      Effect.catchDefect((cause) => blockReplay(window, cause)),
-    );
+    return fire(dispatcher, window).pipe(Effect.andThen(replayChat(windows, index + 1)));
   };
 
   yield* Effect.forEach(windowsByChat.values(), (windows) => replayChat(windows), {
