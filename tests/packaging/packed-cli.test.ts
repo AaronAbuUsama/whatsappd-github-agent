@@ -22,7 +22,7 @@ const root = await mkdtemp(join(tmpdir(), "ambient-agent-packed-"));
 const packDirectory = join(root, "pack");
 const installDirectory = join(root, "install");
 const homeDirectory = join(root, "home");
-const tarball = join(packDirectory, "ambient-agent-0.1.0.tgz");
+let tarball: string;
 const executable = join(
   installDirectory,
   "node_modules",
@@ -141,12 +141,15 @@ beforeAll(async () => {
     mkdir(homeDirectory, { recursive: true }),
     copyFile(runtimeFixtureSource, runtimeFixture),
   ]);
-  await execute("npm", ["pack", "--pack-destination", packDirectory], {
+  const packed = await execute("npm", ["pack", "--pack-destination", packDirectory], {
     cwd: process.cwd(),
     env: environment,
     timeout: 120_000,
     maxBuffer: 4 * 1024 * 1024,
   });
+  const packedFilename = packed.stdout.trim().split(/\r?\n/).at(-1);
+  if (!packedFilename?.endsWith(".tgz")) throw new Error("npm pack did not report the generated tarball filename.");
+  tarball = join(packDirectory, packedFilename);
   await execute("pnpm", ["add", "--dir", installDirectory, "--ignore-scripts", tarball], {
     cwd: process.cwd(),
     env: environment,
