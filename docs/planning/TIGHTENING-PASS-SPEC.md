@@ -203,9 +203,13 @@ rejected alternatives live in the linked wayfinder tickets).
   probes in; Hono app out. Coalescer wiring stays in the WhatsApp host (production)
   and the fixture (tests) until the cut.
 - **Storage** — both reaction/receipt projection tables delete; the journal remains the
-  source of truth (ADR 0008). The legacy ATTACH cutover and the three env-config
-  loaders delete together (they interlock); the in-place status-vocabulary migration
-  stays.
+  source of truth (ADR 0008). Deletion path (PR-review finding): the installation
+  diagnostics require these tables as core schema and reject unknown tables, so the
+  tables first move to the optional-schema catalogue (the existing readable-until-
+  migration pattern), projection stops, and a one-way migration with a schema-version
+  bump drops them — keeping `status`/`doctor` green on upgraded installs. The legacy
+  ATTACH cutover and the three env-config loaders delete together (they interlock);
+  the in-place status-vocabulary migration stays.
 - **Bundle-safety** — the four unsafe module-level lets normalize to the existing
   Symbol.for-on-globalThis pattern.
 - **Split** — packages/{core,cli,server,test-support}; core imports nothing internal;

@@ -124,3 +124,14 @@ receipts excluded; updates extend-only (never immediate-fire, never count toward
 capacity) and MAY open a cold window that settles by debounce. Projection consequence:
 `conversation_reactions` deletes along with the ratified `conversation_receipts`
 delete — journal-only per ADR 0008. CLOSED.
+
+**Blast-radius addendum (PR #107 review, Codex P2 — verified):** the installation
+diagnostics treat both tables as REQUIRED core schema
+(`LEGACY_APPLICATION_CORE_SCHEMA`, `src/managed/diagnostics.ts:72-73`), and
+`applicationTableShapeCompatible()` (:111-118) fails in BOTH directions — dropping the
+tables fails the core `every(...)`; leaving them on disk while removing them from the
+catalogue fails the unknown-table `some(...)`. W-windows-everything therefore includes:
+move both tables to `LEGACY_APPLICATION_OPTIONAL_SCHEMA` (the existing
+pre-ADR-0014-audit-tables pattern, :79-81), stop projecting, and drop them in the
+one-way migration with the schema-version bump — otherwise `status`/`doctor` report
+upgraded installs as schema-incompatible.

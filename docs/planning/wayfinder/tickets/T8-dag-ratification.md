@@ -92,6 +92,9 @@ wants pulled forward/dropped.
 - `W-react-reply` — T5-O1: `say` gains `replyTo`, `react` sibling tool, fake-host events
 - `W-windows-everything` — T4-O1: coalescer event union, updates extend-only/may-open,
   receipts excluded; `conversation_reactions` + `conversation_receipts` tables delete
+  via optional-schema demotion + one-way migration with schema-version bump (the
+  diagnostics catalogue requires them as core and rejects unknown tables — PR #107
+  review finding, see T4 addendum)
 - `W-pr-ingress` — NEW (T1 axis 3): GitHub ingress routes PR events for captured
   issues back to the originating chat, so the agent can post the PR link
 
