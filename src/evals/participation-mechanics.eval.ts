@@ -20,6 +20,9 @@ describeEval(
       expect(result.output.whatsappEvents).toEqual([]);
       expect(result.output.githubEvents).toEqual([]);
       expect(result.output.githubOperations).toEqual([]);
+      expect(result.output.windowMessages).toEqual([
+        { id: expect.stringMatching(/^eval-window-/), text: "Beautiful sunset today." },
+      ]);
       recordRubricScore({
         axis: 1,
         metric: "axis_1_unsolicited_reply_rate",

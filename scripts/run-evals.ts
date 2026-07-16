@@ -123,6 +123,7 @@ const runFamily = async (family: EvalFamily): Promise<void> => {
     AMBIENCE_EVAL_LIVE_MODEL: live ? "true" : "false",
     AMBIENCE_FIXTURE_LIVE_MODEL: live ? "true" : "false",
     BRAINTRUST_EXPERIMENT_NAME: experimentName,
+    BRAINTRUST_TRACING: process.env.BRAINTRUST_API_KEY === undefined ? undefined : "1",
     FLUE_BASE_URL: baseUrl,
     GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET ?? "eval-fixture-only-secret",
   };

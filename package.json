@@ -42,15 +42,13 @@
     "start": "node dist/cli/main.js start",
     "whatsapp:dry-run": "tsx scripts/whatsapp-dry-run.ts",
     "lint": "vp lint .",
-    "tsc": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vp test run",
     "test:watch": "vp test",
     "version-packages": "changeset version",
     "evals": "tsx scripts/run-evals.ts both",
     "evals:deterministic": "tsx scripts/run-evals.ts deterministic",
-    "evals:live": "tsx scripts/run-evals.ts live",
-    "evals:json": "vitest run --config vitest.evals.config.ts --reporter=vitest-evals/reporter --reporter=json --outputFile.json=vitest-results.json"
+    "evals:live": "tsx scripts/run-evals.ts live"
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",

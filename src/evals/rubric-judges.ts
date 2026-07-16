@@ -63,6 +63,13 @@ const createAxisJudge = (definition: AxisDefinition) =>
           `${definition.name} received the faux responder. Start the fixture with AMBIENCE_FIXTURE_LIVE_MODEL=true.`,
         );
       }
+      const judgeInput =
+        context.input.window === undefined
+          ? context.input
+          : {
+              ...context.input,
+              window: { ...context.input.window, messages: context.output.windowMessages ?? [] },
+            };
       const judged = verdict(
         await context.runJudge({
           responseFormat: { type: "json" },
@@ -71,9 +78,10 @@ const createAxisJudge = (definition: AxisDefinition) =>
             "Quoted ratified criterion:",
             `> ${definition.criteria.replaceAll("\n", "\n> ")}`,
             "The application under test received the following input:",
-            JSON.stringify(context.input, null, 2),
+            JSON.stringify(judgeInput, null, 2),
             "Its normalized transcript and observable effects were:",
             JSON.stringify({ session: context.session, output: context.output, toolCalls: context.toolCalls }, null, 2),
+            "Grade only behavior observable within this supplied scenario. Do not penalize missing future user turns or later events that the fixture does not include; for elicitation, grade the quality of the questions shown.",
             "Grade against the exact skill-bundle text below. Do not reward behavior the skill does not authorize:",
             skillBundle,
           ].join("\n\n"),
@@ -86,7 +94,7 @@ const createAxisJudge = (definition: AxisDefinition) =>
         threshold: definition.threshold,
         score: judged.score,
         criteria: definition.criteria,
-        input: context.input,
+        input: judgeInput,
         output: { session: context.session, effects: context.output, toolCalls: context.toolCalls },
         rationale: judged.rationale,
         skillBundle,

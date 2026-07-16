@@ -59,6 +59,7 @@ export type FlueAgentEvalInput =
 export type FlueAgentEvalOutput = {
   text: string;
   instanceId: string;
+  windowMessages?: Array<{ id: string; text: string }>;
   whatsappEvents: JsonValue[];
   githubEvents: JsonValue[];
   githubOperations: JsonValue[];
@@ -131,8 +132,10 @@ const pollDelay = async (signal?: AbortSignal): Promise<void> => {
   });
 };
 
+// Keep fixture polling inside the 120-second Vitest eval timeout so failures surface from this harness first.
+const WINDOW_POLL_DEADLINE_MS = 110_000;
 const withinPollDeadline = (startedAt: number, description: string): void => {
-  if (performance.now() - startedAt > 110_000) throw new Error(`Timed out waiting for ${description}.`);
+  if (performance.now() - startedAt > WINDOW_POLL_DEADLINE_MS) throw new Error(`Timed out waiting for ${description}.`);
 };
 
 interface FixtureAdmission {
@@ -148,19 +151,20 @@ const submitWindow = async (
   instanceId: string,
   texts: string[],
   signal?: AbortSignal,
-): Promise<string> => {
+): Promise<{ dispatchId: string; messages: Array<{ id: string; text: string }> }> => {
   if (texts.length === 0) throw new Error("A coalesced eval Window requires at least one text.");
   const timestamp = Date.now();
-  for (const [index, text] of texts.entries()) {
+  const messages = texts.map((text, index) => ({ id: `eval-window-${crypto.randomUUID()}-${index}`, text }));
+  for (const [index, message] of messages.entries()) {
     await checkedFetch(`${baseUrl}/test/coalescer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        id: `eval-window-${crypto.randomUUID()}-${index}`,
+        id: message.id,
         chatId: instanceId,
         from: "alice@s.whatsapp.net",
         pushName: "Alice",
-        text,
+        text: message.text,
         timestamp: timestamp + index,
         isGroup: true,
         fromMe: false,
@@ -178,7 +182,9 @@ const submitWindow = async (
     ).json()) as FixtureAdmission[];
     const admission = admissions.at(-1);
     if (admission?.status === "failed") throw new Error(`Window admission failed: ${admission.reason ?? "unknown"}`);
-    if (admission?.status === "done" && admission.dispatchId !== undefined) return admission.dispatchId;
+    if (admission?.status === "done" && admission.dispatchId !== undefined) {
+      return { dispatchId: admission.dispatchId, messages };
+    }
     withinPollDeadline(startedAt, "the coalesced Window admission");
     await pollDelay(signal);
   }
@@ -289,6 +295,7 @@ export function createFlueAgentHarness(options: FlueAgentHarnessOptions) {
       let history: FlueConversationSnapshot;
       let submissionId: string | undefined;
       let dispatchId: string | undefined;
+      let windowMessages: Array<{ id: string; text: string }> | undefined;
       if (input.window === undefined) {
         const invocation = await client.agents.prompt(options.agentName, instanceId, {
           message: input.message,
@@ -298,7 +305,9 @@ export function createFlueAgentHarness(options: FlueAgentHarnessOptions) {
         submissionId = invocation.submissionId;
         history = await client.agents.history(options.agentName, instanceId, { signal });
       } else {
-        dispatchId = await submitWindow(baseUrl, instanceId, input.window.texts, signal);
+        const window = await submitWindow(baseUrl, instanceId, input.window.texts, signal);
+        dispatchId = window.dispatchId;
+        windowMessages = window.messages;
         const settled = await waitForWindowSettlement(baseUrl, dispatchId, signal);
         result = settled.result;
         history = await client.agents.history(options.agentName, instanceId, { signal });
@@ -327,6 +336,7 @@ export function createFlueAgentHarness(options: FlueAgentHarnessOptions) {
         output: {
           text: result.text,
           instanceId,
+          ...(windowMessages === undefined ? {} : { windowMessages }),
           whatsappEvents: await whatsappEvents,
           githubEvents: await githubEvents,
           githubOperations: toJsonValue(githubOperations) as JsonValue[],

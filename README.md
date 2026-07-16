@@ -312,7 +312,8 @@ fresh fixture processes and runs the exact faux-model mechanics first, followed 
 ```bash
 export AMBIENCE_FIXTURE_DATA_DIR=/path/to/initialized/non-production/data
 export BRAINTRUST_API_KEY=replace-with-a-non-production-key
-export BRAINTRUST_PROJECT_ID=replace-with-an-existing-project-id
+# Optional: choose an existing project by ID or name; the default name is "Flue".
+export BRAINTRUST_PROJECT_NAME="Ambient Agent Evals"
 pnpm evals
 ```
 
@@ -322,6 +323,10 @@ set intentionally to append to an existing experiment. `AMBIENCE_EVAL_PORT` can 
 fixture port. Braintrust traces and experiment records are content-bearing, so use a reviewed non-production project and
 credential. Live model checks are not substitutes for deterministic tests, and deterministic green checks are not
 presented as proof of real provider delivery.
+
+`pnpm evals` explicitly enables its own content-bearing Flue tracing when `BRAINTRUST_API_KEY` is present. A production
+app process does not trace from key presence alone: set `BRAINTRUST_TRACING=1` alongside the key only after reviewing the
+destination project and data policy.
 
 ### Releases
 

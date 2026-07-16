@@ -46,6 +46,20 @@ observe((event) => {
     ...(event.error === undefined ? {} : { error: event.error }),
   });
 });
+
+const parsedToolResult = (message: Context["messages"][number]): unknown => {
+  if (message.role !== "toolResult") return undefined;
+  const text = message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
+
 const respond = async (context: Context) => {
   const last = context.messages.at(-1);
   const serialized = JSON.stringify(last);
@@ -69,10 +83,14 @@ const respond = async (context: Context) => {
     if (serialized.includes("whatsapp_search")) {
       return fauxAssistantMessage("Private bound-history result retained without speaking.");
     }
-    if (serialized.includes("github_create_issue")) {
-      return fauxAssistantMessage(fauxToolCall("say", { text: "Filed https://github.com/acme/widgets/issues/1" }), {
-        stopReason: "toolUse",
-      });
+    if (last.toolName === "github_create_issue") {
+      const result = parsedToolResult(last) as { status?: unknown; issue?: { url?: unknown } } | undefined;
+      if ((result?.status === "created" || result?.status === "reconciled") && typeof result.issue?.url === "string") {
+        return fauxAssistantMessage(fauxToolCall("say", { text: `Filed ${result.issue.url}` }), {
+          stopReason: "toolUse",
+        });
+      }
+      return fauxAssistantMessage("Private non-filed Issue Management result retained without speaking.");
     }
     if (serialized.includes("github_update_issue")) {
       return fauxAssistantMessage(

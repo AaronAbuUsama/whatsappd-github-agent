@@ -140,6 +140,8 @@ describeEval(
       const create = toolCalls(result).filter((call) => call.name === "github_create_issue");
       expect(create).toHaveLength(1);
       expect(create[0]).toMatchObject({ status: "ok", result: { status: "duplicate" } });
+      expect(toolCalls(result).filter((call) => call.name === "say")).toEqual([]);
+      expect(result.output.whatsappEvents).toEqual([]);
       expect(result.output.githubEvents.map((event) => (event as { kind?: string }).kind)).toEqual(["search"]);
       expect(result.output.githubOperations).toEqual([]);
     });

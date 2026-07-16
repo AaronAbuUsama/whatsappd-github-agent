@@ -31,9 +31,19 @@ const braintrustExperiment = (): Experiment | undefined => {
 };
 
 export const recordRubricScore = (record: RubricScoreRecord): void => {
-  const metric = scores.get(record.metric) ?? {
+  const direction = record.direction ?? "minimum";
+  const existing = scores.get(record.metric);
+  if (existing !== undefined && existing.threshold !== record.threshold) {
+    throw new Error(
+      `Rubric metric ${record.metric} changed threshold from ${existing.threshold} to ${record.threshold}.`,
+    );
+  }
+  if (existing !== undefined && existing.direction !== direction) {
+    throw new Error(`Rubric metric ${record.metric} changed direction from ${existing.direction} to ${direction}.`);
+  }
+  const metric = existing ?? {
     threshold: record.threshold,
-    direction: record.direction ?? "minimum",
+    direction,
     values: [],
   };
   metric.values.push(record.score);
@@ -48,7 +58,7 @@ export const recordRubricScore = (record: RubricScoreRecord): void => {
       criteria: record.criteria,
       rationale: record.rationale,
       threshold: record.threshold,
-      direction: record.direction ?? "minimum",
+      direction,
       skillBundle: record.skillBundle,
     },
   });
