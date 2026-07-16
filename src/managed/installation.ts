@@ -392,7 +392,7 @@ const inspectSetupLock = async (root: string): Promise<readonly InstallationDiag
   ];
 };
 
-interface AcquiredSetupLock {
+export interface AcquiredSetupLock {
   readonly path: string;
   readonly stagingRoot: string;
 }
@@ -400,7 +400,7 @@ interface AcquiredSetupLock {
 const setupStagingPath = (root: string, token: string): string =>
   join(dirname(root), `.${basename(root)}.setup-${token}`);
 
-const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
+export const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
   const lockPath = setupLockPath(root);
   const token = randomUUID();
   const stagingRoot = setupStagingPath(root, token);
@@ -418,7 +418,7 @@ const acquireSetupLock = async (root: string): Promise<AcquiredSetupLock> => {
   }
 };
 
-const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
+export const releaseSetupLock = async (lock: AcquiredSetupLock): Promise<void> => {
   await rm(lock.path, { recursive: true, force: true });
 };
 

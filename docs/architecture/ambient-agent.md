@@ -193,7 +193,7 @@ After Flue returns its receipt, its file-backed persistence adapter owns queue o
 The published package and executable are both named `ambient-agent`. A normal installation needs no user-authored environment variables.
 
 ```text
-<managed-data-directory>/
+~/.ambient-agent/               # default on every platform (ADR 0015); --data-dir overrides
 ├── config.json                 # validated non-secret settings and secret references
 ├── credentials/
 │   ├── github.json             # fine-grained PAT, mode 0600
@@ -205,6 +205,11 @@ The published package and executable are both named `ambient-agent`. A normal in
 ```
 
 The directory is created with mode `0700`; credential files use mode `0600`.
+An installation at the former platform-native default (Application Support on
+macOS, XDG data home on Linux) is adopted once, atomically, at CLI entry before
+any component opens a database; the completed move is recorded in
+`application.sqlite`, and a machine with both directories present fails closed
+with both paths named (ADR 0015).
 `github.json` also holds an app-generated webhook signing secret so production
 startup does not depend on an operator-authored `.env` file. A one-time atomic
 migration adds it to older valid managed credentials without adopting any

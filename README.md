@@ -169,8 +169,11 @@ ambient-agent start
 supervision in a deployment.
 
 No model API key or application `.env` file is required. Ambient Agent owns its managed configuration and credentials.
-On macOS the default data directory is `~/Library/Application Support/ambient-agent`; on Linux it is
-`${XDG_DATA_HOME:-~/.local/share}/ambient-agent`. Override it with `--data-dir <absolute-path>`.
+The default data directory is `~/.ambient-agent` on every platform (ADR 0015). Override it with
+`--data-dir <absolute-path>`. An installation created at the former platform-native default
+(`~/Library/Application Support/ambient-agent` on macOS, `${XDG_DATA_HOME:-~/.local/share}/ambient-agent` on Linux)
+is adopted automatically and atomically on the first run; if both directories exist, the CLI fails closed and
+prints both paths.
 
 Useful lifecycle commands:
 
@@ -300,7 +303,7 @@ registry release:
 ```bash
 pnpm pack --pack-destination ./artifacts
 npm install --global ./artifacts/ambient-agent-*.tgz
-ambient-agent --data-dir "$HOME/Library/Application Support/ambient-agent-dev" init
+ambient-agent --data-dir "$HOME/.ambient-agent-dev" init
 ```
 
 Behavioral evaluations run through the same public Flue HTTP interface used by production:

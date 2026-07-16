@@ -16,6 +16,7 @@ import {
   writeManagedConfiguration,
 } from "../managed/configuration.js";
 import { inspectManagedServices, type ManagedCheck } from "../managed/diagnostics.js";
+import { migrateLegacyManagedData, type ManagedDataMigration } from "../managed/migration.js";
 import { managedPaths, type ManagedPaths } from "../managed/paths.js";
 import {
   probeAmbientRuntimeHealth,
@@ -86,6 +87,7 @@ export interface CliDependencies {
   readonly inspectUncertainWork?: (databasePath: string) => UncertainWorkStatus;
   readonly inspectWindowDeliveries?: (databasePath: string) => WindowDeliveryCounts;
   readonly runtimeHealthFor?: (paths: ManagedPaths) => Promise<AmbientRuntimeHealth>;
+  readonly migrateManagedData?: () => Promise<ManagedDataMigration>;
 }
 
 export interface RuntimeLoggingOptions {
@@ -672,6 +674,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .action(async (options) => {
       const global = program.opts();
       const current = await inspectManagedData({ dataDirectory: global.dataDir });
+      output.stdout(`Data directory: ${current.dataDirectory}\n`);
       if (current.state === "configured") {
         output.stdout(`Managed installation already configured at ${current.dataDirectory}; no files changed.\n`);
         return;
@@ -942,6 +945,17 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
 
   try {
     let args = [...argv];
+    const informational = args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-V");
+    const overridden = args.some((arg) => arg === "--data-dir" || arg.startsWith("--data-dir="));
+    if (!informational && !overridden) {
+      // ADR 0015: adopt a pre-existing platform-native installation before any
+      // component opens a database or credential file. --data-dir skips it.
+      const migration = await (dependencies.migrateManagedData ?? migrateLegacyManagedData)();
+      if (migration.migrated) {
+        // stderr keeps stdout clean for machine consumers of `status --json`.
+        output.stderr(`Moved managed data from ${migration.source} to ${migration.root}.\n`);
+      }
+    }
     const bare = bareDataDirectory(args);
     if (bare !== undefined) {
       const inspection = await inspectManagedData({ dataDirectory: bare.dataDirectory });

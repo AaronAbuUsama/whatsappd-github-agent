@@ -264,6 +264,66 @@ describe("packed ambient-agent executable", () => {
     }
   }, 60_000);
 
+  it("adopts a legacy platform-native installation into ~/.ambient-agent on first run", async () => {
+    if (process.platform === "win32") return;
+    const migrationHome = join(root, "migration-home");
+    const legacyData =
+      process.platform === "darwin"
+        ? join(migrationHome, "Library", "Application Support", "ambient-agent")
+        : join(migrationHome, ".local", "share", "ambient-agent");
+    const adoptedData = join(migrationHome, ".ambient-agent");
+    const migrationEnvironment = {
+      ...fixtureEnvironment,
+      HOME: migrationHome,
+      USERPROFILE: migrationHome,
+      XDG_DATA_HOME: join(migrationHome, ".local", "share"),
+    };
+    await mkdir(migrationHome, { recursive: true });
+    await executeAmbientAgent(
+      ["--data-dir", legacyData, "init", "--authorize", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      migrationEnvironment,
+    );
+
+    const migrated = await executeAmbientAgent(["status", "--json"], migrationEnvironment);
+    expect(migrated.stderr).toContain(`Moved managed data from ${legacyData} to ${adoptedData}.`);
+    expect(JSON.parse(migrated.stdout)).toMatchObject({
+      state: "configured",
+      dataDirectory: adoptedData,
+      modelAuthentication: { state: "ready" },
+    });
+    await expect(stat(legacyData)).rejects.toMatchObject({ code: "ENOENT" });
+    const adoptedPaths = managedPaths({ dataDirectory: adoptedData });
+    expect((await stat(adoptedData)).mode & 0o777).toBe(0o700);
+    expect((await stat(adoptedPaths.githubCredential)).mode & 0o777).toBe(0o600);
+    const record = new DatabaseSync(adoptedPaths.applicationDatabase, { readOnly: true });
+    expect(record.prepare("SELECT source FROM managed_root_migrations").all()).toEqual([{ source: legacyData }]);
+    record.close();
+
+    const settled = await executeAmbientAgent(["status", "--json"], migrationEnvironment);
+    expect(settled.stderr).not.toContain("Moved managed data");
+    expect(JSON.parse(settled.stdout)).toMatchObject({ state: "configured", dataDirectory: adoptedData });
+
+    const conflictedHome = join(root, "conflicted-home");
+    const conflictedLegacy =
+      process.platform === "darwin"
+        ? join(conflictedHome, "Library", "Application Support", "ambient-agent")
+        : join(conflictedHome, ".local", "share", "ambient-agent");
+    await mkdir(conflictedLegacy, { recursive: true, mode: 0o700 });
+    await mkdir(join(conflictedHome, ".ambient-agent"), { recursive: true, mode: 0o700 });
+    await expect(
+      executeAmbientAgent(["status"], {
+        ...migrationEnvironment,
+        HOME: conflictedHome,
+        USERPROFILE: conflictedHome,
+        XDG_DATA_HOME: join(conflictedHome, ".local", "share"),
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(conflictedLegacy),
+    });
+    await expect(stat(conflictedLegacy)).resolves.toBeDefined();
+  }, 60_000);
+
   // #87 regression. This proves, against the packed runtime on the real startup path: an
   // occupied configured port makes `ambient-agent start` exit nonzero with one actionable
   // message naming the port and the `config --port` remediation; the WhatsApp runtime never

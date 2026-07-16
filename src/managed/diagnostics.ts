@@ -95,6 +95,8 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
     ["operation_id", "kind", "repository", "status", "issue_number", "error", "started_at", "settled_at"],
   ],
   ["github_issue_operation_examinations", ["operation_id", "examined_at"]],
+  // ADR 0015: the one-time managed-root migration records its completed move here.
+  ["managed_root_migrations", ["source", "migrated_at"]],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;
 const LEGACY_APPLICATION_SCHEMA = new Map<string, readonly string[]>([
   ...LEGACY_APPLICATION_CORE_SCHEMA,
