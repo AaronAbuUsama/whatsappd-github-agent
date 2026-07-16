@@ -219,6 +219,17 @@ export const createManagedChatInbox = (
         ON managed_chat_inbox(chat_id, inbox_sequence);
     `);
     ensureAdmissionSchema(database);
+    // Windows predating the admission ledger have no row at all; backfill them
+    // as pending so startup re-dispatches them (ADR 0014 duplicate-wake).
+    database
+      .prepare(`
+        INSERT INTO managed_chat_admissions (window_id, status, updated_at_ms)
+        SELECT w.window_id, 'pending', ?
+          FROM managed_chat_windows w
+          LEFT JOIN managed_chat_admissions a ON a.window_id = w.window_id
+         WHERE a.window_id IS NULL
+      `)
+      .run(now());
   });
 
   const selectInbox = (database: DatabaseSync, where: string): readonly InboxEventRow[] =>

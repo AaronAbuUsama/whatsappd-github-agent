@@ -294,6 +294,36 @@ describe("Managed Chat Inbox", () => {
     reopenedArchive.close();
   });
 
+  it("backfills pending admissions for windows predating the ledger", () => {
+    const path = fixture();
+    const archive = createConversationArchive(path);
+    let nextWindow = 0;
+    const inbox = createManagedChatInbox(archive, {
+      allowed: () => true,
+      createId: () => `preledger-${++nextWindow}`,
+    });
+    for (const id of ["m1", "m2"]) {
+      inbox.recorder.append(conversationArrival(message(id)));
+      inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    }
+    archive.transaction(({ database }) =>
+      database.exec(`
+        DROP INDEX managed_chat_admissions_status_idx;
+        DROP TABLE managed_chat_admissions;
+      `),
+    );
+    archive.close();
+
+    const reopenedArchive = createConversationArchive(path);
+    const reopened = createManagedChatInbox(reopenedArchive, { allowed: () => true });
+    expect(reopened.admissions()).toEqual([
+      { status: "pending", windowId: "preledger-1" },
+      { status: "pending", windowId: "preledger-2" },
+    ]);
+    expect(reopened.pendingWindows().map(({ id }) => id)).toEqual(["preledger-1", "preledger-2"]);
+    reopenedArchive.close();
+  });
+
   it("counts pending and failed batches read-only for status", () => {
     const path = fixture();
     expect(inspectWindowDeliveryCounts(path)).toEqual({ pending: 0, failed: 0 });
