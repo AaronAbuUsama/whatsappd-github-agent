@@ -36,12 +36,10 @@ someone goes and does the thing.
 
 ## Open tickets (the frontier, in suggested order)
 
-- [T1 — Participation rubric ratification](tickets/T1-participation-rubric.md) — HITL grilling; the evals critical path
-- [T3 — AmbienceObserver seam](tickets/T3-ambience-observer.md) — O1 ratified; two sub-decisions open (silent-settle console visibility, typing span)
-- [T5 — React tool surface](tickets/T5-react-tool.md) — input schema + port shape
-- [T7 — Smoke canary](tickets/T7-smoke-canary.md) — which chat, what text
+- [T1 — Participation rubric ratification](tickets/T1-participation-rubric.md) — HITL grilling; the evals critical path (new axes from T5/T7: react-vs-reply preference, SMOKE carve-out)
+- [T5 — Outbound tool surface: react + reply-to](tickets/T5-react-tool.md) — broadened per Aaron; transport supports `SendOptions.quote` natively
 - [T2 — Harness window input + faux/live boundary](tickets/T2-harness-window-input.md) — blocked by T1
-- [T8 — Ratify the implementation DAG](tickets/T8-dag-ratification.md) — blocked by T1–T7; gates /to-spec → /to-tickets
+- [T8 — Ratify the implementation DAG](tickets/T8-dag-ratification.md) — blocked by T1, T2, T5; gates /to-spec → /to-tickets
 
 ## Decisions so far
 
@@ -50,6 +48,14 @@ someone goes and does the thing.
   receipts excluded; `conversation_reactions` deletes (journal-only).
 - [T6 — composeAmbience core surface](tickets/T6-compose-ambience.md) — O1: adapters-in →
   Hono-out, subsystems only; coalescer stack joins at the C5 cut.
+- [T3 — AmbienceObserver seam](tickets/T3-ambience-observer.md) — O1 named seam over
+  `observe()`; settledSilent renders on the default console; typing wraps sends only
+  (span-deliberation rejected; broken send-typing re-scoped as the B3 fix).
+  Implementation = review/align `codex/semantic-terminal-reporter` (f88e075), which
+  already builds the observe()-correlation core.
+- [T7 — Smoke canary](tickets/T7-smoke-canary.md) — O2: dedicated canary group,
+  `SMOKE <nonce> — ignore`, settled-silent asserted via the T3 observer; rubric
+  carve-out feeds T1.
 - Flue dispatch-settlement investigation (was the B2 gate) — resolved during charting:
   `dispatch()` settles at admission only, but `@flue/runtime` `observe()` emits
   `agent_end`/`submission_settled` correlated by `dispatchId`; evidence quoted in

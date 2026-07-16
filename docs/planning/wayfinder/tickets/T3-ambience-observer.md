@@ -102,6 +102,17 @@ but not ours to ship on this pass's clock; blocked on upstream.
 
 **O1 ratified**: named `AmbienceObserver` seam (windowDispatched / spoke /
 settledSilent / settledFailed) as a thin adapter over `@flue/runtime` `observe()`,
-correlated by dispatchId. Sub-decisions (a) settledSilent console visibility and
-(b) typing-indicator span remain OPEN — asked in the follow-up round; ticket stays
-open until both are answered.
+correlated by dispatchId.
+
+Sub-decisions (Aaron, same day):
+- **(a) settledSilent RENDERS on the default console** (dimmed line). Implementation
+  note: `codex/semantic-terminal-reporter` (worktree
+  `~/.codex/worktrees/semantic-terminal-reporter`, commit `f88e075`, committed/clean)
+  already implements the observe()-correlation core (`agent-activity-reporter.ts` +
+  `operator-reporter.ts`, ~909 insertions incl. tests, handles `submission_settled`,
+  dispatchId→{windowId,chatId,messageCount} with TTL). The implementation ticket is
+  REVIEW + ALIGN that branch with this seam, not greenfield.
+- **(b) typing wraps SENDS ONLY — span-the-deliberation REJECTED.** But the status quo
+  is broken: Aaron observes no typing at all before sends. B3 is re-scoped: fix the
+  send-side typing so it is actually perceptible (typing on for a meaningful beat
+  before the send inside `say`), NOT dispatch-spanning. CLOSED.

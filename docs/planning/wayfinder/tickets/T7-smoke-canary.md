@@ -49,6 +49,11 @@ flows" — stays unproven; that gap is what B5 exists to close.
 | Parallelizable | after C3 | after C3 + T1 (carve-out) + T3 (observe settle) | after C3 |
 | Fit | fights the fromMe filter | uses the system as designed | incomplete |
 
-**Recommendation: O2.** Decisions for Aaron: (a) confirm the canary group approach and
-who's in it; (b) exact text (`SMOKE <nonce> — ignore` proposed); (c) does the rubric get
-an explicit SMOKE carve-out (feeds T1)?
+**Recommendation: O2.**
+
+## Resolution (Aaron, 2026-07-16)
+
+**O2 ratified**: dedicated canary group (paired account + optionally Aaron) in
+`managedChats`; canary text `SMOKE <nonce> — ignore`; assert admission → dispatch →
+settled-silent via the T3 observer. The SMOKE carve-out becomes an explicit axis in
+the T1 rubric session. Exact membership finalized at /to-spec. CLOSED.

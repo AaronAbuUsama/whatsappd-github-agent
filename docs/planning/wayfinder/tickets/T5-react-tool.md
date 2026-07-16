@@ -1,6 +1,28 @@
-# T5 — React tool: agent sends reactions
+# T5 — Outbound tool surface: react + reply-to (broadened per Aaron)
 
 Type: `wayfinder:grilling` (HITL — tool-surface decision; feature ratified, shape open)
+
+> **Broadened 2026-07-16**: Aaron asked whether replying to a specific message is the
+> same decision. It is — the transport already supports it natively, no new content
+> type needed:
+>
+> ```ts
+> // node_modules/whatsappd/dist/update-*.d.mts:168-175
+> interface SendOptions {
+>   /** reply to / quote this message */
+>   readonly quote?: MessageRef;
+>   /** jids to @mention (must also appear in the text) */
+>   readonly mentions?: readonly string[];
+> }
+> /** Build a `MessageRef` from a received message, for react/edit/delete/quote. */
+> declare function refOf(m: InboundMessage): MessageRef;
+> ```
+>
+> The managed `send` proxy already accepts `sendOptions` (`account.ts:237`), and the
+> window input already carries `quotedFrom` inbound — the agent can see quotes, it
+> just can't make them. So the decision covers the whole outbound surface: say
+> gains `replyTo`, react is a sibling tool; outbound `mentions` stays fog (needs
+> jid-in-text rendering rules).
 Blocked-by: — (frontier; T4 only shapes how the agent *sees* reactions, not how it sends them)
 Blocks: react-tool feature spec
 
