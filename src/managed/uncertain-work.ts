@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
+import { parseGitHubRepository } from "../github/repository.js";
+
 import {
   isUncertainIssueMutationError,
   type Issue,
@@ -112,11 +114,8 @@ const parseRef = (ref: UncertainWorkRef): string => {
   return id;
 };
 
-const repositoryRef = (value: string): RepositoryRef => {
-  const match = /^([^/]+)\/([^/]+)$/.exec(value);
-  if (match === null) throw new Error("The stored GitHub repository is malformed.");
-  return { owner: match[1]!, repo: match[2]! };
-};
+const repositoryRef = (value: string): RepositoryRef =>
+  parseGitHubRepository(value, () => new Error("The stored GitHub repository is malformed."));
 
 const sameValues = (left: readonly string[], right: readonly string[]): boolean => {
   const normalize = (values: readonly string[]): string[] => [...values].map((value) => value.toLowerCase()).sort();

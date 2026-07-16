@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import type { IncomingMessage } from "../../src/coalescer/events.ts";
-import type { FakeIssueRepositoryEvent } from "../../src/host/fake-issue-repository.ts";
-import type { FakeWhatsAppEvent } from "../../src/host/fake-whatsapp-host.ts";
+import type { FakeIssueRepositoryEvent } from "../support/fake-issue-repository.ts";
+import type { FakeWhatsAppEvent } from "../support/fake-whatsapp-host.ts";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const fixtureRoot = join(repoRoot, "tests/fixtures/ambience");

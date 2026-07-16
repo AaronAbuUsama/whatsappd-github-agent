@@ -8,7 +8,7 @@ import {
   createIssueOperationStore,
   type IssueOperationKind,
 } from "../../src/capabilities/issue-management/operation-store.ts";
-import { createFakeIssueRepository } from "../../src/host/fake-issue-repository.ts";
+import { createFakeIssueRepository } from "../support/fake-issue-repository.ts";
 import { commentProviderBody, issueOperationMarker, issueProviderBody } from "../../src/host/issue-operation-footer.ts";
 import { createUncertainWorkController, inspectUncertainWorkStatus } from "../../src/managed/uncertain-work.ts";
 

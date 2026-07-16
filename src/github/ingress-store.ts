@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export type GitHubIngressStatus = "received" | "unsupported" | "uncorrelated" | "done" | "failed";
@@ -77,11 +77,7 @@ export interface GitHubIngressStore {
   close(): void;
 }
 
-export const createGitHubIngressStore = (
-  databasePath: string,
-  now: () => Date = () => new Date(),
-  legacyDatabasePath?: string,
-): GitHubIngressStore => {
+export const createGitHubIngressStore = (databasePath: string): GitHubIngressStore => {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath);
   database.exec("PRAGMA busy_timeout = 5000");
@@ -141,83 +137,6 @@ export const createGitHubIngressStore = (
       throw cause;
     }
   }
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS github_ingress_migrations (
-      migration_id TEXT PRIMARY KEY,
-      completed_at TEXT NOT NULL
-    ) STRICT
-  `);
-  if (
-    legacyDatabasePath !== undefined &&
-    resolve(legacyDatabasePath) !== resolve(databasePath) &&
-    existsSync(legacyDatabasePath)
-  ) {
-    const migrationId = `standalone-ledger-cutover-v1:${resolve(legacyDatabasePath)}`;
-    const imported = database
-      .prepare("SELECT 1 FROM github_ingress_migrations WHERE migration_id = ?")
-      .get(migrationId);
-    if (imported === undefined) {
-      database.prepare("ATTACH DATABASE ? AS legacy_github_ingress").run(legacyDatabasePath);
-      try {
-        const source = database
-          .prepare(
-            "SELECT 1 FROM legacy_github_ingress.sqlite_master WHERE type = 'table' AND name = 'github_ingress_deliveries'",
-          )
-          .get();
-        if (source === undefined) {
-          throw new Error(`Legacy GitHub ingress database ${legacyDatabasePath} has no delivery ledger.`);
-        }
-        const columns = new Set(
-          (
-            database.prepare("PRAGMA legacy_github_ingress.table_info('github_ingress_deliveries')").all() as Array<{
-              name: string;
-            }>
-          ).map((column) => column.name),
-        );
-        const conflict = database
-          .prepare(`
-            SELECT current.delivery_id
-              FROM main.github_ingress_deliveries AS current
-              JOIN legacy_github_ingress.github_ingress_deliveries AS legacy
-                ON legacy.delivery_id = current.delivery_id
-             LIMIT 1
-          `)
-          .get() as { delivery_id: string } | undefined;
-        if (conflict !== undefined) {
-          throw new Error(
-            `Legacy GitHub ingress delivery ${conflict.delivery_id} already exists in application.sqlite; refusing to guess during cutover.`,
-          );
-        }
-        const acceptedAt = columns.has("accepted_at") ? "accepted_at" : "NULL";
-        database.exec("BEGIN IMMEDIATE");
-        database.exec(`
-          INSERT INTO main.github_ingress_deliveries
-            (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
-             status, error, received_at, settled_at)
-          SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, ${acceptedAt},
-                 ${legacyStatusMapping},
-                 CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE error END,
-                 received_at,
-                 CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE settled_at END
-            FROM legacy_github_ingress.github_ingress_deliveries;
-        `);
-        database
-          .prepare("INSERT INTO github_ingress_migrations (migration_id, completed_at) VALUES (?, ?)")
-          .run(migrationId, now().toISOString());
-        database.exec("COMMIT");
-      } catch (cause) {
-        try {
-          database.exec("ROLLBACK");
-        } catch {
-          // Import validation may fail before its transaction begins.
-        }
-        throw cause;
-      } finally {
-        database.exec("DETACH DATABASE legacy_github_ingress");
-      }
-    }
-  }
-
   const claimStatement = database.prepare(`
     INSERT OR IGNORE INTO github_ingress_deliveries
       (delivery_id, event_name, status, received_at)
@@ -242,8 +161,7 @@ export const createGitHubIngressStore = (
   `);
 
   return {
-    claim: (deliveryId, eventName, receivedAt) =>
-      claimStatement.run(deliveryId, eventName, receivedAt).changes === 1,
+    claim: (deliveryId, eventName, receivedAt) => claimStatement.run(deliveryId, eventName, receivedAt).changes === 1,
     settle: (deliveryId, update) => {
       if (update.status === "done" && (!update.dispatchId || !Number.isFinite(Date.parse(update.acceptedAt)))) {
         throw new Error(`GitHub delivery ${deliveryId} has an invalid Flue admission receipt.`);

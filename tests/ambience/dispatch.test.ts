@@ -8,12 +8,20 @@ import type { IncomingMessage } from "../../src/coalescer/events.ts";
 import { inMemoryWindowStore, queueEventSource } from "../../src/coalescer/mocks.ts";
 import { makeAmbienceWindowDispatcher, type AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
 import { createSayTool } from "../../src/capabilities/whatsapp-participation/tools.ts";
-import type { WhatsAppSayPort } from "../../src/capabilities/whatsapp-participation/whatsapp-port.ts";
-import { createFakeWhatsAppHost } from "../../src/host/fake-whatsapp-host.ts";
+import {
+  configureWhatsAppParticipationPort,
+  type WhatsAppSayPort,
+} from "../../src/capabilities/whatsapp-participation/whatsapp-port.ts";
+import { createFakeWhatsAppHost } from "../support/fake-whatsapp-host.ts";
 import type { ManagedChatInbox, WindowAdmission } from "../../src/intake/managed-chat-inbox.ts";
 
 const BOT = "bot@s.whatsapp.net";
 const CHAT = "team@g.us";
+
+const sayToolFor = (host: WhatsAppSayPort) => {
+  configureWhatsAppParticipationPort({ say: host.say, readThread: () => [], search: () => [] });
+  return createSayTool(CHAT);
+};
 
 let sequence = 0;
 const message = (text: string, overrides: Partial<IncomingMessage> = {}): IncomingMessage => ({
@@ -108,7 +116,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
 describe("say", () => {
   it("is the explicit speech capability and finalizes typing after one successful send", async () => {
     const host = createFakeWhatsAppHost();
-    const say = createSayTool(CHAT, host);
+    const say = sayToolFor(host);
 
     await expect(say.run({ input: { text: "hello group" } })).resolves.toEqual({
       delivery: "sent",
@@ -131,7 +139,7 @@ describe("say", () => {
   it("does not retry an uncertain send and still finalizes typing after failure", async () => {
     const host = createFakeWhatsAppHost();
     host.failNextSend(new Error("provider outcome unknown"));
-    const say = createSayTool(CHAT, host);
+    const say = sayToolFor(host);
 
     await expect(say.run({ input: { text: "send once" } })).resolves.toEqual({
       delivery: "unknown",
@@ -154,7 +162,7 @@ describe("say", () => {
   it("preserves a confirmed message receipt when typing finalization is uncertain", async () => {
     const host = createFakeWhatsAppHost();
     host.failNextTypingFinalization(new Error("typing cleanup outcome unknown"));
-    const say = createSayTool(CHAT, host);
+    const say = sayToolFor(host);
 
     await expect(say.run({ input: { text: "delivered once" } })).resolves.toEqual({
       delivery: "sent",
@@ -185,7 +193,7 @@ describe("say", () => {
     const malformedHost = {
       say: async () => ({ delivery: "sent", messageId: "", typing: "cleared" }),
     } as unknown as WhatsAppSayPort;
-    const say = createSayTool(CHAT, malformedHost);
+    const say = sayToolFor(malformedHost);
     const result = await say.run({ input: { text: "validate the receipt" } });
 
     expect(v.safeParse(say.output, result).success).toBe(false);

@@ -2,7 +2,7 @@ import { defineTool, type ToolDefinition } from "@flue/runtime";
 import * as v from "valibot";
 
 import type { ProjectedConversationMessage } from "../../intake/conversation-archive.ts";
-import { getWhatsAppParticipationPort, type WhatsAppSayPort } from "./whatsapp-port.js";
+import { getWhatsAppParticipationPort } from "./whatsapp-port.js";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const historyMessageSchema = v.object({
@@ -19,28 +19,15 @@ const historyOutputSchema = v.object({
   messages: v.array(historyMessageSchema),
   context: v.string(),
 });
-const sayOutputSchema = v.union([
-  v.object({ delivery: v.literal("sent"), messageId: nonEmptyString, typing: v.literal("cleared") }),
-  v.object({
-    delivery: v.literal("sent"),
-    messageId: nonEmptyString,
-    typing: v.literal("unknown"),
-    typingError: nonEmptyString,
-  }),
-  v.object({ delivery: v.literal("failed"), deliveryError: nonEmptyString, typing: v.literal("cleared") }),
-  v.object({
-    delivery: v.literal("failed"),
-    deliveryError: nonEmptyString,
-    typing: v.literal("unknown"),
-    typingError: nonEmptyString,
-  }),
-  v.object({ delivery: v.literal("unknown"), deliveryError: nonEmptyString, typing: v.literal("cleared") }),
-  v.object({
-    delivery: v.literal("unknown"),
-    deliveryError: nonEmptyString,
-    typing: v.literal("unknown"),
-    typingError: nonEmptyString,
-  }),
+const sayOutputSchema = v.intersect([
+  v.union([
+    v.object({ delivery: v.literal("sent"), messageId: nonEmptyString }),
+    v.object({ delivery: v.union([v.literal("failed"), v.literal("unknown")]), deliveryError: nonEmptyString }),
+  ]),
+  v.union([
+    v.object({ typing: v.literal("cleared") }),
+    v.object({ typing: v.literal("unknown"), typingError: nonEmptyString }),
+  ]),
 ]);
 
 const format = (messages: readonly ProjectedConversationMessage[]): string =>
@@ -52,13 +39,13 @@ const format = (messages: readonly ProjectedConversationMessage[]): string =>
     })
     .join("\n");
 
-export const createSayTool = (chatId: string, port?: WhatsAppSayPort) =>
+export const createSayTool = (chatId: string) =>
   defineTool({
     name: "say",
     description: "Send one message to the WhatsApp chat bound to this Ambience instance.",
     input: v.object({ text: v.pipe(v.string(), v.minLength(1), v.maxLength(4_096)) }),
     output: sayOutputSchema,
-    run: ({ input }) => (port ?? getWhatsAppParticipationPort()).say(chatId, input.text),
+    run: ({ input }) => getWhatsAppParticipationPort().say(chatId, input.text),
   });
 
 export const createReadWhatsAppThreadTool = (chatId: string) =>

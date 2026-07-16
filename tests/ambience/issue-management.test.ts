@@ -10,7 +10,6 @@ import ambience from "../../src/agents/ambience.ts";
 import {
   configureIssueManagementRuntime,
   createIssueManagementPolicy,
-  loadIssueManagementSettings,
 } from "../../src/capabilities/issue-management/runtime.ts";
 import {
   isUncertainIssueMutationError,
@@ -19,7 +18,7 @@ import {
 } from "../../src/capabilities/issue-management/issue-repository.ts";
 import { createIssueManagementTools } from "../../src/capabilities/issue-management/tools.ts";
 import { createIssueOperationStore } from "../../src/capabilities/issue-management/operation-store.ts";
-import { createFakeIssueRepository } from "../../src/host/fake-issue-repository.ts";
+import { createFakeIssueRepository } from "../support/fake-issue-repository.ts";
 import {
   GITHUB_ISSUE_BODY_LIMIT,
   createOctokitIssueRepository,
@@ -27,7 +26,6 @@ import {
   githubIssueProviderBody,
   githubIssueRecord,
   githubIssueSearchQuery,
-  githubIssueUpdateProviderBody,
 } from "../../src/host/github-issue-repository.ts";
 import { commentProviderBody, issueOperationMarker } from "../../src/host/issue-operation-footer.ts";
 
@@ -43,31 +41,6 @@ const configured = () => {
 };
 
 describe("Issue Management configuration", () => {
-  it("loads only the managed GitHub boundary and fails closed when it is incomplete", () => {
-    expect(
-      loadIssueManagementSettings({
-        GITHUB_TOKEN: "  github-token  ",
-        GITHUB_REPO: " acme/widgets ",
-        GITHUB_ALLOWED_REPOS: "acme/widgets,acme/other",
-        GITHUB_ISSUE_OPERATIONS_DB_PATH: "/managed/application.sqlite",
-      }),
-    ).toEqual({
-      token: "github-token",
-      defaultRepository: "acme/widgets",
-      allowedRepositories: ["acme/widgets", "acme/other"],
-      operationDatabasePath: "/managed/application.sqlite",
-    });
-    expect(() =>
-      loadIssueManagementSettings({
-        GITHUB_REPO: "acme/widgets",
-        GITHUB_ISSUE_OPERATIONS_DB_PATH: "/managed/application.sqlite",
-      }),
-    ).toThrow("GITHUB_TOKEN");
-    expect(() => loadIssueManagementSettings({ GITHUB_TOKEN: "token", GITHUB_REPO: "acme/widgets" })).toThrow(
-      "GITHUB_ISSUE_OPERATIONS_DB_PATH",
-    );
-  });
-
   it("rejects an out-of-policy repository before provider reads or writes", async () => {
     const { repository, operations, policy } = configured();
     const create = createIssueManagementTools({ repository, operations, policy }).find(

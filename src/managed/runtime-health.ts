@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 
-import type { WhatsAppRuntimeStatus } from "../host/whatsapp-runtime.js";
-
 export type AmbientRuntimeState = "stopped" | "starting" | "healthy" | "failed";
+export type WhatsAppRuntimePhase = "disabled" | "starting" | "online" | "failed" | "stopped";
+export interface WhatsAppRuntimeStatus {
+  readonly phase: WhatsAppRuntimePhase;
+  readonly chatTarget?: string;
+  readonly botIds?: readonly string[];
+  readonly error?: string;
+}
 
 export interface AmbientRuntimeHealth {
   readonly state: AmbientRuntimeState;

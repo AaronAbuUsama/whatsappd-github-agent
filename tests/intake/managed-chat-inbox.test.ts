@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
-import { createManagedChatInbox, inspectWindowDeliveryCounts } from "../../src/intake/managed-chat-inbox.ts";
+import { inspectWindowDeliveryCounts } from "../../src/intake/managed-chat-inbox.ts";
+import { createTestManagedChatInbox as createManagedChatInbox } from "../support/managed-chat-inbox.ts";
 import type { IncomingMessage } from "whatsappd";
 
 const roots: string[] = [];

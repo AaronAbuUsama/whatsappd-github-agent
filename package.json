@@ -52,7 +52,6 @@
     "@clack/prompts": "1.7.0",
     "@commander-js/extra-typings": "15.0.0",
     "@earendil-works/pi-ai": "0.80.2",
-    "@earendil-works/pi-coding-agent": "0.80.2",
     "@flue/github": "1.0.0-beta.1",
     "@flue/runtime": "1.0.0-beta.9",
     "@octokit/rest": "^22.0.0",

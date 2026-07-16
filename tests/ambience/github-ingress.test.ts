@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type { GitHubWebhookDelivery } from "@flue/github";
 
-import { createGitHubIngress, loadGitHubIngressSettings } from "../../src/github/ingress.ts";
+import { createGitHubIngress } from "../../src/github/ingress.ts";
 import { createGitHubIngressStore } from "../../src/github/ingress-store.ts";
 
 const issueOpenedDelivery = (deliveryId: string): GitHubWebhookDelivery =>
@@ -30,63 +30,6 @@ const issueOpenedDelivery = (deliveryId: string): GitHubWebhookDelivery =>
       sender: { login: "octocat", id: 1, type: "User" },
     },
   }) as GitHubWebhookDelivery;
-
-describe("GitHub ingress configuration", () => {
-  it("loads explicit repository ownership without guessing case-sensitive GitHub identity", () => {
-    const settings = loadGitHubIngressSettings({
-      GITHUB_WEBHOOK_SECRET: "secret",
-      GITHUB_CHAT_ROUTES: "Acme/Widgets=chat-a@g.us,acme/other=chat-b@g.us",
-      APPLICATION_DB_PATH: ":memory:",
-    });
-
-    expect(settings.routes).toEqual(
-      new Map([
-        ["acme/widgets", "chat-a@g.us"],
-        ["acme/other", "chat-b@g.us"],
-      ]),
-    );
-    expect(settings.databasePath).toBe(":memory:");
-  });
-
-  it("fails closed without a secret or any repository-to-chat ownership", () => {
-    expect(() => loadGitHubIngressSettings({ GITHUB_CHAT_ROUTES: "acme/widgets=chat@g.us" })).toThrow(
-      "GITHUB_WEBHOOK_SECRET",
-    );
-    expect(() => loadGitHubIngressSettings({ GITHUB_WEBHOOK_SECRET: "secret" })).toThrow(
-      "At least one GitHub chat route",
-    );
-  });
-
-  it("shares the application database unless the managed composition supplies the same path explicitly", () => {
-    expect(
-      loadGitHubIngressSettings({
-        GITHUB_WEBHOOK_SECRET: "secret",
-        GITHUB_REPO: "acme/widgets",
-        WHATSAPP_GROUP_ID: "chat@g.us",
-        APPLICATION_DB_PATH: "/managed/application.sqlite",
-      }).databasePath,
-    ).toBe("/managed/application.sqlite");
-    expect(
-      loadGitHubIngressSettings({
-        GITHUB_WEBHOOK_SECRET: "secret",
-        GITHUB_REPO: "acme/widgets",
-        WHATSAPP_GROUP_ID: "chat@g.us",
-      }).databasePath,
-    ).toBe("./application.sqlite");
-    expect(
-      loadGitHubIngressSettings({
-        GITHUB_WEBHOOK_SECRET: "secret",
-        GITHUB_REPO: "acme/widgets",
-        WHATSAPP_GROUP_ID: "chat@g.us",
-        APPLICATION_DB_PATH: "/managed/application.sqlite",
-        GITHUB_INGRESS_DB_PATH: "/legacy/github-ingress.db",
-      }),
-    ).toMatchObject({
-      databasePath: "/managed/application.sqlite",
-      legacyDatabasePath: "/legacy/github-ingress.db",
-    });
-  });
-});
 
 describe("GitHub ingress delivery ledger", () => {
   it("atomically claims a delivery identifier only once and persists correlation", () => {
@@ -128,10 +71,10 @@ describe("GitHub ingress delivery ledger", () => {
   it("reprocesses an interrupted received delivery when the provider redelivers it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-agent-github-ingress-"));
     const path = join(root, "application.sqlite");
-    const interrupted = createGitHubIngressStore(path, () => new Date("2026-07-13T00:00:00.000Z"));
+    const interrupted = createGitHubIngressStore(path);
     interrupted.claim("interrupted-29", "issues", "2026-07-13T00:00:00.000Z");
     interrupted.close();
-    const store = createGitHubIngressStore(path, () => new Date("2026-07-13T00:00:01.000Z"));
+    const store = createGitHubIngressStore(path);
     try {
       let admissions = 0;
       const ingress = createGitHubIngress({
@@ -287,7 +230,7 @@ describe("GitHub ingress delivery ledger", () => {
       `);
       legacy.close();
 
-      const store = createGitHubIngressStore(path, () => new Date("2026-07-15T00:00:00.000Z"));
+      const store = createGitHubIngressStore(path);
       expect(store.get("legacy-received")).toMatchObject({ status: "received" });
       expect(store.get("legacy-dispatching")).toMatchObject({ status: "received" });
       expect(store.get("legacy-uncertain")).toMatchObject({ status: "received" });
@@ -301,74 +244,6 @@ describe("GitHub ingress delivery ledger", () => {
       expect(store.get("legacy-failed")).toMatchObject({ status: "failed", error: "terminal error" });
       store.close();
     } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("imports the advertised standalone ledger once into application.sqlite and retains the source as backup", async () => {
-    const root = await mkdtemp(join(tmpdir(), "ambient-agent-github-ingress-cutover-"));
-    const legacyPath = join(root, "data", "github-ingress.db");
-    const applicationPath = join(root, "application.sqlite");
-    const previousDirectory = process.cwd();
-    try {
-      await mkdir(join(root, "data"));
-      const legacy = new DatabaseSync(legacyPath);
-      legacy.exec(`
-        CREATE TABLE github_ingress_deliveries (
-          delivery_id TEXT PRIMARY KEY,
-          event_name TEXT NOT NULL,
-          repository TEXT,
-          chat_id TEXT,
-          ambience TEXT,
-          dispatch_id TEXT,
-          status TEXT NOT NULL CHECK (status IN ('received', 'unsupported', 'uncorrelated', 'dispatched', 'uncertain', 'failed')),
-          error TEXT,
-          received_at TEXT NOT NULL,
-          settled_at TEXT
-        ) STRICT;
-        INSERT INTO github_ingress_deliveries
-          (delivery_id, event_name, status, received_at)
-        VALUES ('legacy-in-flight', 'issues', 'received', '2026-07-14T00:00:00.000Z');
-        INSERT INTO github_ingress_deliveries
-          (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, status, received_at, settled_at)
-        VALUES ('legacy-complete', 'issues', 'acme/widgets', 'chat@g.us', 'ambience', 'dispatch-complete',
-                'dispatched', '2026-07-14T00:00:00.000Z', '2026-07-14T00:00:01.000Z');
-      `);
-      legacy.close();
-
-      process.chdir(root);
-      const settings = loadGitHubIngressSettings({
-        GITHUB_WEBHOOK_SECRET: "secret",
-        GITHUB_REPO: "acme/widgets",
-        WHATSAPP_GROUP_ID: "chat@g.us",
-        APPLICATION_DB_PATH: applicationPath,
-      });
-      expect(settings).toMatchObject({
-        databasePath: applicationPath,
-        legacyDatabasePath: "./data/github-ingress.db",
-      });
-      const store = createGitHubIngressStore(
-        settings.databasePath,
-        () => new Date("2026-07-15T00:00:00.000Z"),
-        settings.legacyDatabasePath,
-      );
-      expect(store.get("legacy-in-flight")).toMatchObject({ status: "received" });
-      expect(store.get("legacy-complete")).toMatchObject({
-        status: "done",
-        dispatchId: "dispatch-complete",
-      });
-      store.close();
-
-      const reopened = createGitHubIngressStore(settings.databasePath, undefined, settings.legacyDatabasePath);
-      expect(reopened.list()).toHaveLength(2);
-      reopened.close();
-      const backup = new DatabaseSync(legacyPath, { readOnly: true });
-      expect(
-        backup.prepare("SELECT status FROM github_ingress_deliveries WHERE delivery_id = 'legacy-in-flight'").get(),
-      ).toEqual({ status: "received" });
-      backup.close();
-    } finally {
-      process.chdir(previousDirectory);
       await rm(root, { recursive: true, force: true });
     }
   });

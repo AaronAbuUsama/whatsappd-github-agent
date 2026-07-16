@@ -8,7 +8,7 @@ import {
   createIssueManagementPolicy,
 } from "../../src/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "../../src/capabilities/issue-management/operation-store.ts";
-import { createFakeIssueRepository } from "../../src/host/fake-issue-repository.ts";
+import { createFakeIssueRepository } from "../support/fake-issue-repository.ts";
 
 const root = process.cwd();
 const read = async (path: string) => await readFile(join(root, path), "utf8");

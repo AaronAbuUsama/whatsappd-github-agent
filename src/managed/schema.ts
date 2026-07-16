@@ -1,5 +1,7 @@
 import * as v from "valibot";
 
+import { GITHUB_REPOSITORY_PATTERN } from "../github/repository.js";
+
 const GITHUB_CREDENTIAL_REFERENCE = "github";
 const CHATGPT_OAUTH_CREDENTIAL_REFERENCE = "chatgpt-oauth";
 const LEGACY_PI_AUTH_CREDENTIAL_REFERENCE = "pi-auth";
@@ -7,7 +9,7 @@ const LEGACY_PI_AUTH_CREDENTIAL_REFERENCE = "pi-auth";
 const NonBlankString = v.pipe(v.string(), v.trim(), v.nonEmpty());
 const Repository = v.pipe(
   NonBlankString,
-  v.regex(/^[^/\s]+\/[^/\s]+$/, "Expected a GitHub repository in owner/name form"),
+  v.regex(GITHUB_REPOSITORY_PATTERN, "Expected a GitHub repository in owner/name form"),
 );
 const ManagedChat = v.pipe(
   NonBlankString,
@@ -60,12 +62,6 @@ export const ChatGptOAuthCredentialSchema = v.looseObject({
   refresh: NonBlankString,
   expires: v.number(),
 });
-
-export const PiAuthSchema = v.object({
-  "openai-codex": ChatGptOAuthCredentialSchema,
-});
-
-export type PiAuth = v.InferOutput<typeof PiAuthSchema>;
 
 export const createManagedConfig = (managedChats: readonly string[], defaultRepository: string): ManagedConfig => ({
   schemaVersion: 1,

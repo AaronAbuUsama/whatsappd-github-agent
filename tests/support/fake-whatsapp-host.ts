@@ -1,4 +1,9 @@
-import type { WhatsAppSayPort, WhatsAppSayResult } from "../capabilities/whatsapp-participation/whatsapp-port.ts";
+import {
+  type WhatsAppDeliveryResult,
+  type WhatsAppSayPort,
+  type WhatsAppSayResult,
+  withTypingResult,
+} from "../../src/capabilities/whatsapp-participation/whatsapp-port.ts";
 
 export type FakeWhatsAppEvent =
   | {
@@ -30,36 +35,6 @@ export interface FakeWhatsAppHost extends WhatsAppSayPort {
   readonly reset: () => void;
 }
 
-type DeliveryResult =
-  | { readonly delivery: "sent"; readonly messageId: string }
-  | { readonly delivery: "failed" | "unknown"; readonly deliveryError: string };
-
-const withTyping = (delivery: DeliveryResult, typingError?: Error): WhatsAppSayResult => {
-  if (delivery.delivery === "sent") {
-    return typingError === undefined
-      ? { delivery: "sent", messageId: delivery.messageId, typing: "cleared" }
-      : { delivery: "sent", messageId: delivery.messageId, typing: "unknown", typingError: typingError.message };
-  }
-  if (delivery.delivery === "failed") {
-    return typingError === undefined
-      ? { delivery: "failed", deliveryError: delivery.deliveryError, typing: "cleared" }
-      : {
-          delivery: "failed",
-          deliveryError: delivery.deliveryError,
-          typing: "unknown",
-          typingError: typingError.message,
-        };
-  }
-  return typingError === undefined
-    ? { delivery: "unknown", deliveryError: delivery.deliveryError, typing: "cleared" }
-    : {
-        delivery: "unknown",
-        deliveryError: delivery.deliveryError,
-        typing: "unknown",
-        typingError: typingError.message,
-      };
-};
-
 export const createFakeWhatsAppHost = (): FakeWhatsAppHost => {
   let recorded: FakeWhatsAppEvent[] = [];
   let nextMessage = 0;
@@ -83,7 +58,7 @@ export const createFakeWhatsAppHost = (): FakeWhatsAppHost => {
       recorded.push({ kind: "typing", chatId, on: true });
       const sendError = nextSendError;
       nextSendError = undefined;
-      let delivery: DeliveryResult;
+      let delivery: WhatsAppDeliveryResult;
       if (sendError !== undefined) {
         recorded.push({ kind: "send", chatId, text, outcome: sendError.delivery, error: sendError.error.message });
         delivery = { delivery: sendError.delivery, deliveryError: sendError.error.message };
@@ -97,7 +72,7 @@ export const createFakeWhatsAppHost = (): FakeWhatsAppHost => {
       nextTypingError = undefined;
       if (typingError === undefined) recorded.push({ kind: "typing", chatId, on: false });
       else recorded.push({ kind: "typing", chatId, on: false, outcome: "unknown", error: typingError.message });
-      return withTyping(delivery, typingError);
+      return withTypingResult(delivery, typingError?.message);
     },
   };
 };

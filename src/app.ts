@@ -29,7 +29,6 @@ export const createAmbientAgentApp = async ({
   const subscription = await connectPiChatGptSubscription({ authentication });
   installGitHubIngressRuntime(
     {
-      webhookSecret: githubCredential.webhookSecret,
       databasePath: paths.applicationDatabase,
       routes: new Map([[configuration.github.defaultRepository.toLowerCase(), configuration.managedChats[0]!]]),
     },

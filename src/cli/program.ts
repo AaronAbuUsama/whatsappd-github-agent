@@ -1,5 +1,4 @@
 import { chmod, lstat, mkdir, readFile, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "@commander-js/extra-typings";
@@ -66,6 +65,7 @@ import { createConversationArchive } from "../intake/conversation-archive.js";
 import { createManagedChatInbox, inspectWindowDeliveryCounts } from "../intake/managed-chat-inbox.js";
 import { createIssueOperationStore } from "../capabilities/issue-management/operation-store.js";
 import { createOctokitIssueRepository } from "../host/github-issue-repository.js";
+import { renderQr } from "../shared/qr.js";
 
 export interface CliOutput {
   readonly stdout: (text: string) => void;
@@ -471,10 +471,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   const whatsappCallbacks = {
     onPairing: (pairing: { readonly qr?: string; readonly code?: string }) => {
       if (pairing.qr !== undefined) {
-        const renderer = createRequire(import.meta.url)("qrcode-terminal") as {
-          generate(value: string, options: { readonly small: boolean }, callback: (rendered: string) => void): void;
-        };
-        renderer.generate(pairing.qr, { small: true }, (rendered) => output.stdout(`${rendered}\n`));
+        renderQr(pairing.qr, output.stdout);
       } else if (pairing.code !== undefined) {
         output.stdout(`Enter WhatsApp pairing code ${pairing.code}.\n`);
       }

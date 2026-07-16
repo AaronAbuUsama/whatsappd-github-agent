@@ -14,6 +14,8 @@ import {
   type GitHubCredential,
   type ManagedConfig,
 } from "./schema.js";
+import { errorCode } from "../shared/errors.js";
+import { pathExists as exists } from "../shared/files.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -52,7 +54,11 @@ const CORRUPT_CODES = new Set([
 ]);
 
 const classifyInstallation = (diagnostics: readonly InstallationDiagnostic[]): InstallationState =>
-  diagnostics.length === 0 ? "ready" : diagnostics.some(({ code }) => CORRUPT_CODES.has(code)) ? "corrupt" : "incomplete";
+  diagnostics.length === 0
+    ? "ready"
+    : diagnostics.some(({ code }) => CORRUPT_CODES.has(code))
+      ? "corrupt"
+      : "incomplete";
 
 export interface InstallationDiagnostic {
   readonly code: string;
@@ -65,13 +71,6 @@ export interface InstallationInspection {
   readonly state: InstallationState;
   readonly dataDirectory: string;
   readonly diagnostics: readonly InstallationDiagnostic[];
-}
-
-export interface InstallManagedDataInput extends ManagedPathEnvironment {
-  readonly managedChats: readonly string[];
-  readonly defaultRepository: string;
-  readonly githubToken: string;
-  readonly authenticateChatGpt: (paths: ManagedPaths) => Promise<void>;
 }
 
 export interface PreparedManagedData {
@@ -96,19 +95,6 @@ const diagnostic = (code: string, path: string, message: string, remediation: st
   message,
   remediation,
 });
-
-const errorCode = (cause: unknown): string | undefined =>
-  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined;
-
-const exists = async (path: string): Promise<boolean> => {
-  try {
-    await lstat(path);
-    return true;
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") return false;
-    throw cause;
-  }
-};
 
 const modeOf = (mode: number): number => mode & 0o777;
 
@@ -659,16 +645,3 @@ export const installPreparedManagedData = async (
   }
   return { created: true, inspection };
 };
-
-export const installManagedData = async (input: InstallManagedDataInput): Promise<InstallManagedDataResult> =>
-  await installPreparedManagedData({
-    ...input,
-    prepare: async (paths) => {
-      await input.authenticateChatGpt(paths);
-      return {
-        managedChats: input.managedChats,
-        defaultRepository: input.defaultRepository,
-        githubToken: input.githubToken,
-      };
-    },
-  });

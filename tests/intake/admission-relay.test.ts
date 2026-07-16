@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { admitWindow } from "../../src/intake/admission-relay.ts";
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
-import { createManagedChatInbox } from "../../src/intake/managed-chat-inbox.ts";
+import { createTestManagedChatInbox as createManagedChatInbox } from "../support/managed-chat-inbox.ts";
 import type { IncomingMessage } from "whatsappd";
 
 const CHAT = "managed-admission@g.us";

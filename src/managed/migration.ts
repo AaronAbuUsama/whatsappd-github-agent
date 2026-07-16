@@ -11,6 +11,8 @@ import {
   type ManagedPathEnvironment,
 } from "./paths.js";
 import { probeAmbientRuntimeHealth, runtimeInstallationId } from "./runtime-health.js";
+import { errorCode } from "../shared/errors.js";
+import { pathExists as exists } from "../shared/files.js";
 
 export interface ManagedDataMigration {
   readonly migrated: boolean;
@@ -24,19 +26,6 @@ export interface MigrateManagedDataOptions extends ManagedPathEnvironment {
   /** Test seam for the legacy-runtime liveness probe. */
   readonly probeRuntimeHealth?: typeof probeAmbientRuntimeHealth;
 }
-
-const errorCode = (cause: unknown): string | undefined =>
-  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined;
-
-const exists = async (path: string): Promise<boolean> => {
-  try {
-    await lstat(path);
-    return true;
-  } catch (cause) {
-    if (errorCode(cause) === "ENOENT") return false;
-    throw cause;
-  }
-};
 
 /** Copy a managed tree preserving 0700/0600 modes; fsync every file so the staged copy is durable. */
 const copySecureTree = async (source: string, target: string): Promise<void> => {

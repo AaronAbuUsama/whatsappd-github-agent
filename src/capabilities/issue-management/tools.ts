@@ -16,7 +16,8 @@ import {
   type IssueSummary,
   type IssueUpdate,
 } from "./issue-repository.ts";
-import type { IssueOperationStore } from "./operation-store.ts";
+import type { IssueOperationKind, IssueOperationStore } from "./operation-store.ts";
+import { errorMessage } from "../../shared/errors.js";
 import {
   getIssueManagementRuntime,
   repositoryName,
@@ -156,7 +157,6 @@ const publicDiscussion = (discussion: IssueDiscussion): IssueDiscussion => ({
   issue: publicIssue(discussion.issue),
   comments: discussion.comments.map(publicComment),
 });
-const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 const normalizedTitle = (title: string): string => title.trim().replaceAll(/\s+/g, " ").toLowerCase();
 
 const RECONCILIATION_TIMEOUT_MS = 10_000;
@@ -192,79 +192,59 @@ const createIssue = async (input: {
     return { status: "duplicate", issues: duplicates.map(publicSummary) };
   }
 
-  const operationId = input.createOperationId();
-  const operation = { id: operationId };
-  input.operations.begin({
-    operationId,
+  const result = await lifecycleMutation<Issue>({
+    repository: input.repository,
     kind: "create-issue",
-    repository: repositoryName(input.repository),
     target: { kind: input.kind, title: input.title, body: input.body },
-    startedAt: input.now().toISOString(),
-  });
-  const settleCreated = (issue: Issue, status: "created" | "reconciled"): v.InferOutput<typeof createOutputSchema> => {
-    try {
-      input.operations.complete(operationId, issue.number, input.now().toISOString());
-      return { status, operationId, issue: publicIssue(issue) };
-    } catch (cause) {
-      try {
-        const current = input.operations.get(operationId);
-        if (current?.status === "completed") return { status, operationId, issue: publicIssue(issue) };
-        const reason = `GitHub issue ${issue.number} exists, but its Operation Identity completion could not be persisted: ${errorMessage(cause)}`;
-        if (current?.status === "attempting") {
-          input.operations.uncertain(operationId, reason, input.now().toISOString());
-          return { status: "uncertain", operationId, reason, issue: publicIssue(issue) };
-        }
-      } catch (ledgerCause) {
-        throw new Error(
-          `GitHub issue ${issue.number} exists, but its Operation Identity state could not be recorded. Do not repeat creation.`,
-          { cause: ledgerCause },
-        );
-      }
-      throw new Error(
-        `GitHub issue ${issue.number} exists with an unresolved Operation Identity state. Do not repeat creation.`,
-        { cause },
-      );
-    }
-  };
-
-  let issue: Issue;
-  try {
-    issue = await input.provider.create({
-      repository: input.repository,
-      kind: input.kind,
-      title: input.title,
-      body: input.body,
-      operation,
-      signal: input.signal,
-    });
-  } catch (cause) {
-    if (!isUncertainIssueMutationError(cause)) {
-      input.operations.fail(operationId, errorMessage(cause), input.now().toISOString());
-      throw cause;
-    }
-    try {
+    operations: input.operations,
+    createOperationId: input.createOperationId,
+    now: input.now,
+    completionNumber: (issue) => issue.number,
+    completionDescription: (issue) => `GitHub issue ${issue.number} exists`,
+    stateFailureMessage: (issue) =>
+      `GitHub issue ${issue.number} exists, but its Operation Identity state could not be recorded. Do not repeat creation.`,
+    unresolvedMessage: (issue) =>
+      `GitHub issue ${issue.number} exists with an unresolved Operation Identity state. Do not repeat creation.`,
+    reconciliationFailureReason:
+      "GitHub create outcome remained uncertain because Operation Identity observation could not complete",
+    mutate: async (operationId) =>
+      await input.provider.create({
+        repository: input.repository,
+        kind: input.kind,
+        title: input.title,
+        body: input.body,
+        operation: { id: operationId },
+        signal: input.signal,
+      }),
+    reconcile: async (operationId) => {
       const observed = await input.provider.findCreated({
         repository: input.repository,
-        operation,
+        operation: { id: operationId },
         signal: reconciliationSignal(input.signal),
       });
-      if (observed.length === 1) {
-        return settleCreated(observed[0]!, "reconciled");
-      }
-      const reason =
-        observed.length === 0
-          ? "GitHub create outcome remained uncertain after Operation Identity observation"
-          : `Operation Identity matched ${observed.length} GitHub issues; refusing to guess`;
-      input.operations.uncertain(operationId, reason, input.now().toISOString());
-      return { status: "uncertain", operationId, reason };
-    } catch {
-      const reason =
-        "GitHub create outcome remained uncertain because Operation Identity observation could not complete";
-      input.operations.uncertain(operationId, reason, input.now().toISOString());
-      return { status: "uncertain", operationId, reason };
-    }
+      if (observed.length === 1) return { status: "reconciled" as const, value: observed[0]! };
+      return {
+        status: "uncertain" as const,
+        reason:
+          observed.length === 0
+            ? "GitHub create outcome remained uncertain after Operation Identity observation"
+            : `Operation Identity matched ${observed.length} GitHub issues; refusing to guess`,
+      };
+    },
+  });
+  if (result.status === "uncertain") {
+    return {
+      status: "uncertain",
+      operationId: result.operationId,
+      reason: result.reason,
+      ...(result.value === undefined ? {} : { issue: publicIssue(result.value) }),
+    };
   }
-  return settleCreated(issue, "created");
+  return {
+    status: result.status === "applied" ? "created" : "reconciled",
+    operationId: result.operationId,
+    issue: publicIssue(result.value),
+  };
 };
 
 const canonicalValues = (requested: readonly string[], existing: readonly string[], kind: string): string[] => {
@@ -336,124 +316,126 @@ const updateIssue = async (input: {
     ? await input.provider.options({ repository: input.repository, signal: input.signal })
     : undefined;
   const changes = validatedUpdate(input.changes, options);
-  const operationId = input.createOperationId();
-  const operation = { id: operationId };
-  input.operations.begin({
-    operationId,
+  const result = await lifecycleMutation<Issue>({
+    repository: input.repository,
+    number: input.number,
     kind: "update-issue",
-    repository: repositoryName(input.repository),
-    issueNumber: input.number,
     target: { ...changes } as Record<string, unknown>,
-    startedAt: input.now().toISOString(),
-  });
-  const settleUpdated = (issue: Issue, status: "updated" | "reconciled"): v.InferOutput<typeof updateOutputSchema> => {
-    try {
-      input.operations.complete(operationId, issue.number, input.now().toISOString());
-      return { status, operationId, issue: publicIssue(issue) };
-    } catch (cause) {
-      try {
-        const current = input.operations.get(operationId);
-        if (current?.status === "completed") return { status, operationId, issue: publicIssue(issue) };
-        const reason = `GitHub issue ${issue.number} reflects the update, but its Operation Identity completion could not be persisted: ${errorMessage(cause)}`;
-        if (current?.status === "attempting") {
-          input.operations.uncertain(operationId, reason, input.now().toISOString());
-          return { status: "uncertain", operationId, reason, issue: publicIssue(issue) };
-        }
-      } catch (ledgerCause) {
-        throw new Error(
-          `GitHub issue ${issue.number} may reflect the update, but its Operation Identity state could not be recorded. Do not repeat the mutation.`,
-          { cause: ledgerCause },
-        );
-      }
-      throw new Error(
-        `GitHub issue ${issue.number} may reflect the update with an unresolved Operation Identity state. Do not repeat the mutation.`,
-        { cause },
-      );
-    }
-  };
-
-  let issue: Issue;
-  try {
-    issue = await input.provider.update({
-      repository: input.repository,
-      number: input.number,
-      changes,
-      operation,
-      signal: input.signal,
-    });
-  } catch (cause) {
-    if (!isUncertainIssueMutationError(cause)) {
-      input.operations.fail(operationId, errorMessage(cause), input.now().toISOString());
-      throw cause;
-    }
-    let observed: Issue;
-    try {
-      observed = await input.provider.get({
+    operations: input.operations,
+    createOperationId: input.createOperationId,
+    now: input.now,
+    completionDescription: (issue) => `GitHub issue ${issue.number} reflects the update`,
+    stateFailureMessage: (issue) =>
+      `GitHub issue ${issue.number} may reflect the update, but its Operation Identity state could not be recorded. Do not repeat the mutation.`,
+    unresolvedMessage: (issue) =>
+      `GitHub issue ${issue.number} may reflect the update with an unresolved Operation Identity state. Do not repeat the mutation.`,
+    reconciliationFailureReason:
+      "GitHub update outcome remained uncertain because exact issue-state observation could not complete",
+    mutate: async (operationId) =>
+      await input.provider.update({
+        repository: input.repository,
+        number: input.number,
+        changes,
+        operation: { id: operationId },
+        signal: input.signal,
+      }),
+    reconcile: async () => {
+      const observed = await input.provider.get({
         repository: input.repository,
         number: input.number,
         signal: reconciliationSignal(input.signal),
       });
-    } catch {
-      const reason =
-        "GitHub update outcome remained uncertain because exact issue-state observation could not complete";
-      input.operations.uncertain(operationId, reason, input.now().toISOString());
-      return { status: "uncertain", operationId, reason };
-    }
-    if (matchesUpdate(observed, changes)) return settleUpdated(observed, "reconciled");
-    const reason = "GitHub update outcome remained uncertain after exact issue-state observation";
-    input.operations.uncertain(operationId, reason, input.now().toISOString());
-    return { status: "uncertain", operationId, reason, issue: publicIssue(observed) };
+      return matchesUpdate(observed, changes)
+        ? { status: "reconciled" as const, value: observed }
+        : {
+            status: "uncertain" as const,
+            reason: "GitHub update outcome remained uncertain after exact issue-state observation",
+            value: observed,
+          };
+    },
+  });
+  if (result.status === "uncertain") {
+    return {
+      status: "uncertain",
+      operationId: result.operationId,
+      reason: result.reason,
+      ...(result.value === undefined ? {} : { issue: publicIssue(result.value) }),
+    };
   }
-  return settleUpdated(issue, "updated");
+  return {
+    status: result.status === "applied" ? "updated" : "reconciled",
+    operationId: result.operationId,
+    issue: publicIssue(result.value),
+  };
 };
 
 type LifecycleResult<T> =
   | { readonly status: "applied" | "reconciled"; readonly operationId: string; readonly value: T }
   | { readonly status: "uncertain"; readonly operationId: string; readonly reason: string; readonly value?: T };
 
+type LifecycleReconciliation<T> =
+  | { readonly status: "reconciled"; readonly value: T }
+  | { readonly status: "uncertain"; readonly reason: string; readonly value?: T };
+
+const isLifecycleReconciliation = <T>(value: T | LifecycleReconciliation<T>): value is LifecycleReconciliation<T> =>
+  typeof value === "object" &&
+  value !== null &&
+  "status" in value &&
+  (value.status === "reconciled" || value.status === "uncertain");
+
 const lifecycleMutation = async <T>(input: {
   readonly repository: ReturnType<IssueManagementPolicy["authorize"]>;
-  readonly number: number;
-  readonly kind: "create-comment" | "update-comment" | "delete-comment" | "set-issue-state";
+  readonly number?: number;
+  readonly kind: IssueOperationKind;
   readonly target: Readonly<Record<string, unknown>>;
-  readonly provider: IssueRepository;
   readonly operations: IssueOperationStore;
   readonly createOperationId: () => string;
   readonly now: () => Date;
-  readonly signal?: AbortSignal;
   readonly mutate: (operationId: string) => Promise<T>;
-  readonly reconcile: (operationId: string) => Promise<T | undefined>;
+  readonly reconcile: (operationId: string) => Promise<T | LifecycleReconciliation<T> | undefined>;
+  readonly completionNumber?: (value: T) => number;
+  readonly completionDescription?: (value: T) => string;
+  readonly stateFailureMessage?: (value: T) => string;
+  readonly unresolvedMessage?: (value: T) => string;
+  readonly reconciliationFailureReason?: string;
 }): Promise<LifecycleResult<T>> => {
   const operationId = input.createOperationId();
   input.operations.begin({
     operationId,
     kind: input.kind,
     repository: repositoryName(input.repository),
-    issueNumber: input.number,
+    ...(input.number === undefined ? {} : { issueNumber: input.number }),
     target: input.target,
     startedAt: input.now().toISOString(),
   });
 
   const settle = (value: T, status: "applied" | "reconciled"): LifecycleResult<T> => {
+    const issueNumber = input.completionNumber?.(value) ?? input.number;
+    if (issueNumber === undefined) throw new Error(`The ${input.kind} mutation has no issue number to settle.`);
+    const description = input.completionDescription?.(value) ?? `GitHub reflects the ${input.kind} mutation`;
     try {
-      input.operations.complete(operationId, input.number, input.now().toISOString());
+      input.operations.complete(operationId, issueNumber, input.now().toISOString());
       return { status, operationId, value };
     } catch (cause) {
       try {
         const current = input.operations.get(operationId);
         if (current?.status === "completed") return { status, operationId, value };
-        const reason = `GitHub reflects the ${input.kind} mutation, but its Operation Identity completion could not be persisted: ${errorMessage(cause)}`;
+        const reason = `${description}, but its Operation Identity completion could not be persisted: ${errorMessage(cause)}`;
         if (current?.status === "attempting") {
           input.operations.uncertain(operationId, reason, input.now().toISOString());
           return { status: "uncertain", operationId, reason, value };
         }
       } catch (ledgerCause) {
         throw new Error(
-          `GitHub may reflect the ${input.kind} mutation, but its Operation Identity state could not be recorded. Do not repeat it.`,
+          input.stateFailureMessage?.(value) ??
+            `GitHub may reflect the ${input.kind} mutation, but its Operation Identity state could not be recorded. Do not repeat it.`,
           { cause: ledgerCause },
         );
       }
-      throw new Error(`GitHub may reflect the ${input.kind} mutation. Do not repeat it.`, { cause });
+      throw new Error(
+        input.unresolvedMessage?.(value) ?? `GitHub may reflect the ${input.kind} mutation. Do not repeat it.`,
+        { cause },
+      );
     }
   };
 
@@ -465,14 +447,23 @@ const lifecycleMutation = async <T>(input: {
       input.operations.fail(operationId, errorMessage(cause), input.now().toISOString());
       throw cause;
     }
-    let observed: T | undefined;
+    let observed: T | LifecycleReconciliation<T> | undefined;
     try {
       observed = await input.reconcile(operationId);
     } catch {
       // A bounded observation failure cannot turn an unknown write into a safe retry.
     }
-    if (observed !== undefined) return settle(observed, "reconciled");
-    const reason = `GitHub ${input.kind} outcome remained uncertain after one bounded observation`;
+    if (observed !== undefined) {
+      if (!isLifecycleReconciliation(observed)) return settle(observed, "reconciled");
+      if (observed.status === "reconciled") return settle(observed.value, "reconciled");
+      input.operations.uncertain(operationId, observed.reason, input.now().toISOString());
+      return observed.value === undefined
+        ? { status: "uncertain", operationId, reason: observed.reason }
+        : { status: "uncertain", operationId, reason: observed.reason, value: observed.value };
+    }
+    const reason =
+      input.reconciliationFailureReason ??
+      `GitHub ${input.kind} outcome remained uncertain after one bounded observation`;
     input.operations.uncertain(operationId, reason, input.now().toISOString());
     return { status: "uncertain", operationId, reason };
   }
@@ -613,11 +604,9 @@ export const createIssueManagementTools = (
           number: input.number,
           kind: "create-comment",
           target: { body: input.body },
-          provider: options.repository,
           operations: options.operations,
           createOperationId,
           now,
-          signal,
           mutate: async (operationId) =>
             await options.repository.createComment({
               repository,
@@ -672,11 +661,9 @@ export const createIssueManagementTools = (
           number: input.number,
           kind: "update-comment",
           target: { commentId: input.commentId, body: input.body },
-          provider: options.repository,
           operations: options.operations,
           createOperationId,
           now,
-          signal,
           mutate: async (operationId) =>
             await options.repository.updateComment({
               repository,
@@ -729,11 +716,9 @@ export const createIssueManagementTools = (
           number: input.number,
           kind: "delete-comment",
           target: { commentId: input.commentId },
-          provider: options.repository,
           operations: options.operations,
           createOperationId,
           now,
-          signal,
           mutate: async (operationId) => {
             await options.repository.deleteComment({
               repository,
@@ -802,11 +787,9 @@ export const createIssueManagementTools = (
           number: input.number,
           kind: "set-issue-state",
           target: { state: input.state, reason },
-          provider: options.repository,
           operations: options.operations,
           createOperationId,
           now,
-          signal,
           mutate: async (operationId) =>
             await options.repository.setState({
               repository,

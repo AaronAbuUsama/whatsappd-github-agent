@@ -8,15 +8,15 @@ import {
   type IssueRepositoryOptions,
   type IssueStateChangeReason,
   type RepositoryRef,
-} from "../capabilities/issue-management/issue-repository.ts";
-import { repositoryName } from "../capabilities/issue-management/runtime.ts";
+} from "../../src/capabilities/issue-management/issue-repository.ts";
+import { repositoryName } from "../../src/capabilities/issue-management/runtime.ts";
 import {
   commentProviderBody,
   issueOperationMarker,
   issueProviderBody,
   parseCommentProviderBody,
   parseIssueProviderBody,
-} from "./issue-operation-footer.ts";
+} from "../../src/host/issue-operation-footer.ts";
 
 const publicRecord = (issue: Issue): Issue => ({ ...issue, body: parseIssueProviderBody(issue.body).publicBody });
 const FAKE_PROVIDER_AUTHOR = "ambient-agent";
@@ -25,11 +25,8 @@ const publicComment = (comment: IssueComment): IssueComment => ({
   body: comment.author === FAKE_PROVIDER_AUTHOR ? parseCommentProviderBody(comment.body).publicBody : comment.body,
 });
 
-export type FakeLifecycleMutationKind =
-  | "create-comment"
-  | "update-comment"
-  | "delete-comment"
-  | "set-issue-state";
+export type FakeLifecycleMutationKind = "create-comment" | "update-comment" | "delete-comment" | "set-issue-state";
+type FakeMutationKind = "create" | "update" | FakeLifecycleMutationKind;
 
 export type FakeIssueRepositoryEvent =
   | { kind: "search"; repository: string; query: string; matches: number[] }
@@ -82,10 +79,7 @@ export interface FakeIssueRepository extends IssueRepository {
   timeoutNextUpdate(options: { readonly afterMutation: boolean }): void;
   failNextCreate(error: Error): void;
   failNextUpdate(error: Error): void;
-  timeoutNextLifecycleMutation(
-    kind: FakeLifecycleMutationKind,
-    options: { readonly afterMutation: boolean },
-  ): void;
+  timeoutNextLifecycleMutation(kind: FakeLifecycleMutationKind, options: { readonly afterMutation: boolean }): void;
   failNextLifecycleMutation(kind: FakeLifecycleMutationKind, error: Error): void;
 }
 
@@ -95,9 +89,7 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
   const comments = new Map<string, Map<number, IssueComment>>();
   let nextNumber = 1;
   let nextCommentId = 1;
-  let createMode: MutationMode = { kind: "success" };
-  let updateMode: MutationMode = { kind: "success" };
-  const lifecycleModes = new Map<FakeLifecycleMutationKind, MutationMode>();
+  const lifecycleModes = new Map<FakeMutationKind, MutationMode>();
   let repositoryOptions: IssueRepositoryOptions = { labels: [], assignees: [], milestones: [] };
 
   const records = (repository: RepositoryRef): Map<number, Issue> => {
@@ -152,7 +144,7 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
     commentRecords(repository, number).set(id, comment);
     return publicComment(comment);
   };
-  const consumeLifecycleMode = (kind: FakeLifecycleMutationKind): MutationMode => {
+  const consumeLifecycleMode = (kind: FakeMutationKind): MutationMode => {
     const mode = lifecycleModes.get(kind) ?? { kind: "success" };
     lifecycleModes.delete(kind);
     return mode;
@@ -205,8 +197,7 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
       };
     },
     create: async ({ repository, kind: _kind, title, body, operation }) => {
-      const current = createMode;
-      createMode = { kind: "success" };
+      const current = consumeLifecycleMode("create");
       if (current.kind === "failure") {
         events.push({
           kind: "create",
@@ -240,8 +231,7 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
       return publicRecord(issue);
     },
     update: async ({ repository, number, changes, operation }) => {
-      const current = updateMode;
-      updateMode = { kind: "success" };
+      const current = consumeLifecycleMode("update");
       const existing = records(repository).get(number);
       if (existing === undefined) throw new Error(`Fake issue ${repositoryName(repository)}#${number} was not found`);
       if (current.kind === "failure") {
@@ -461,8 +451,9 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
     },
     findCommentByOperation: async ({ repository, number, operation }) => {
       const marker = issueOperationMarker(operation);
-      const matches = [...commentRecords(repository, number).values()].filter((comment) =>
-        comment.author === FAKE_PROVIDER_AUTHOR && parseCommentProviderBody(comment.body).markers.includes(marker),
+      const matches = [...commentRecords(repository, number).values()].filter(
+        (comment) =>
+          comment.author === FAKE_PROVIDER_AUTHOR && parseCommentProviderBody(comment.body).markers.includes(marker),
       );
       events.push({
         kind: "find-comment-operation",
@@ -493,8 +484,6 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
       comments.clear();
       nextNumber = 1;
       nextCommentId = 1;
-      createMode = { kind: "success" };
-      updateMode = { kind: "success" };
       lifecycleModes.clear();
       repositoryOptions = { labels: [], assignees: [], milestones: [] };
     },
@@ -511,16 +500,16 @@ export const createFakeIssueRepository = (): FakeIssueRepository => {
       };
     },
     timeoutNextCreate: ({ afterMutation }) => {
-      createMode = { kind: "timeout", afterMutation };
+      lifecycleModes.set("create", { kind: "timeout", afterMutation });
     },
     timeoutNextUpdate: ({ afterMutation }) => {
-      updateMode = { kind: "timeout", afterMutation };
+      lifecycleModes.set("update", { kind: "timeout", afterMutation });
     },
     failNextCreate: (error) => {
-      createMode = { kind: "failure", error };
+      lifecycleModes.set("create", { kind: "failure", error });
     },
     failNextUpdate: (error) => {
-      updateMode = { kind: "failure", error };
+      lifecycleModes.set("update", { kind: "failure", error });
     },
     timeoutNextLifecycleMutation: (kind, { afterMutation }) => {
       lifecycleModes.set(kind, { kind: "timeout", afterMutation });

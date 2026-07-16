@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 
 import { Octokit } from "@octokit/rest";
 
+import { parseGitHubRepository } from "../github/repository.js";
+
 export interface CommandResult {
   readonly stdout: string;
 }
@@ -16,8 +18,6 @@ const runCommand: CommandRunner = async (command, args) =>
     });
   });
 
-const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-
 export const normalizeGitHubRepository = (input: string): string => {
   const value = input.trim().replace(/\/$/, "");
   let candidate = value;
@@ -28,9 +28,7 @@ export const normalizeGitHubRepository = (input: string): string => {
     }
   }
   candidate = candidate.replace(/\.git$/, "");
-  if (!repositoryPattern.test(candidate)) {
-    throw new Error("Expected a GitHub repository in owner/repository form.");
-  }
+  parseGitHubRepository(candidate, () => new Error("Expected a GitHub repository in owner/repository form."));
   return candidate;
 };
 

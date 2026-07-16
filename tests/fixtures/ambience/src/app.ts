@@ -22,10 +22,9 @@ import * as Coalescer from "../../../../src/coalescer/coalescer.js";
 import { configLayer } from "../../../../src/coalescer/config.js";
 import type { IncomingMessage } from "../../../../src/coalescer/events.js";
 import { queueEventSource } from "../../../../src/coalescer/mocks.js";
-import { loadGitHubIngressSettings } from "../../../../src/github/ingress.js";
 import { installGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
-import { createFakeIssueRepository } from "../../../../src/host/fake-issue-repository.js";
-import { createFakeWhatsAppHost } from "../../../../src/host/fake-whatsapp-host.js";
+import { createFakeIssueRepository } from "../../../support/fake-issue-repository.js";
+import { createFakeWhatsAppHost } from "../../../support/fake-whatsapp-host.js";
 import { createConversationArchive } from "../../../../src/intake/conversation-archive.js";
 import { conversationArrival } from "../../../../src/intake/conversation-event.js";
 import { createManagedChatInbox, managedChatWindowStore } from "../../../../src/intake/managed-chat-inbox.js";
@@ -183,9 +182,11 @@ configureIssueManagementRuntime({
   operations: issueOperations,
   policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
 });
-const githubIngress = loadGitHubIngressSettings(process.env);
 const githubIngressStore = installGitHubIngressRuntime(
-  githubIngress,
+  {
+    databasePath: applicationDatabase,
+    routes: new Map([["acme/widgets", "github-ingress-29@g.us"]]),
+  },
   async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
 );
 const source = await Effect.runPromise(Queue.unbounded<IncomingMessage>());

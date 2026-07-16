@@ -8,6 +8,7 @@ import {
   openaiCodexOAuthProvider,
   type OAuthDeviceCodeInfo,
 } from "@earendil-works/pi-ai/oauth";
+import { errorCode } from "../shared/errors.js";
 
 export const CHATGPT_PROVIDER_ID = "openai-codex";
 
@@ -89,9 +90,6 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_CREDENTIAL_BYTES = 1024 * 1024;
 const credentialOperations = new Map<string, Promise<void>>();
-
-const errorCode = (cause: unknown): string | undefined =>
-  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined;
 
 const abortError = (signal: AbortSignal): unknown =>
   signal.reason ?? new DOMException("The operation was aborted.", "AbortError");

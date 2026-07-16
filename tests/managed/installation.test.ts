@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   inspectGitHubCredentialComponent,
   inspectManagedData,
-  installManagedData,
   installPreparedManagedData,
   promoteReplacementWhatsAppStore,
 } from "../../src/managed/installation.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import { createManagedChatGptCredentialStore } from "../../src/model/chatgpt-authentication.ts";
+import { installManagedData } from "../support/managed-installation.ts";
 
 const roots: string[] = [];
 afterEach(async () => {

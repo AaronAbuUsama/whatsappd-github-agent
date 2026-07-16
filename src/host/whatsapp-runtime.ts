@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { WhatsAppSession } from "whatsappd";
 
@@ -8,7 +6,8 @@ import {
   configureWhatsAppParticipationPort,
   type WhatsAppHistoryPort,
   type WhatsAppSayPort,
-  type WhatsAppSayResult,
+  type WhatsAppDeliveryResult,
+  withTypingResult,
 } from "../capabilities/whatsapp-participation/whatsapp-port.js";
 import { makeManagedChatGate, type ChatGate } from "../coalescer/chat-gate.js";
 import * as Coalescer from "../coalescer/coalescer.js";
@@ -18,25 +17,12 @@ import { createConversationArchive } from "../intake/conversation-archive.js";
 import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
 import { configureAgentActivityRecovery } from "../logging/agent-activity-reporter.js";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging/logging.js";
+import type { WhatsAppRuntimeStatus } from "../managed/runtime-health.js";
+import { errorMessage } from "../shared/errors.js";
+import { renderQr } from "../shared/qr.js";
 import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
 
-const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 const isKnownPreSendFailure = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
-
-type DeliveryReceipt =
-  | { readonly delivery: "sent"; readonly messageId: string }
-  | { readonly delivery: "failed" | "unknown"; readonly deliveryError: string };
-
-const combineReceipt = (delivery: DeliveryReceipt, typingError?: string): WhatsAppSayResult => {
-  if (delivery.delivery === "sent") {
-    return typingError === undefined
-      ? { ...delivery, typing: "cleared" }
-      : { ...delivery, typing: "unknown", typingError };
-  }
-  return typingError === undefined
-    ? { ...delivery, typing: "cleared" }
-    : { ...delivery, typing: "unknown", typingError };
-};
 
 /** The sole real implementation behind Ambience's `say` tool. It never retries an uncertain provider outcome. */
 export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort => ({
@@ -48,14 +34,11 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort =>
       log.warn({ chatId, error: errorMessage(cause) }, "Typing-on failed before a WhatsApp reply");
     }
 
-    let delivery: DeliveryReceipt;
+    let delivery: WhatsAppDeliveryResult;
     try {
       const message = await session.send(chatId, { text });
       delivery = { delivery: "sent", messageId: message.id };
-      log.info(
-        { operatorEvent: "agent.say", text, chatId, messageId: message.id },
-        "Ambience said a WhatsApp message",
-      );
+      log.info({ operatorEvent: "agent.say", text, chatId, messageId: message.id }, "Ambience said a WhatsApp message");
     } catch (cause) {
       const deliveryError = errorMessage(cause);
       const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
@@ -71,7 +54,7 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort =>
       typingError = errorMessage(cause);
       log.warn({ chatId, error: typingError }, "WhatsApp typing indicator state is unknown");
     }
-    return combineReceipt(delivery, typingError);
+    return withTypingResult(delivery, typingError);
   },
 });
 
@@ -111,16 +94,13 @@ export const runWhatsAppSession = (
   );
 };
 
-export type WhatsAppRuntimePhase = "disabled" | "starting" | "online" | "failed" | "stopped";
-export interface WhatsAppRuntimeStatus {
-  readonly phase: WhatsAppRuntimePhase;
-  readonly chatTarget?: string;
-  readonly botIds?: readonly string[];
-  readonly error?: string;
-}
-
-let status: WhatsAppRuntimeStatus = { phase: "disabled" };
-export const getWhatsAppRuntimeStatus = (): WhatsAppRuntimeStatus => structuredClone(status);
+const WHATSAPP_RUNTIME_STATUS = Symbol.for("ambient-agent.whatsapp-runtime-status");
+const runtimeGlobal = globalThis as typeof globalThis & { [WHATSAPP_RUNTIME_STATUS]?: WhatsAppRuntimeStatus };
+const runtimeStatus = (): WhatsAppRuntimeStatus => (runtimeGlobal[WHATSAPP_RUNTIME_STATUS] ??= { phase: "disabled" });
+const setRuntimeStatus = (status: WhatsAppRuntimeStatus): void => {
+  runtimeGlobal[WHATSAPP_RUNTIME_STATUS] = status;
+};
+export const getWhatsAppRuntimeStatus = (): WhatsAppRuntimeStatus => structuredClone(runtimeStatus());
 
 export interface WhatsAppRuntimeControl {
   readonly stop: () => Promise<void>;
@@ -154,7 +134,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     ...(options.sessionFactory === undefined ? {} : { sessionFactory: options.sessionFactory }),
   });
   const log = getLogger("whatsapp");
-  status = { phase: "starting", chatTarget: gate.describe() };
+  setRuntimeStatus({ phase: "starting", chatTarget: gate.describe() });
   let stopping = false;
 
   const program = Effect.gen(function* () {
@@ -167,10 +147,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       account.authenticate({
         onPairing: (pairing) => {
           if (pairing.qr !== undefined) {
-            const qr = createRequire(import.meta.url)("qrcode-terminal") as {
-              generate(value: string, options: { readonly small: boolean }): void;
-            };
-            qr.generate(pairing.qr, { small: true });
+            renderQr(pairing.qr);
           } else if (pairing.code !== undefined) {
             // Pairing UX, not a log record: the user must see the code, and it must not land in log files.
             process.stdout.write(`WhatsApp pairing code: ${pairing.code}\n`);
@@ -180,7 +157,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     );
     const session = account.session();
     const botIds = botIdsOf(session, options.botLid);
-    status = { phase: "online", chatTarget: gate.describe(), botIds };
+    setRuntimeStatus({ phase: "online", chatTarget: gate.describe(), botIds });
     yield* Effect.sync(() =>
       log.info(
         {
@@ -198,7 +175,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const fiber = Effect.runFork(Effect.scoped(program).pipe(Effect.provide(effectLoggerLayer(log))));
   void Effect.runPromise(Fiber.await(fiber)).then((exit) => {
     if (Exit.isFailure(exit) && !stopping) {
-      status = { phase: "failed", chatTarget: gate.describe(), error: String(exit.cause) };
+      setRuntimeStatus({ phase: "failed", chatTarget: gate.describe(), error: String(exit.cause) });
       log.error({ cause: String(exit.cause) }, "WhatsApp runtime failed");
       const loggedOut = exit.cause.reasons
         .filter(Cause.isDieReason)
@@ -213,14 +190,14 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         (options.exit ?? process.exit)(1);
       }
     } else {
-      status = { phase: "stopped", chatTarget: gate.describe() };
+      setRuntimeStatus({ phase: "stopped", chatTarget: gate.describe() });
     }
   });
   return {
     stop: async () => {
       stopping = true;
       await Effect.runPromise(Fiber.interrupt(fiber));
-      status = { phase: "stopped", chatTarget: gate.describe() };
+      setRuntimeStatus({ phase: "stopped", chatTarget: gate.describe() });
     },
   };
 };

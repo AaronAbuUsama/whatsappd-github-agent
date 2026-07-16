@@ -1,10 +1,11 @@
 import type { GitHubWebhookDelivery } from "@flue/github";
 import type { DispatchReceipt } from "@flue/runtime";
-import { resolve } from "node:path";
 import * as v from "valibot";
 
 import { githubIssueOpenedInputSchema, type GitHubIssueOpenedInput } from "../ambience/events.js";
 import { getLogger } from "../logging/logging.js";
+import { errorMessage } from "../shared/errors.js";
+import { retry as retryOperation, type RetryPolicy } from "../shared/retry.js";
 import type { GitHubIngressRecord, GitHubIngressStore } from "./ingress-store.js";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -32,65 +33,11 @@ const issueOpenedPayloadSchema = v.object({
 });
 
 export interface GitHubIngressSettings {
-  readonly webhookSecret: string;
   readonly databasePath: string;
-  readonly legacyDatabasePath?: string;
   readonly routes: ReadonlyMap<string, string>;
 }
 
 const repositoryKey = (owner: string, repo: string): string => `${owner.trim()}/${repo.trim()}`.toLowerCase();
-
-const parseRepository = (value: string): string => {
-  const parts = value.trim().split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error(`GitHub repository route must be owner/repo, got ${value}`);
-  }
-  return repositoryKey(parts[0], parts[1]);
-};
-
-export const loadGitHubIngressSettings = (env: Readonly<Record<string, string | undefined>>): GitHubIngressSettings => {
-  const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim();
-  if (!webhookSecret) throw new Error("GITHUB_WEBHOOK_SECRET is required for GitHub ingress");
-
-  const routes = new Map<string, string>();
-  const configuredRoutes = env.GITHUB_CHAT_ROUTES?.trim();
-  if (configuredRoutes) {
-    for (const entry of configuredRoutes.split(",")) {
-      const separator = entry.indexOf("=");
-      const repository = separator < 0 ? "" : entry.slice(0, separator);
-      const chatId = separator < 0 ? "" : entry.slice(separator + 1).trim();
-      if (!repository || !chatId) {
-        throw new Error(`GitHub chat route must be owner/repo=chatId, got ${entry}`);
-      }
-      const key = parseRepository(repository);
-      if (routes.has(key)) throw new Error(`Duplicate GitHub chat route for ${key}`);
-      routes.set(key, chatId);
-    }
-  } else {
-    const defaultRepository = env.GITHUB_REPO?.trim();
-    const singularChatId = env.WHATSAPP_GROUP_ID?.trim();
-    if (defaultRepository && singularChatId) {
-      routes.set(parseRepository(defaultRepository), singularChatId);
-    }
-  }
-
-  if (routes.size === 0) {
-    throw new Error(
-      "At least one GitHub chat route is required via GITHUB_CHAT_ROUTES or GITHUB_REPO plus WHATSAPP_GROUP_ID",
-    );
-  }
-
-  const databasePath = env.APPLICATION_DB_PATH?.trim() || "./application.sqlite";
-  const configuredLegacyPath = env.GITHUB_INGRESS_DB_PATH?.trim() || "./data/github-ingress.db";
-  const legacyDatabasePath =
-    configuredLegacyPath && resolve(configuredLegacyPath) !== resolve(databasePath) ? configuredLegacyPath : undefined;
-  return {
-    webhookSecret,
-    databasePath,
-    ...(legacyDatabasePath === undefined ? {} : { legacyDatabasePath }),
-    routes,
-  };
-};
 
 export type GitHubIngressResult =
   | { readonly status: "duplicate"; readonly record: GitHubIngressRecord }
@@ -119,18 +66,12 @@ const defaultLogger: GitHubIngressLogger = {
   error: (record) => getLogger("github").error(record, String(record.event)),
 };
 
-export interface GitHubIngressRetryPolicy {
-  readonly attempts: number;
-  readonly delayMs: (attempt: number) => number;
-}
+export interface GitHubIngressRetryPolicy extends RetryPolicy {}
 
 const defaultRetryPolicy: GitHubIngressRetryPolicy = {
   attempts: 3,
   delayMs: (attempt) => attempt * 1_000,
 };
-
-const sleep = (millis: number): Promise<void> =>
-  millis <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, millis));
 
 export const createGitHubIngress = (options: {
   readonly store: GitHubIngressStore;
@@ -145,7 +86,10 @@ export const createGitHubIngress = (options: {
   const retry = options.retry ?? defaultRetryPolicy;
   const inFlight = new Set<string>();
 
-  const handle = async (delivery: GitHubWebhookDelivery, concurrentDuplicate: boolean): Promise<GitHubIngressResult> => {
+  const handle = async (
+    delivery: GitHubWebhookDelivery,
+    concurrentDuplicate: boolean,
+  ): Promise<GitHubIngressResult> => {
     const receivedAt = now().toISOString();
     if (!options.store.claim(delivery.deliveryId, delivery.name, receivedAt)) {
       const record = options.store.get(delivery.deliveryId);
@@ -246,34 +190,28 @@ export const createGitHubIngress = (options: {
     });
 
     let receipt: DispatchReceipt;
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        receipt = await options.dispatch(chatId, input);
-        break;
-      } catch (cause) {
-        if (attempt >= Math.max(1, retry.attempts)) {
-          const error = cause instanceof Error ? cause.message : String(cause);
-          options.store.settle(delivery.deliveryId, {
-            status: "failed",
-            repository,
-            chatId,
-            ambience: "ambience",
-            error,
-            settledAt: now().toISOString(),
-          });
-          logger.error({
-            event: "github.ingress.failed",
-            deliveryId: delivery.deliveryId,
-            repository,
-            chatId,
-            ambience: "ambience",
-            dispatchId: null,
-            error,
-          });
-          return { status: "failed", record: options.store.get(delivery.deliveryId)! };
-        }
-        await sleep(retry.delayMs(attempt));
-      }
+    try {
+      receipt = await retryOperation(() => options.dispatch(chatId, input), retry);
+    } catch (cause) {
+      const error = errorMessage(cause);
+      options.store.settle(delivery.deliveryId, {
+        status: "failed",
+        repository,
+        chatId,
+        ambience: "ambience",
+        error,
+        settledAt: now().toISOString(),
+      });
+      logger.error({
+        event: "github.ingress.failed",
+        deliveryId: delivery.deliveryId,
+        repository,
+        chatId,
+        ambience: "ambience",
+        dispatchId: null,
+        error,
+      });
+      return { status: "failed", record: options.store.get(delivery.deliveryId)! };
     }
     options.store.settle(delivery.deliveryId, {
       status: "done",

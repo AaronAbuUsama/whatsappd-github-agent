@@ -1,40 +1,11 @@
 import type { IssueRepository, RepositoryRef } from "./issue-repository.ts";
 import type { IssueOperationStore } from "./operation-store.ts";
+import { parseGitHubRepository } from "../../github/repository.js";
 
-const parseRepository = (value: string): RepositoryRef => {
-  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(value.trim());
-  if (!match) throw new Error(`GitHub repository must be owner/repo, got ${value}`);
-  return { owner: match[1]!, repo: match[2]! };
-};
+const parseRepository = (value: string): RepositoryRef =>
+  parseGitHubRepository(value, (invalid) => new Error(`GitHub repository must be owner/repo, got ${invalid}`));
 
 export const repositoryName = ({ owner, repo }: RepositoryRef): string => `${owner}/${repo}`;
-
-export interface IssueManagementSettings {
-  readonly token: string;
-  readonly defaultRepository: string;
-  readonly allowedRepositories: readonly string[];
-  readonly operationDatabasePath: string;
-}
-
-export const loadIssueManagementSettings = (
-  env: Readonly<Record<string, string | undefined>>,
-): IssueManagementSettings => {
-  const token = env.GITHUB_TOKEN?.trim();
-  if (!token) throw new Error("GITHUB_TOKEN is required for Issue Management");
-  const defaultRepository = env.GITHUB_REPO?.trim();
-  if (!defaultRepository) throw new Error("GITHUB_REPO is required for Issue Management");
-  parseRepository(defaultRepository);
-  const allowedRepositories = (env.GITHUB_ALLOWED_REPOS ?? "")
-    .split(",")
-    .map((repository) => repository.trim())
-    .filter(Boolean);
-  for (const repository of allowedRepositories) parseRepository(repository);
-  const operationDatabasePath = env.GITHUB_ISSUE_OPERATIONS_DB_PATH?.trim();
-  if (!operationDatabasePath) {
-    throw new Error("GITHUB_ISSUE_OPERATIONS_DB_PATH is required for durable Issue Management operations");
-  }
-  return { token, defaultRepository, allowedRepositories, operationDatabasePath };
-};
 
 export interface IssueManagementPolicy {
   authorize(requested?: string): RepositoryRef;
@@ -65,13 +36,15 @@ export interface IssueManagementRuntime {
   readonly policy: IssueManagementPolicy;
 }
 
-let configured: IssueManagementRuntime | undefined;
+const ISSUE_MANAGEMENT_RUNTIME = Symbol.for("ambient-agent.issue-management-runtime");
+const runtimeGlobal = globalThis as typeof globalThis & { [ISSUE_MANAGEMENT_RUNTIME]?: IssueManagementRuntime };
 
 export const configureIssueManagementRuntime = (runtime: IssueManagementRuntime): void => {
-  configured = runtime;
+  runtimeGlobal[ISSUE_MANAGEMENT_RUNTIME] = runtime;
 };
 
 export const getIssueManagementRuntime = (): IssueManagementRuntime => {
-  if (configured === undefined) throw new Error("Issue Management runtime is not configured");
-  return configured;
+  const runtime = runtimeGlobal[ISSUE_MANAGEMENT_RUNTIME];
+  if (runtime === undefined) throw new Error("Issue Management runtime is not configured");
+  return runtime;
 };

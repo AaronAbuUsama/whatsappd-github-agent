@@ -71,7 +71,6 @@ export interface ManagedChatInbox {
   window(windowId: string): ConversationWindow | undefined;
   windowForDispatch(dispatchId: string): ConversationWindow | undefined;
   createWindow(draft: ConversationWindowDraft): ConversationWindow;
-  admission(windowId: string): WindowAdmission | undefined;
   admissions(status?: WindowAdmission["status"]): readonly WindowAdmission[];
   markDone(windowId: string, receipt: WindowAdmissionReceipt): void;
   markFailed(windowId: string, reason: string): void;
@@ -433,7 +432,6 @@ export const createManagedChatInbox = (
         return { id: windowId, ...draft };
       });
     },
-    admission: (windowId) => archive.transaction(({ database }) => readAdmission(database, windowId)),
     admissions: (status) =>
       archive.transaction(({ database }) => {
         const rows = database
