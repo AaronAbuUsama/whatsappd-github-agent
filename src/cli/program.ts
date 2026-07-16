@@ -22,7 +22,10 @@ import {
   type AmbientRuntimeHealth,
   type AmbientRuntimeState,
 } from "../managed/runtime-health.js";
-import { installManagedRuntimeDependencies } from "../managed/runtime-dependencies.js";
+import {
+  installManagedRuntimeDependencies,
+  startDeferredWhatsAppRuntime,
+} from "../managed/runtime-dependencies.js";
 import {
   createUncertainWorkController,
   inspectUncertainWorkStatus,
@@ -128,11 +131,22 @@ const startGeneratedRuntime = async (
   const previousPort = process.env.PORT;
   process.env.PORT = String(configuration.runtime.port);
   try {
+    // The generated server top-level-awaits its HTTP bind, so this import resolves
+    // only once the configured port is actually listening and rejects (after the
+    // server stopped everything it started) when the port is occupied.
     await importServer(serverEntry.href);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException | null)?.code === "EADDRINUSE") {
+      throw new Error(
+        `Port ${configuration.runtime.port} is already in use; free it or run ambient-agent config --port <port> to choose another port.`,
+      );
+    }
+    throw cause;
   } finally {
     if (previousPort === undefined) delete process.env.PORT;
     else process.env.PORT = previousPort;
   }
+  startDeferredWhatsAppRuntime();
 };
 
 const requiredPrompt = async (label: string, prompt: () => Promise<string | symbol>): Promise<string> => {

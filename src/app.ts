@@ -10,7 +10,11 @@ import { createIssueOperationStore } from "./capabilities/issue-management/opera
 import { installGitHubIngressRuntime } from "./github/ingress-runtime.js";
 import { createOctokitIssueRepository } from "./host/github-issue-repository.js";
 import { getWhatsAppRuntimeStatus, startWhatsAppRuntime } from "./host/whatsapp-runtime.js";
-import { getManagedRuntimeDependencies, type ManagedRuntimeDependencies } from "./managed/runtime-dependencies.js";
+import {
+  deferWhatsAppRuntimeStart,
+  getManagedRuntimeDependencies,
+  type ManagedRuntimeDependencies,
+} from "./managed/runtime-dependencies.js";
 import { ambientRuntimeHealth, runtimeInstallationId } from "./managed/runtime-health.js";
 import { connectPiChatGptSubscription } from "./model/pi-subscription.js";
 
@@ -50,20 +54,24 @@ export const createAmbientAgentApp = async ({
   });
   app.route("/", flue());
 
-  const whatsapp = startWhatsAppRuntime({
-    storeDirectory: paths.whatsapp,
-    applicationDatabase: paths.applicationDatabase,
-    managedChats: configuration.managedChats,
+  // Deferred until the CLI observes a successful HTTP bind, so an occupied port
+  // fails startup before WhatsApp ever connects (#87).
+  deferWhatsAppRuntimeStart(() => {
+    const whatsapp = startWhatsAppRuntime({
+      storeDirectory: paths.whatsapp,
+      applicationDatabase: paths.applicationDatabase,
+      managedChats: configuration.managedChats,
+    });
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const shutdown = () => {
+        void whatsapp.stop().finally(() => {
+          process.removeListener(signal, shutdown);
+          process.kill(process.pid, signal);
+        });
+      };
+      process.once(signal, shutdown);
+    }
   });
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    const shutdown = () => {
-      void whatsapp.stop().finally(() => {
-        process.removeListener(signal, shutdown);
-        process.kill(process.pid, signal);
-      });
-    };
-    process.once(signal, shutdown);
-  }
 
   return app;
 };

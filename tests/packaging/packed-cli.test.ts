@@ -261,6 +261,66 @@ describe("packed ambient-agent executable", () => {
     }
   }, 60_000);
 
+  // #87 regression. This proves, against the packed runtime on the real startup path: an
+  // occupied configured port makes `ambient-agent start` exit nonzero with one actionable
+  // message naming the port and the `config --port` remediation; the WhatsApp runtime never
+  // transitions online (the fixture would deliver PACKED_WHATSAPP_INPUT and create an
+  // admission if it did); the process does not linger, and once the blocking listener is
+  // released nothing is left bound to the port. Still requiring a live WhatsApp/VPS check:
+  // that a real Baileys socket (not the fixture) is likewise never opened before the bind,
+  // and operator-shaped port collisions with other real services on the VPS.
+  it("exits nonzero and starts nothing when the configured port is already occupied", async () => {
+    if (process.platform === "win32") return;
+    const dataDirectory = join(root, "occupied-port");
+    await executeAmbientAgent(
+      ["--data-dir", dataDirectory, "init", "--authorize", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      fixtureEnvironment,
+    );
+    const port = await availablePort();
+    await executeAmbientAgent(["--data-dir", dataDirectory, "config", "--port", String(port)], fixtureEnvironment);
+
+    // Bind the wildcard address, exactly like the generated server does, so the
+    // collision reproduces on every platform.
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(port, resolve);
+    });
+    try {
+      const failure = (await executeAmbientAgent(["--data-dir", dataDirectory, "start"], {
+        ...fixtureEnvironment,
+        PACKED_WHATSAPP_INPUT: "OCCUPIED_PORT_87",
+        PACKED_WHATSAPP_MESSAGE_ID: "occupied-port-87",
+      }).then(
+        () => {
+          throw new Error("ambient-agent start succeeded although the configured port was occupied.");
+        },
+        (cause) => cause,
+      )) as { code: number; stdout: string; stderr: string };
+      expect(failure.code).toBe(1);
+      expect(failure.stderr).toContain(`Port ${port} is already in use`);
+      expect(failure.stderr).toContain("ambient-agent config --port");
+      expect(failure.stdout + failure.stderr).not.toContain("Ambience WhatsApp online");
+    } finally {
+      await new Promise((resolve) => blocker.close(resolve));
+    }
+
+    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+
+    const paths = managedPaths({ dataDirectory });
+    const archive = createConversationArchive(paths.applicationDatabase);
+    const inbox = createManagedChatInbox(archive, { allowed: () => true });
+    try {
+      expect(archive.readThread("120363000@g.us")).toEqual([]);
+      expect(inbox.unwindowed()).toEqual([]);
+      for (const status of ["pending", "done", "failed"] as const) {
+        expect(inbox.admissions(status)).toEqual([]);
+      }
+    } finally {
+      archive.close();
+    }
+  }, 60_000);
+
   it("replaces a stopped installation in a fresh home without losing owned state or canonical chat continuity", async () => {
     if (process.platform === "win32") return;
     const chatId = "120363000@g.us";
