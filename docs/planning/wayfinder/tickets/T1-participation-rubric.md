@@ -52,6 +52,25 @@ Output artifact: a `docs/planning/PARTICIPATION-RUBRIC.md` with, per axis, the r
 its scorer expression (deterministic assert where possible, LLM-judge criterion where
 not). T2's suite layout consumes this.
 
+## Resolution (Aaron, 2026-07-16 — live grilling session)
+
+Rubric ratified across all six axes; artifact:
+[docs/planning/PARTICIPATION-RUBRIC.md](../../PARTICIPATION-RUBRIC.md). Key rulings:
+
+- Two speech categories: conversational interjection (default silence; explicit
+  address always engages; implicit only with retrievable/citable facts) vs **task
+  workflow speech, which is always allowed** — "this is not a bot."
+- Addressed-with-nothing → brief honest reply, never silence.
+- Capture is a conversation: elicit until the template is fillable (NO cap on
+  questions), file, reply with the issue link, and post the PR link when it lands
+  (→ new DAG ticket: GitHub-ingress PR-event routing).
+- Multi-item windows: one message per concern, threaded via reply-to; chatter never
+  acknowledged. Meta traffic + SMOKE: hard silence.
+- Mechanics ratified: rubric feeds the agent prompt (behavior) AND the evals
+  (deterministic mechanics asserts + live LLM-judge rates in Braintrust).
+
+CLOSED.
+
 ## Grading (of doing this first)
 
 Floor-first: this IS the floor — A2/A3 code without it encodes a guess. Reversibility:

@@ -36,11 +36,28 @@ someone goes and does the thing.
 
 ## Open tickets (the frontier, in suggested order)
 
-- [T1 — Participation rubric ratification](tickets/T1-participation-rubric.md) — HITL grilling; the evals critical path (T7 adds the SMOKE carve-out axis)
-- [T2 — Harness window input + faux/live boundary](tickets/T2-harness-window-input.md) — blocked by T1
-- [T8 — Ratify the implementation DAG](tickets/T8-dag-ratification.md) — blocked by T1, T2; gates /to-spec → /to-tickets
+- [T2 — Harness window input + faux/live boundary](tickets/T2-harness-window-input.md) — unblocked (T1 resolved)
+- [T8 — Ratify the implementation DAG](tickets/T8-dag-ratification.md) — blocked by T2; gates /to-spec → /to-tickets
 
 ## Decisions so far
+
+- **Skill layering architecture** (Aaron, in-session 2026-07-16) — tools are code (the
+  machine); ALL policy/behavior lives in skills (the mind); skills are layered bundles
+  (Flue `PackagedSkillDirectory`, natively multi-file): a **main ambience skill**
+  (identity + WhatsApp teammate behavior — the ratified rubric axes) with **domain
+  skills** beneath it (issue-management first; technical depth like label taxonomies
+  and blocking relationships as reference files inside the bundle). Layered skills ARE
+  the extension mechanism — one domain skill ships now, but the shape must be the
+  extensible one. Consequence: the A2 deliverable is a skill-tree restructure +
+  SKILL.md amendments, not a rubric-encoded prompt;
+  [PARTICIPATION-RUBRIC.md](../PARTICIPATION-RUBRIC.md) is the decision record, the
+  skill bundles are the artifact, and eval judges grade against the same skill text
+  the agent reads.
+- [T1 — Participation rubric ratification](tickets/T1-participation-rubric.md) — all six
+  axes ratified in live session; teammate-not-bot; task-workflow speech always allowed;
+  capture is a conversation (elicit until template-fillable, reply with issue link,
+  post PR link when it lands → new PR-ingress ticket); artifact
+  [PARTICIPATION-RUBRIC.md](../PARTICIPATION-RUBRIC.md).
 
 - [T4 — Windows carry everything](tickets/T4-windows-carry-everything.md) — O1: coalescer
   event widens to a union; reaction/edit/revocation extend-only, may open a cold window,
