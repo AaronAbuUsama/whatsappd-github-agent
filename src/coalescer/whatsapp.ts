@@ -1,6 +1,5 @@
 /**
- * The real WhatsApp event source over an in-process whatsappd session, plus
- * the session bootstrap.
+ * The real WhatsApp event source over an in-process whatsappd session.
  *
  * The in-process subscription retains `contextInfo.mentionedJid` and quoted
  * metadata needed by `addressesBot`.
@@ -8,27 +7,11 @@
  * The event source swaps in behind the same port the timing tests satisfy. The
  * session is a scoped resource: it is stopped and unsubscribed on scope close.
  */
-import { createRequire } from "node:module";
-import { Data, Effect, Layer, Queue, type Scope, Stream } from "effect";
-import {
-  createSession,
-  fileStore,
-  type IncomingMessage as WaMessage,
-  isOnline,
-  isTerminal,
-  qrAuth,
-  type WhatsAppSession,
-} from "whatsappd";
+import { Effect, Layer, Queue, Stream } from "effect";
+import { type IncomingMessage as WaMessage, type WhatsAppSession } from "whatsappd";
+import { getLogger } from "../logging/logging.ts";
 import type { IncomingMessage } from "./events.ts";
 import { EventSource } from "./ports.ts";
-
-// qrcode-terminal ships no types; require it so first-run pairing prints a
-// scannable QR without adding a local declaration file.
-const qr = createRequire(import.meta.url)("qrcode-terminal") as {
-  generate(text: string, opts?: { small?: boolean }): void;
-};
-
-class WhatsAppError extends Data.TaggedError("WhatsAppError")<{ readonly cause: unknown }> {}
 
 /** Plain-text body of an inbound message (media captions included; non-text → ""). */
 const textOf = (msg: WaMessage): string => {
@@ -46,10 +29,10 @@ const textOf = (msg: WaMessage): string => {
   }
 };
 
-/** `HH:MM:SS` for readable traffic logs. */
-const stamp = (): string => new Date().toTimeString().slice(0, 8);
-
-/** Log one inbound message as it arrives off the wire, with why-it-was-ignored tags. */
+/**
+ * Trace one inbound message as it arrives off the wire, with why-it-was-ignored
+ * tags. Debug level only — message bodies never reach default output (ADR 0016).
+ */
 const logInbound = (msg: WaMessage, allowed: boolean): void => {
   const tags = [
     msg.fromMe ? "self" : null,
@@ -57,11 +40,16 @@ const logInbound = (msg: WaMessage, allowed: boolean): void => {
     !allowed ? "ignored" : null,
     msg.context?.quoted ? "quote" : null,
   ].filter(Boolean);
-  const who = msg.pushName ?? msg.from;
-  // Show raw mention JIDs so a mention-that-should-address-the-bot but doesn't is visible.
-  const mentions = msg.context?.mentions?.length ? `  mentions=${JSON.stringify(msg.context.mentions)}` : "";
-  console.log(
-    `[${stamp()}] 📥 ${who} in ${msg.chatId}: ${JSON.stringify(textOf(msg))}${tags.length ? `  [${tags.join(",")}]` : ""}${mentions}`,
+  getLogger("whatsapp").debug(
+    {
+      chatId: msg.chatId,
+      from: msg.pushName ?? msg.from,
+      ...(tags.length === 0 ? {} : { tags }),
+      // Raw mention JIDs so a mention-that-should-address-the-bot but doesn't is visible.
+      ...(msg.context?.mentions?.length ? { mentions: msg.context.mentions } : {}),
+      text: textOf(msg),
+    },
+    "Inbound WhatsApp message",
   );
 };
 
@@ -79,68 +67,6 @@ const toIncoming = (msg: WaMessage): IncomingMessage => ({
   mentions: msg.context?.mentions ?? [],
   quotedFrom: msg.context?.quoted?.from,
 });
-
-/**
- * Create the session, connect, and resolve once it's genuinely online (so
- * `identity()` is readable). Prints a QR on first-run pairing; fails if the
- * connection reaches a terminal state (e.g. logged out) without coming online.
- * Scoped: the session is stopped and its listener removed on scope close.
- */
-export interface SessionPreparation {
-  readonly session: WhatsAppSession;
-  readonly finalize?: () => void;
-}
-
-export const openSession = (
-  storeDir: string,
-  prepare: (session: WhatsAppSession) => SessionPreparation = (session) => ({ session }),
-): Effect.Effect<WhatsAppSession, WhatsAppError, Scope.Scope> =>
-  Effect.gen(function* () {
-    // Preparation runs while the session is inert. The production runtime uses this hook
-    // to subscribe durable history capture before start() emits initial sync.
-    const prepared = prepare(createSession({ store: fileStore(storeDir), auth: qrAuth() }));
-    const session = prepared.session;
-    if (prepared.finalize !== undefined) yield* Effect.addFinalizer(() => Effect.sync(prepared.finalize!));
-    yield* Effect.addFinalizer(() => Effect.promise(() => session.stop()).pipe(Effect.ignore));
-
-    // Log status transitions + render a QR on first-run pairing, for the session's lifetime.
-    const logUnsub = session.onStatus((status) => {
-      if (
-        status.phase === "pairing" &&
-        status.pairing.step === "challenge_live" &&
-        status.pairing.method === "qr" &&
-        status.pairing.qr
-      ) {
-        console.log("\n📱 Link a device: WhatsApp → Settings → Linked devices → Link a device, then scan:\n");
-        qr.generate(status.pairing.qr, { small: true });
-      } else {
-        console.log(`[wa] ${status.phase}`);
-      }
-    });
-    yield* Effect.addFinalizer(() => Effect.sync(() => logUnsub()));
-
-    // Connect and settle once genuinely online (so identity() is readable), or fail
-    // on a terminal status. start() is fired here, NOT awaited separately — it doesn't
-    // resolve until well after online, so we settle on the status callback instead.
-    yield* Effect.callback<void, WhatsAppError>((resume) => {
-      const unsub = session.onStatus((status) => {
-        if (isOnline(status)) {
-          unsub();
-          resume(Effect.void);
-        } else if (isTerminal(status)) {
-          unsub();
-          resume(Effect.fail(new WhatsAppError({ cause: `connection ${status.phase}` })));
-        }
-      });
-      session.start().catch((cause: unknown) => {
-        unsub();
-        resume(Effect.fail(new WhatsAppError({ cause })));
-      });
-      return Effect.sync(() => unsub());
-    });
-
-    return session;
-  });
 
 /**
  * The connected account's own JID — the botId `addressesBot` matches against.

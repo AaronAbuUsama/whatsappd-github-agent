@@ -191,6 +191,27 @@ Useful lifecycle commands:
 For stopped-runtime backup, restore, and Uncertain-work procedures, see
 [Ambience recovery](./docs/architecture/ambience-recovery.md).
 
+### Logging
+
+The runtime owns one logging root (ADR 0016). Command responses stay on stdout — `status --json` and `doctor --json`
+always emit valid JSON there — while diagnostics go to stderr and to rotating files.
+
+- **Default output** is concise and human-readable on a terminal: startup phases, connected services, the watched chat
+  and repository, actionable warnings, and terminal failures. No raw JSON, no Effect fiber ids, no message bodies.
+- **`ambient-agent start --debug`** raises the level to debug: full diagnostics, inbound message traces, and raw
+  upstream WhatsApp records.
+- **`ambient-agent start --log-format json`** forces one JSON record per stderr line for a service manager
+  (`--log-format pretty` forces human lines). Without the flag, a TTY gets pretty lines and everything else gets JSON.
+- **Files:** every record is also written as structured JSON to `<data-dir>/logs/ambient-agent.log`, rotated at
+  10 MiB and capped at 5 files, so "what happened last night" survives without journal discipline.
+- **Redaction:** tokens, webhook secrets, OAuth codes, and QR payloads are censored at the root before any sink;
+  message text is logged at debug level only.
+
+Output printed before the application starts is outside its control: `npm exec`/`npx` install confirmations and
+deprecation notices, and Node.js process warnings, cannot be reformatted by Ambient Agent. Suppress the npm install
+confirmation with `npm exec --yes ambient-agent` (or `npx -y ambient-agent`); silence Node process warnings, if you
+must, with `NODE_OPTIONS=--no-warnings`.
+
 ## Extend Ambient Agent
 
 Capabilities are the canonical extension unit. The two shipped examples live together:

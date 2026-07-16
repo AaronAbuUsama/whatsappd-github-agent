@@ -1,6 +1,7 @@
 import type { DispatchReceipt } from "@flue/runtime";
 
 import type { ConversationWindow } from "../coalescer/events.js";
+import { getLogger } from "../logging/logging.js";
 import type { ManagedChatInbox } from "./managed-chat-inbox.js";
 
 export interface DispatchRetryPolicy {
@@ -48,8 +49,9 @@ export const admitWindow = async (
             `Flue dispatch failed and the failed state could not be recorded for ${window.id}.`,
           );
         }
-        console.error(
-          JSON.stringify({ event: "window.dispatch.failed", windowId: window.id, chatId: window.chatId, attempt, reason }),
+        getLogger("intake").error(
+          { windowId: window.id, chatId: window.chatId, attempt, reason },
+          "Flue dispatch failed; the Window settled as failed",
         );
         throw cause;
       }
@@ -60,14 +62,9 @@ export const admitWindow = async (
     inbox.markDone(window.id, receipt);
   } catch (cause) {
     // Dispatch succeeded; the Window stays pending and startup re-dispatches it.
-    console.error(
-      JSON.stringify({
-        event: "window.done-write.failed",
-        windowId: window.id,
-        chatId: window.chatId,
-        dispatchId: receipt.dispatchId,
-        reason: errorMessage(cause),
-      }),
+    getLogger("intake").error(
+      { windowId: window.id, chatId: window.chatId, dispatchId: receipt.dispatchId, reason: errorMessage(cause) },
+      "Window done-write failed; startup will re-dispatch it",
     );
   }
 };

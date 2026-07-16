@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { runCli, type CliOutput } from "../../src/cli/program.ts";
-import { getManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
+import { deferWhatsAppRuntimeStart, getManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import type { ChatGptOAuthAdapter } from "../../src/model/chatgpt-authentication.ts";
 import { ChatGptReadinessError } from "../../src/model/pi-subscription.ts";
@@ -205,6 +205,7 @@ describe("managed CLI", () => {
         ...cli,
         importRuntime: async () => {
           imports += 1;
+          deferWhatsAppRuntimeStart(() => undefined);
           const runtime = getManagedRuntimeDependencies();
           await expect(runtime.authentication.inspect()).resolves.toEqual({ state: "ready" });
           expect(runtime).toMatchObject({
@@ -239,6 +240,118 @@ describe("managed CLI", () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  it("fails an occupied configured port with one actionable message before WhatsApp ever starts", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    expect(await runCli(["--data-dir", paths.data, "config", "--port", "42069"], { ...harness(), interactive: false })).toBe(
+      0,
+    );
+
+    const cli = harness();
+    let whatsappStarted = false;
+    const exitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...cli,
+      importRuntime: async () => {
+        deferWhatsAppRuntimeStart(() => {
+          whatsappStarted = true;
+        });
+        const failure = new Error("listen EADDRINUSE: address already in use 127.0.0.1:42069") as NodeJS.ErrnoException;
+        failure.code = "EADDRINUSE";
+        throw failure;
+      },
+    });
+    expect(exitCode).toBe(1);
+    expect(whatsappStarted).toBe(false);
+    expect(cli.stderr()).toContain("Port 42069 is already in use");
+    expect(cli.stderr()).toContain("ambient-agent config --port");
+
+    // The generated server aggregates the bind failure with cleanup errors when its
+    // own shutdown also fails; the port message must survive that wrapping.
+    const wrapped = harness();
+    const wrappedExitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...wrapped,
+      importRuntime: async () => {
+        const failure = new Error("listen EADDRINUSE: address already in use 127.0.0.1:42069") as NodeJS.ErrnoException;
+        failure.code = "EADDRINUSE";
+        throw new AggregateError([failure, new Error("cleanup failed")], "[flue] Node server shutdown failed.");
+      },
+    });
+    expect(wrappedExitCode).toBe(1);
+    expect(wrapped.stderr()).toContain("Port 42069 is already in use");
+  });
+
+  it("propagates non-port import failures without the port remediation", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+
+    const cli = harness();
+    const exitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...cli,
+      importRuntime: async () => {
+        throw new Error("generated server exploded");
+      },
+    });
+    expect(exitCode).toBe(1);
+    expect(cli.stderr()).toContain("generated server exploded");
+    expect(cli.stderr()).not.toContain("already in use");
+  });
+
+  it("starts the deferred WhatsApp runtime only after the server import binds its port", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+
+    const cli = harness();
+    const events: string[] = [];
+    const exitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...cli,
+      importRuntime: async () => {
+        deferWhatsAppRuntimeStart(() => events.push("whatsapp-started"));
+        events.push("listener-bound");
+      },
+    });
+    expect(exitCode, cli.stderr()).toBe(0);
+    expect(events).toEqual(["listener-bound", "whatsapp-started"]);
   });
 
   it("supports a fully scripted setup and deterministic status", async () => {

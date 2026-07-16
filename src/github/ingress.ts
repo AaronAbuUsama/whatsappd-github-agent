@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import * as v from "valibot";
 
 import { githubIssueOpenedInputSchema, type GitHubIssueOpenedInput } from "../ambience/events.js";
+import { getLogger } from "../logging/logging.js";
 import type { GitHubIngressRecord, GitHubIngressStore } from "./ingress-store.js";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -113,9 +114,9 @@ export interface GitHubIngressLogger {
 }
 
 const defaultLogger: GitHubIngressLogger = {
-  info: (record) => console.info(JSON.stringify(record)),
-  warn: (record) => console.warn(JSON.stringify(record)),
-  error: (record) => console.error(JSON.stringify(record)),
+  info: (record) => getLogger("github").info(record, String(record.event)),
+  warn: (record) => getLogger("github").warn(record, String(record.event)),
+  error: (record) => getLogger("github").error(record, String(record.event)),
 };
 
 export interface GitHubIngressRetryPolicy {

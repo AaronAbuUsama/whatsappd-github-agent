@@ -15,6 +15,7 @@ import {
   type WaIdentity,
   type WhatsAppSession,
 } from "whatsappd";
+import type { Logger } from "pino";
 
 import type { ConversationArchive } from "../intake/conversation-archive.ts";
 import {
@@ -63,6 +64,8 @@ export interface ManagedWhatsAppAccount extends WhatsAppAccountSetup {
 export interface CreateWhatsAppAccountOptions {
   readonly storeDirectory: string;
   readonly archive: Pick<ConversationArchive, "append">;
+  /** App-owned child logger injected through whatsappd's public seam (ADR 0016). */
+  readonly logger?: Logger;
   readonly sessionFactory?: () => WhatsAppSession;
   readonly now?: () => number;
   readonly syncTimeoutMillis?: number;
@@ -114,6 +117,7 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
     createSession({
       store: fileStore(options.storeDirectory),
       auth: qrAuth(),
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
   const chats = new Map<string, HistoryChat>();
   const contacts = new Map<string, HistoryContact>();

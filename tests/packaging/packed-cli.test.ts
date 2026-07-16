@@ -53,11 +53,13 @@ const executeAmbientAgent = (args: string[], env: NodeJS.ProcessEnv = environmen
       })
     : execute(executable, args, { cwd: homeDirectory, env });
 
+// Binds the wildcard address, like the generated server does, so a reported port is
+// genuinely free for the runtime and not merely free on loopback.
 const availablePort = async (): Promise<number> =>
   await new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, () => {
       const address = server.address();
       if (address === null || typeof address === "string") return reject(new Error("Could not allocate a test port."));
       server.close((cause) => (cause === undefined ? resolve(address.port) : reject(cause)));
@@ -254,7 +256,8 @@ describe("packed ambient-agent executable", () => {
         runtimeState: "healthy",
         observedRuntime: { state: "healthy", whatsapp: { phase: "online" } },
       });
-      expect(runtime.stdout()).toContain("Ambience WhatsApp online");
+      // Runtime diagnostics live on stderr (ADR 0016); stdout stays free for command responses.
+      expect(runtime.stderr()).toContain("Ambience WhatsApp online");
       expect(runtime.stderr()).not.toContain("packed-github-secret");
     } finally {
       await runtime.stop();
@@ -321,6 +324,72 @@ describe("packed ambient-agent executable", () => {
     await expect(stat(conflictedLegacy)).resolves.toBeDefined();
   }, 60_000);
 
+  // #87 regression. This proves, against the packed runtime on the real startup path: an
+  // occupied configured port makes `ambient-agent start` exit nonzero with one actionable
+  // message naming the port and the `config --port` remediation; the WhatsApp runtime never
+  // transitions online (the fixture would deliver PACKED_WHATSAPP_INPUT and create an
+  // admission if it did); the process does not linger, and once the blocking listener is
+  // released nothing is left bound to the port. Still requiring a live WhatsApp/VPS check:
+  // that a real Baileys socket (not the fixture) is likewise never opened before the bind,
+  // and operator-shaped port collisions with other real services on the VPS.
+  it("exits nonzero and starts nothing when the configured port is already occupied", async () => {
+    if (process.platform === "win32") return;
+    const dataDirectory = join(root, "occupied-port");
+    await executeAmbientAgent(
+      ["--data-dir", dataDirectory, "init", "--authorize", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      fixtureEnvironment,
+    );
+    const port = await availablePort();
+    await executeAmbientAgent(["--data-dir", dataDirectory, "config", "--port", String(port)], fixtureEnvironment);
+
+    // Bind the wildcard address, exactly like the generated server does, so the
+    // collision reproduces on every platform.
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(port, resolve);
+    });
+    try {
+      const failure = (await executeAmbientAgent(["--data-dir", dataDirectory, "start"], {
+        ...fixtureEnvironment,
+        PACKED_WHATSAPP_INPUT: "OCCUPIED_PORT_87",
+        PACKED_WHATSAPP_MESSAGE_ID: "occupied-port-87",
+      }).then(
+        () => {
+          throw new Error("ambient-agent start succeeded although the configured port was occupied.");
+        },
+        (cause) => cause,
+      )) as { code: number; stdout: string; stderr: string };
+      expect(failure.code).toBe(1);
+      expect(failure.stderr).toContain(`Port ${port} is already in use`);
+      expect(failure.stderr).toContain("ambient-agent config --port");
+      expect(failure.stdout + failure.stderr).not.toContain("Ambience WhatsApp online");
+    } finally {
+      await new Promise((resolve) => blocker.close(resolve));
+    }
+
+    // The port is provably free again: binding it succeeds, so the failed start left no listener.
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(port, resolve);
+    });
+    await new Promise((resolve) => probe.close(resolve));
+
+    const paths = managedPaths({ dataDirectory });
+    const archive = createConversationArchive(paths.applicationDatabase);
+    const inbox = createManagedChatInbox(archive, { allowed: () => true });
+    try {
+      expect(archive.readThread("120363000@g.us")).toEqual([]);
+      expect(inbox.unwindowed()).toEqual([]);
+      for (const status of ["pending", "done", "failed"] as const) {
+        expect(inbox.admissions(status)).toEqual([]);
+      }
+    } finally {
+      archive.close();
+    }
+  }, 60_000);
+
   it("replaces a stopped installation in a fresh home without losing owned state or canonical chat continuity", async () => {
     if (process.platform === "win32") return;
     const chatId = "120363000@g.us";
@@ -364,7 +433,7 @@ describe("packed ambient-agent executable", () => {
       PACKED_WHATSAPP_MESSAGE_ID: "before-backup-58",
     });
     try {
-      expect(sourceRuntime.stdout()).toContain(sourceIdentity.jid);
+      expect(sourceRuntime.stderr()).toContain(sourceIdentity.jid);
       await waitForCanonicalAgentText(sourcePaths.flueDatabase, chatId, "BEFORE_BACKUP_58");
     } finally {
       await sourceRuntime.stop();
@@ -520,7 +589,7 @@ describe("packed ambient-agent executable", () => {
       restoredHome,
     );
     try {
-      expect(restoredRuntime.stdout()).toContain(sourceIdentity.jid);
+      expect(restoredRuntime.stderr()).toContain(sourceIdentity.jid);
       const restoredHistory = await waitForCanonicalAgentText(restoredPaths.flueDatabase, chatId, "AFTER_RESTORE_58");
       expect(restoredHistory).toContain("BEFORE_BACKUP_58");
       expect(restoredHistory).toContain("AFTER_RESTORE_58");

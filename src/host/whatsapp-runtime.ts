@@ -16,6 +16,7 @@ import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js"
 import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
 import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
+import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging/logging.js";
 import { createWhatsAppAccount } from "../whatsapp/account.js";
 
 const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
@@ -39,37 +40,32 @@ const combineReceipt = (delivery: DeliveryReceipt, typingError?: string): WhatsA
 /** The sole real implementation behind Ambience's `say` tool. It never retries an uncertain provider outcome. */
 export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort => ({
   say: async (chatId, text) => {
+    const log = getLogger("whatsapp");
     try {
       await session.setTyping(chatId, true);
     } catch (cause) {
-      console.warn(`[ambience] typing-on failed for ${chatId}: ${errorMessage(cause)}`);
+      log.warn({ chatId, error: errorMessage(cause) }, "Typing-on failed before a WhatsApp reply");
     }
 
     let delivery: DeliveryReceipt;
     try {
       const message = await session.send(chatId, { text });
       delivery = { delivery: "sent", messageId: message.id };
-      console.info(JSON.stringify({ event: "whatsapp.say.sent", chatId, messageId: message.id }));
+      log.info({ chatId, messageId: message.id }, "WhatsApp reply sent");
     } catch (cause) {
       const deliveryError = errorMessage(cause);
       const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
       delivery = { delivery: outcome, deliveryError };
-      console.error(
-        JSON.stringify({
-          event: `whatsapp.say.${outcome}`,
-          chatId,
-          error: deliveryError,
-        }),
-      );
+      log.error({ chatId, error: deliveryError }, `WhatsApp reply delivery ${outcome}`);
     }
 
     let typingError: string | undefined;
     try {
       await session.setTyping(chatId, false);
-      console.info(JSON.stringify({ event: "whatsapp.typing.cleared", chatId }));
+      log.debug({ chatId }, "WhatsApp typing indicator cleared");
     } catch (cause) {
       typingError = errorMessage(cause);
-      console.error(JSON.stringify({ event: "whatsapp.typing.unknown", chatId, error: typingError }));
+      log.warn({ chatId, error: typingError }, "WhatsApp typing indicator state is unknown");
     }
     return combineReceipt(delivery, typingError);
   },
@@ -138,7 +134,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
-  const account = createWhatsAppAccount({ storeDirectory: storeDir, archive: inbox.recorder });
+  const account = createWhatsAppAccount({ storeDirectory: storeDir, archive: inbox.recorder, logger: upstreamWhatsAppLogger() });
+  const log = getLogger("whatsapp");
   status = { phase: "starting", chatTarget: gate.describe() };
   let stopping = false;
 
@@ -157,7 +154,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
             };
             qr.generate(pairing.qr, { small: true });
           } else if (pairing.code !== undefined) {
-            console.info(`[ambience] WhatsApp pairing code: ${pairing.code}`);
+            // Pairing UX, not a log record: the user must see the code, and it must not land in log files.
+            process.stdout.write(`WhatsApp pairing code: ${pairing.code}\n`);
           }
         },
       }),
@@ -169,11 +167,11 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     yield* runWhatsAppSession(session, { gate, history: archive, inbox, botLid: options.botLid });
   });
 
-  const fiber = Effect.runFork(Effect.scoped(program));
+  const fiber = Effect.runFork(Effect.scoped(program).pipe(Effect.provide(effectLoggerLayer(log))));
   void Effect.runPromise(Fiber.await(fiber)).then((exit) => {
     if (Exit.isFailure(exit) && !stopping) {
       status = { phase: "failed", chatTarget: gate.describe(), error: String(exit.cause) };
-      console.error(`[ambience] WhatsApp runtime failed: ${String(exit.cause)}`);
+      log.error({ cause: String(exit.cause) }, "WhatsApp runtime failed");
     } else {
       status = { phase: "stopped", chatTarget: gate.describe() };
     }
