@@ -20,7 +20,7 @@ export interface WhatsAppSayPort {
 
 export interface WhatsAppReactPort {
   /** Add one reaction to a referenced message without retrying an uncertain provider outcome. */
-  readonly react: (chatId: string, messageId: string, emoji: string) => Promise<WhatsAppSayResult>;
+  readonly react: (chatId: string, messageId: string, emoji: string) => Promise<WhatsAppDeliveryResult>;
 }
 
 export interface WhatsAppOutboundPort extends WhatsAppSayPort, WhatsAppReactPort {}

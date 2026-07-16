@@ -5,6 +5,12 @@ import type { ProjectedConversationMessage } from "../../intake/conversation-arc
 import { getWhatsAppParticipationPort } from "./whatsapp-port.js";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const emojiString = v.pipe(
+  v.string(),
+  v.minLength(1),
+  v.check((value) => [...graphemeSegmenter.segment(value)].length <= 8, "Emoji must contain at most 8 characters."),
+);
 const historyMessageSchema = v.object({
   id: nonEmptyString,
   chatId: nonEmptyString,
@@ -19,11 +25,12 @@ const historyOutputSchema = v.object({
   messages: v.array(historyMessageSchema),
   context: v.string(),
 });
+const deliveryOutputSchema = v.union([
+  v.object({ delivery: v.literal("sent"), messageId: nonEmptyString }),
+  v.object({ delivery: v.union([v.literal("failed"), v.literal("unknown")]), deliveryError: nonEmptyString }),
+]);
 const sayOutputSchema = v.intersect([
-  v.union([
-    v.object({ delivery: v.literal("sent"), messageId: nonEmptyString }),
-    v.object({ delivery: v.union([v.literal("failed"), v.literal("unknown")]), deliveryError: nonEmptyString }),
-  ]),
+  deliveryOutputSchema,
   v.union([
     v.object({ typing: v.literal("cleared") }),
     v.object({ typing: v.literal("unknown"), typingError: nonEmptyString }),
@@ -45,9 +52,9 @@ export const createReactTool = (chatId: string) =>
     description: "React to one message in the WhatsApp chat bound to this Ambience instance.",
     input: v.object({
       messageId: nonEmptyString,
-      emoji: v.pipe(v.string(), v.minLength(1), v.maxLength(8)),
+      emoji: emojiString,
     }),
-    output: sayOutputSchema,
+    output: deliveryOutputSchema,
     run: ({ input }) => getWhatsAppParticipationPort().react(chatId, input.messageId, input.emoji),
   });
 

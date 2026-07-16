@@ -28,16 +28,30 @@ import { errorMessage } from "../shared/errors.js";
 import { renderQr } from "../shared/qr.js";
 import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
 
-const isKnownPreSendFailure = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
+const isKnownTransportRejection = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
+const deliveryFailure = (
+  cause: unknown,
+): { readonly delivery: "failed" | "unknown"; readonly deliveryError: string } => {
+  const deliveryError = errorMessage(cause);
+  return { delivery: isKnownTransportRejection(deliveryError) ? "failed" : "unknown", deliveryError };
+};
+const isGroupJid = (chatId: string): boolean => chatId.endsWith("@g.us");
 const TYPING_LEAD_MS = 750;
 
 /** The sole real implementation behind Ambience's outbound participation tools. */
 export const createWhatsAppHost = (
   session: WhatsAppSession,
-  lookupMessage: (chatId: string, messageId: string) => MessageRef | undefined = () => undefined,
+  lookupMessage: (chatId: string, messageId: string) => MessageRef | undefined,
 ): WhatsAppOutboundPort => ({
   say: async (chatId, text, replyTo) => {
     const log = getLogger("whatsapp");
+    const quote = replyTo === undefined ? undefined : lookupMessage(chatId, replyTo);
+    if (replyTo !== undefined && quote === undefined) {
+      return withTypingResult({
+        delivery: "failed",
+        deliveryError: `WhatsApp message ${replyTo} is not available in ${chatId}.`,
+      });
+    }
     let typingStarted = false;
     try {
       await session.setTyping(chatId, true);
@@ -52,27 +66,17 @@ export const createWhatsAppHost = (
     let typingError: string | undefined;
     try {
       try {
-        const quote = replyTo === undefined ? undefined : lookupMessage(chatId, replyTo);
-        if (replyTo !== undefined && quote === undefined) {
-          delivery = {
-            delivery: "failed",
-            deliveryError: `WhatsApp message ${replyTo} is not available in ${chatId}.`,
-          };
-        } else {
-          const message = await session.send(chatId, { text }, quote === undefined ? undefined : { quote });
-          delivery = { delivery: "sent", messageId: message.id };
-          if (!reportAgentSpoke(chatId, text, message.id)) {
-            log.info(
-              { operatorEvent: "agent.say", text, chatId, messageId: message.id },
-              "Ambience said a WhatsApp message",
-            );
-          }
+        const message = await session.send(chatId, { text }, quote === undefined ? undefined : { quote });
+        delivery = { delivery: "sent", messageId: message.id };
+        if (!reportAgentSpoke(chatId, text, message.id)) {
+          log.info(
+            { operatorEvent: "agent.say", text, chatId, messageId: message.id },
+            "Ambience said a WhatsApp message",
+          );
         }
       } catch (cause) {
-        const deliveryError = errorMessage(cause);
-        const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
-        delivery = { delivery: outcome, deliveryError };
-        log.error({ chatId, error: deliveryError }, `WhatsApp reply delivery ${outcome}`);
+        delivery = deliveryFailure(cause);
+        log.error({ chatId, error: delivery.deliveryError }, `WhatsApp reply delivery ${delivery.delivery}`);
       }
     } finally {
       try {
@@ -88,10 +92,10 @@ export const createWhatsAppHost = (
   react: async (chatId, messageId, emoji) => {
     const target = lookupMessage(chatId, messageId);
     if (target === undefined) {
-      return withTypingResult({
+      return {
         delivery: "failed",
         deliveryError: `WhatsApp message ${messageId} is not available in ${chatId}.`,
-      });
+      };
     }
     try {
       const message = await session.send(chatId, { react: { to: target, emoji } });
@@ -99,12 +103,14 @@ export const createWhatsAppHost = (
         { operatorEvent: "agent.react", emoji, chatId, targetMessageId: messageId },
         "Ambience reacted to a WhatsApp message",
       );
-      return withTypingResult({ delivery: "sent", messageId: message.id });
+      return { delivery: "sent", messageId: message.id };
     } catch (cause) {
-      const deliveryError = errorMessage(cause);
-      const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
-      getLogger("whatsapp").error({ chatId, error: deliveryError }, `WhatsApp reaction delivery ${outcome}`);
-      return withTypingResult({ delivery: outcome, deliveryError });
+      const delivery = deliveryFailure(cause);
+      getLogger("whatsapp").error(
+        { chatId, error: delivery.deliveryError },
+        `WhatsApp reaction delivery ${delivery.delivery}`,
+      );
+      return delivery;
     }
   },
 });
@@ -131,9 +137,7 @@ export const runWhatsAppSession = (
           id: message.id,
           chatId: message.chatId,
           fromMe: message.direction === "outbound",
-          ...(message.chatId.endsWith("@g.us") && message.senderId !== undefined
-            ? { participant: message.senderId }
-            : {}),
+          ...(isGroupJid(message.chatId) && message.senderId !== undefined ? { participant: message.senderId } : {}),
         };
   });
   configureWhatsAppParticipationPort({

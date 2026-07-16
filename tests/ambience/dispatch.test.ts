@@ -237,7 +237,6 @@ describe("react", () => {
     await expect(react.run({ input: { messageId: "incoming-27", emoji: "👀" } })).resolves.toEqual({
       delivery: "sent",
       messageId: "fake-message-1",
-      typing: "cleared",
     });
     expect(host.events()).toEqual([{ kind: "react", chatId: CHAT, messageId: "incoming-27", emoji: "👀" }]);
   });

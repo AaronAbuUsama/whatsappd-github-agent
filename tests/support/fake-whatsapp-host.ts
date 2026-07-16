@@ -96,9 +96,9 @@ export const createFakeWhatsAppHost = (): FakeWhatsAppHost => {
       else recorded.push({ kind: "typing", chatId, on: false, outcome: "unknown", error: typingError.message });
       return withTypingResult(delivery, typingError?.message);
     },
-    react: async (chatId, messageId, emoji): Promise<WhatsAppSayResult> => {
+    react: async (chatId, messageId, emoji): Promise<WhatsAppDeliveryResult> => {
       recorded.push({ kind: "react", chatId, messageId, emoji });
-      return withTypingResult({ delivery: "sent", messageId: `fake-message-${++nextMessage}` });
+      return { delivery: "sent", messageId: `fake-message-${++nextMessage}` };
     },
   };
 };

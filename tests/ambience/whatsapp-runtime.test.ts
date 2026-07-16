@@ -107,7 +107,7 @@ const fakeSession = (
     async stop(): Promise<void> {},
     identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
   } as unknown as WhatsAppSession;
-  return { session, messageListeners, syncListeners, sent, typing };
+  return { session, messageListeners, syncListeners, updateListeners, sent, typing };
 };
 
 const inbound = (
@@ -334,7 +334,6 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
           ).toEqual({
             delivery: "sent",
             messageId: "real-host-message-3",
-            typing: "cleared",
           });
           expect(fake.typing).toEqual([
             { chatId: CHAT, on: true },
@@ -374,6 +373,21 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
           expect(archive.messageState(CHAT, "inbound-31")).toMatchObject({
             reactions: [expect.objectContaining({ emoji: "👀" })],
           });
+          yield* Effect.promise(async () => {
+            for (const listener of fake.updateListeners) {
+              await listener({
+                kind: "reaction",
+                ref: { id: "inbound-31", chatId: CHAT, fromMe: false },
+                at: 2_000,
+                by: "15550000000@s.whatsapp.net",
+                emoji: "👀",
+                removed: false,
+              });
+            }
+          });
+          yield* Effect.sleep(Duration.millis(30));
+          expect(archive.events(CHAT).filter(({ kind }) => kind === "reaction")).toHaveLength(1);
+          expect(dispatches).toHaveLength(1);
 
           const read = createReadWhatsAppThreadTool(CHAT);
           const search = createSearchWhatsAppHistoryTool(CHAT);
@@ -747,9 +761,71 @@ describe("foreground runtime terminal logged_out", () => {
 });
 
 describe("real WhatsApp Host outcome boundary", () => {
+  it("fails an unavailable quote before starting typing or attempting delivery", async () => {
+    const fake = fakeSession();
+    const host = createWhatsAppHost(fake.session, () => undefined);
+
+    await expect(host.say(CHAT, "do not pulse typing", "missing-31")).resolves.toEqual({
+      delivery: "failed",
+      deliveryError: `WhatsApp message missing-31 is not available in ${CHAT}.`,
+      typing: "cleared",
+    });
+    expect(fake.sent).toEqual([]);
+    expect(fake.typing).toEqual([]);
+  });
+
+  it("fails a reaction to an unavailable message without attempting delivery", async () => {
+    const fake = fakeSession();
+    const host = createWhatsAppHost(fake.session, () => undefined);
+
+    await expect(host.react(CHAT, "missing-31", "👀")).resolves.toEqual({
+      delivery: "failed",
+      deliveryError: `WhatsApp message missing-31 is not available in ${CHAT}.`,
+    });
+    expect(fake.sent).toEqual([]);
+    expect(fake.typing).toEqual([]);
+  });
+
+  it("reports whatsappd's pre-provider reaction rejection as a known failure", async () => {
+    const fake = fakeSession({ sendError: new Error("not online (phase: backing_off)") });
+    const host = createWhatsAppHost(fake.session, (_chatId, messageId) => ({
+      id: messageId,
+      chatId: CHAT,
+      fromMe: false,
+    }));
+
+    await expect(host.react(CHAT, "incoming-31", "👀")).resolves.toEqual({
+      delivery: "failed",
+      deliveryError: "not online (phase: backing_off)",
+    });
+    expect(fake.sent).toEqual([
+      {
+        chatId: CHAT,
+        content: { react: { to: { id: "incoming-31", chatId: CHAT, fromMe: false }, emoji: "👀" } },
+      },
+    ]);
+    expect(fake.typing).toEqual([]);
+  });
+
+  it("does not retry a reaction whose provider outcome is unknown", async () => {
+    const fake = fakeSession({ sendError: new Error("provider outcome unknown") });
+    const host = createWhatsAppHost(fake.session, (_chatId, messageId) => ({
+      id: messageId,
+      chatId: CHAT,
+      fromMe: false,
+    }));
+
+    await expect(host.react(CHAT, "incoming-31", "👀")).resolves.toEqual({
+      delivery: "unknown",
+      deliveryError: "provider outcome unknown",
+    });
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.typing).toEqual([]);
+  });
+
   it("keeps typing visible for a perceptible beat before the send", async () => {
     const fake = fakeSession();
-    const host = createWhatsAppHost(fake.session);
+    const host = createWhatsAppHost(fake.session, () => undefined);
 
     const result = host.say(CHAT, "show typing before this message");
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -788,7 +864,7 @@ describe("real WhatsApp Host outcome boundary", () => {
 
   it("does not retry a rejected send and clears typing after the unknown outcome", async () => {
     const fake = fakeSession({ sendError: new Error("provider outcome unknown") });
-    const host = createWhatsAppHost(fake.session);
+    const host = createWhatsAppHost(fake.session, () => undefined);
 
     await expect(host.say(CHAT, "send exactly once")).resolves.toEqual({
       delivery: "unknown",
@@ -804,7 +880,7 @@ describe("real WhatsApp Host outcome boundary", () => {
 
   it("reports whatsappd's pre-provider offline rejection as a known failure", async () => {
     const fake = fakeSession({ sendError: new Error("not online (phase: backing_off)") });
-    const host = createWhatsAppHost(fake.session);
+    const host = createWhatsAppHost(fake.session, () => undefined);
 
     await expect(host.say(CHAT, "cannot leave this process")).resolves.toEqual({
       delivery: "failed",
@@ -823,7 +899,7 @@ describe("real WhatsApp Host outcome boundary", () => {
       },
     });
     const fake = fakeSession({ sendError });
-    const host = createWhatsAppHost(fake.session);
+    const host = createWhatsAppHost(fake.session, () => undefined);
 
     await expect(host.say(CHAT, "cleanup survives bookkeeping")).rejects.toThrow("delivery bookkeeping failed");
     expect(fake.typing.at(-1)).toEqual({ chatId: CHAT, on: false });
@@ -831,7 +907,7 @@ describe("real WhatsApp Host outcome boundary", () => {
 
   it("keeps a confirmed message ID when typing cleanup is uncertain", async () => {
     const fake = fakeSession({ typingOffError: new Error("typing cleanup outcome unknown") });
-    const host = createWhatsAppHost(fake.session);
+    const host = createWhatsAppHost(fake.session, () => undefined);
 
     await expect(host.say(CHAT, "confirmed delivery")).resolves.toEqual({
       delivery: "sent",
