@@ -1,6 +1,7 @@
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 
+import "./braintrust.js";
 import { dispatchAmbience } from "./ambience/dispatch.js";
 import {
   configureIssueManagementRuntime,

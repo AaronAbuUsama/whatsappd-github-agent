@@ -1,12 +1,13 @@
 import type { Context } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { registerProvider } from "@flue/runtime";
+import { observe, registerProvider } from "@flue/runtime";
 import { flue } from "@flue/runtime/routing";
 import { Duration, Effect, Layer, Queue } from "effect";
 import { Hono } from "hono";
 import { join } from "node:path";
 import type { IncomingMessage as WhatsAppMessage } from "whatsappd";
 
+import "../../../../src/braintrust.js";
 import { makeAmbienceWindowDispatcher, dispatchAmbience } from "../../../../src/ambience/dispatch.js";
 import type {
   IssueMilestone,
@@ -35,7 +36,30 @@ import { connectPiChatGptSubscription } from "../../../../src/model/pi-subscript
 const liveModel = process.env.AMBIENCE_FIXTURE_LIVE_MODEL === "true";
 const provider = liveModel ? undefined : registerFauxProvider({ provider: "ambience-fixture" });
 const heldRecoveryMarkers = new Set<string>();
+const settledDispatches = new Map<string, { outcome: "completed" | "failed"; result?: unknown; error?: unknown }>();
 const holdAgentRecovery = process.env.AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY === "true";
+observe((event) => {
+  if (event.type !== "operation" || event.operationKind !== "prompt" || event.dispatchId === undefined) return;
+  settledDispatches.set(event.dispatchId, {
+    outcome: event.isError ? "failed" : "completed",
+    ...(event.result === undefined ? {} : { result: event.result }),
+    ...(event.error === undefined ? {} : { error: event.error }),
+  });
+});
+
+const parsedToolResult = (message: Context["messages"][number]): unknown => {
+  if (message.role !== "toolResult") return undefined;
+  const text = message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
+
 const respond = async (context: Context) => {
   const last = context.messages.at(-1);
   const serialized = JSON.stringify(last);
@@ -52,12 +76,21 @@ const respond = async (context: Context) => {
         : `Canonical context was lost for ${recoveryMarker}.`,
     );
   }
+  if (serialized.includes("SMOKE SPEAK_ONCE CREATE_COMPLETE_ISSUE")) {
+    return fauxAssistantMessage("Private SMOKE canary retained without speaking or acting.");
+  }
   if (last?.role === "toolResult") {
     if (serialized.includes("whatsapp_search")) {
       return fauxAssistantMessage("Private bound-history result retained without speaking.");
     }
-    if (serialized.includes("github_create_issue")) {
-      return fauxAssistantMessage("Private Issue Management receipt retained without an extra mutation.");
+    if (last.toolName === "github_create_issue") {
+      const result = parsedToolResult(last) as { status?: unknown; issue?: { url?: unknown } } | undefined;
+      if ((result?.status === "created" || result?.status === "reconciled") && typeof result.issue?.url === "string") {
+        return fauxAssistantMessage(fauxToolCall("say", { text: `Filed ${result.issue.url}` }), {
+          stopReason: "toolUse",
+        });
+      }
+      return fauxAssistantMessage("Private non-filed Issue Management result retained without speaking.");
     }
     if (serialized.includes("github_update_issue")) {
       return fauxAssistantMessage(
@@ -67,6 +100,9 @@ const respond = async (context: Context) => {
     }
     if (serialized.includes("github_search_issues") || serialized.includes("github_read_issue")) {
       return fauxAssistantMessage("Private Issue Management read retained without speaking.");
+    }
+    if (serialized.includes("say") && transcript.includes("github_create_issue")) {
+      return fauxAssistantMessage("Private Issue Management receipt retained without an extra mutation.");
     }
     return fauxAssistantMessage("Private speech outcome retained for the next Ambience turn.");
   }
@@ -253,21 +289,21 @@ Effect.runFork(
 
 const app = new Hono();
 app.get("/health", (context) => context.json({ ok: true }));
-const archiveMessage = (input: IncomingMessage): void => {
+const conversationEvent = (input: IncomingMessage) => {
   const archived = {
     ...input,
     kind: "text",
     reply: async () => ({ id: "unused", chatId: input.chatId, fromMe: true }),
   } as WhatsAppMessage;
-  inbox.recorder.append(conversationArrival(archived));
+  return conversationArrival(archived);
 };
 app.post("/test/archive", async (context) => {
-  archiveMessage(await context.req.json<IncomingMessage>());
+  archive.append(conversationEvent(await context.req.json<IncomingMessage>()));
   return context.body(null, 204);
 });
 app.post("/test/coalescer", async (context) => {
   const input = await context.req.json<IncomingMessage>();
-  archiveMessage(input);
+  inbox.recorder.append(conversationEvent(input));
   const accepted = inbox.pendingArrival(input.chatId, input.id);
   if (accepted !== undefined) await Effect.runPromise(Queue.offer(source, accepted));
   return context.json({ accepted: true }, 202);
@@ -285,6 +321,10 @@ app.get("/test/admission", (context) => {
       : [];
   });
   return context.json(admissions);
+});
+app.get("/test/submission", (context) => {
+  const dispatchId = context.req.query("dispatchId");
+  return context.json(dispatchId === undefined ? null : (settledDispatches.get(dispatchId) ?? null));
 });
 app.get("/test/whatsapp/events", (context) => context.json(fakeWhatsApp.events()));
 app.delete("/test/whatsapp/events", (context) => {

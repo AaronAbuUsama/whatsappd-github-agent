@@ -753,17 +753,19 @@ describe("persisted Ambience admission", () => {
   it("persists an Uncertain create after bounded observation and never repeats the mutation", async () => {
     const chatId = "github-uncertain-30@g.us";
     await resetGitHub();
+    await resetWhatsApp();
     await setNextGitHubCreate("timeout-before");
 
     await coalescerMessage(chatId, "CREATE_COMPLETE_ISSUE", { mentions: ["bot@s.whatsapp.net"] });
     await waitFor(
-      async () => (await historyText(chatId)).includes("Private Issue Management receipt retained"),
+      async () => (await historyText(chatId)).includes("Private non-filed Issue Management result retained"),
       "uncertain direct Issue Management receipt",
     );
     const events = await githubEvents();
     expect(events.filter((event) => event.kind === "create")).toHaveLength(1);
     expect(events.filter((event) => event.kind === "find-operation")).toHaveLength(1);
     expect(await githubOperations()).toContainEqual(expect.objectContaining({ status: "uncertain" }));
+    expect((await whatsappEvents()).filter((event) => event.kind === "send")).toEqual([]);
   });
 });
 
