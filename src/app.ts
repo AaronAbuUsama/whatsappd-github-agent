@@ -55,7 +55,9 @@ export const createAmbientAgentApp = async ({
   app.route("/", flue());
 
   // Deferred until the CLI observes a successful HTTP bind, so an occupied port
-  // fails startup before WhatsApp ever connects (#87).
+  // fails startup before WhatsApp ever connects (#87). For the instant between the
+  // bind and the CLI invoking this starter, /health reports the WhatsApp phase as
+  // "disabled"; every health consumer polls, so the window is harmless.
   deferWhatsAppRuntimeStart(() => {
     const whatsapp = startWhatsAppRuntime({
       storeDirectory: paths.whatsapp,

@@ -279,6 +279,49 @@ describe("managed CLI", () => {
     expect(whatsappStarted).toBe(false);
     expect(cli.stderr()).toContain("Port 42069 is already in use");
     expect(cli.stderr()).toContain("ambient-agent config --port");
+
+    // The generated server aggregates the bind failure with cleanup errors when its
+    // own shutdown also fails; the port message must survive that wrapping.
+    const wrapped = harness();
+    const wrappedExitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...wrapped,
+      importRuntime: async () => {
+        const failure = new Error("listen EADDRINUSE: address already in use 127.0.0.1:42069") as NodeJS.ErrnoException;
+        failure.code = "EADDRINUSE";
+        throw new AggregateError([failure, new Error("cleanup failed")], "[flue] Node server shutdown failed.");
+      },
+    });
+    expect(wrappedExitCode).toBe(1);
+    expect(wrapped.stderr()).toContain("Port 42069 is already in use");
+  });
+
+  it("propagates non-port import failures without the port remediation", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+
+    const cli = harness();
+    const exitCode = await runCli(["--data-dir", paths.data, "start"], {
+      ...cli,
+      importRuntime: async () => {
+        throw new Error("generated server exploded");
+      },
+    });
+    expect(exitCode).toBe(1);
+    expect(cli.stderr()).toContain("generated server exploded");
+    expect(cli.stderr()).not.toContain("already in use");
   });
 
   it("starts the deferred WhatsApp runtime only after the server import binds its port", async () => {

@@ -109,6 +109,11 @@ const parseRuntimePort = (value: string): number => {
   return port;
 };
 
+const portOccupied = (cause: unknown): boolean =>
+  cause instanceof AggregateError
+    ? cause.errors.some(portOccupied)
+    : (cause as NodeJS.ErrnoException | null)?.code === "EADDRINUSE";
+
 const startGeneratedRuntime = async (
   paths: ManagedPaths,
   authentication: ChatGptAuthentication,
@@ -136,9 +141,10 @@ const startGeneratedRuntime = async (
     // server stopped everything it started) when the port is occupied.
     await importServer(serverEntry.href);
   } catch (cause) {
-    if ((cause as NodeJS.ErrnoException | null)?.code === "EADDRINUSE") {
+    if (portOccupied(cause)) {
       throw new Error(
         `Port ${configuration.runtime.port} is already in use; free it or run ambient-agent config --port <port> to choose another port.`,
+        { cause },
       );
     }
     throw cause;
@@ -146,6 +152,9 @@ const startGeneratedRuntime = async (
     if (previousPort === undefined) delete process.env.PORT;
     else process.env.PORT = previousPort;
   }
+  // ponytail: if a mismatched dist ships a server without the deferred starter, this
+  // throw leaves the bound HTTP server running; stopping it needs the generated server
+  // to export its lifecycle — add that seam if bundle mismatch ever becomes reachable.
   startDeferredWhatsAppRuntime();
 };
 

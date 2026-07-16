@@ -53,11 +53,13 @@ const executeAmbientAgent = (args: string[], env: NodeJS.ProcessEnv = environmen
       })
     : execute(executable, args, { cwd: homeDirectory, env });
 
+// Binds the wildcard address, like the generated server does, so a reported port is
+// genuinely free for the runtime and not merely free on loopback.
 const availablePort = async (): Promise<number> =>
   await new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, () => {
       const address = server.address();
       if (address === null || typeof address === "string") return reject(new Error("Could not allocate a test port."));
       server.close((cause) => (cause === undefined ? resolve(address.port) : reject(cause)));
@@ -305,7 +307,13 @@ describe("packed ambient-agent executable", () => {
       await new Promise((resolve) => blocker.close(resolve));
     }
 
-    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+    // The port is provably free again: binding it succeeds, so the failed start left no listener.
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(port, resolve);
+    });
+    await new Promise((resolve) => probe.close(resolve));
 
     const paths = managedPaths({ dataDirectory });
     const archive = createConversationArchive(paths.applicationDatabase);
