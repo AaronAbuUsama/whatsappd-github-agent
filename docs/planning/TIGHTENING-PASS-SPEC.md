@@ -70,7 +70,7 @@ graph TB
       mainskill[main ambience skill: identity + WhatsApp behavior]
       issueskill[issue-management bundle: templates, labels, lifecycle]
     end
-    coal[coalescer: message|update union windows]
+    coal["coalescer: message/update union windows"]
     obs[AmbienceObserver: windowDispatched/spoke/settledSilent/settledFailed]
     tools[tools: say+replyTo, react, whatsapp_read/search, github_*]
   end
@@ -84,7 +84,7 @@ graph TB
   end
   subgraph ts ["packages/test-support"]
     fakes[fake hosts + fixture app]
-    harness[eval harness: prompt | window input]
+    harness["eval harness: prompt or window input"]
   end
   agent --> skills
   agent --> tools
