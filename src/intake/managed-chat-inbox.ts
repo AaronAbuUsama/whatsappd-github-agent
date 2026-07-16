@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-import type { ConversationWindow, ConversationWindowDraft, FireReason, IncomingMessage } from "../coalescer/events.js";
+import {
+  type CoalescerEvent,
+  type ConversationUpdate,
+  type ConversationWindow,
+  type ConversationWindowDraft,
+  type FireReason,
+  type IncomingMessage,
+  isConversationUpdate,
+  windowContents,
+} from "../coalescer/events.js";
 import { Effect, Layer } from "effect";
 import { WindowStore, WindowStoreError } from "../coalescer/ports.js";
 import type { ConversationArchive } from "./conversation-archive.js";
@@ -10,6 +19,7 @@ import type { ConversationArrival, ConversationArrivalPayload, ConversationEvent
 
 interface InboxEventRow {
   event_id: string;
+  kind: ConversationEvent["kind"];
   provider_message_id: string;
   chat_id: string;
   sender_id: string;
@@ -65,8 +75,8 @@ export interface ManagedChatRecorder {
 
 export interface ManagedChatInbox {
   readonly recorder: ManagedChatRecorder;
-  unwindowed(): readonly IncomingMessage[];
-  pendingArrival(chatId: string, messageId: string): IncomingMessage | undefined;
+  unwindowed(): readonly CoalescerEvent[];
+  pending(event: CoalescerEvent): CoalescerEvent | undefined;
   pendingWindows(): readonly ConversationWindow[];
   window(windowId: string): ConversationWindow | undefined;
   windowForDispatch(dispatchId: string): ConversationWindow | undefined;
@@ -82,7 +92,8 @@ export interface CreateManagedChatInboxOptions {
   readonly now?: () => number;
 }
 
-const eventIdOf = (message: IncomingMessage): string => `arrival:${message.chatId}:${message.id}`;
+const eventIdOf = (event: CoalescerEvent): string =>
+  isConversationUpdate(event) ? event.id : `arrival:${event.chatId}:${event.id}`;
 
 const decodeIncoming = (row: InboxEventRow): IncomingMessage => {
   const payload = JSON.parse(row.payload_json) as ConversationArrivalPayload;
@@ -102,6 +113,21 @@ const decodeIncoming = (row: InboxEventRow): IncomingMessage => {
   };
 };
 
+const decodeUpdate = (row: InboxEventRow): ConversationUpdate => ({
+  id: row.event_id,
+  kind: row.kind,
+  providerMessageId: row.provider_message_id,
+  chatId: row.chat_id,
+  ...(row.sender_id === null ? {} : { senderId: row.sender_id }),
+  ...(row.sender_name === null ? {} : { senderName: row.sender_name }),
+  direction: row.direction,
+  occurredAt: row.occurred_at_ms,
+  payload: JSON.parse(row.payload_json) as ConversationUpdate["payload"],
+}) as ConversationUpdate;
+
+const decodeCoalescerEvent = (row: InboxEventRow): CoalescerEvent =>
+  row.kind === "arrival" ? decodeIncoming(row) : decodeUpdate(row);
+
 const acceptedArrival = (
   event: ConversationEvent,
   allowed: CreateManagedChatInboxOptions["allowed"],
@@ -110,6 +136,12 @@ const acceptedArrival = (
   ((event.direction === "inbound" && event.payload.live) ||
     (event.direction === "outbound" && event.payload.applicationAdmission === "smoke-canary")) &&
   allowed(event.chatId, event.payload.isGroup);
+
+const acceptedUpdate = (
+  event: ConversationEvent,
+  allowed: CreateManagedChatInboxOptions["allowed"],
+): event is ConversationUpdate =>
+  event.kind !== "arrival" && event.kind !== "receipt" && allowed(event.chatId, event.chatId.endsWith("@g.us"));
 
 const admissionTable = `
   CREATE TABLE managed_chat_admissions (
@@ -238,7 +270,7 @@ export const createManagedChatInbox = (
   const selectInbox = (database: DatabaseSync, where: string): readonly InboxEventRow[] =>
     database
       .prepare(`
-      SELECT e.event_id, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
+      SELECT e.event_id, e.kind, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
              e.direction, e.occurred_at_ms, e.payload_json
         FROM managed_chat_inbox i
         JOIN conversation_events e ON e.event_id = i.event_id
@@ -252,9 +284,9 @@ export const createManagedChatInbox = (
       .prepare("SELECT window_id, chat_id, reason FROM managed_chat_windows WHERE window_id = ?")
       .get(windowId) as unknown as WindowRow | undefined;
     if (row === undefined) throw new Error(`Managed Chat Window ${windowId} does not exist.`);
-    const messages = database
+    const events = database
       .prepare(`
-      SELECT e.event_id, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
+      SELECT e.event_id, e.kind, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
              e.direction, e.occurred_at_ms, e.payload_json
         FROM managed_chat_inbox i
         JOIN conversation_events e ON e.event_id = i.event_id
@@ -262,7 +294,12 @@ export const createManagedChatInbox = (
        ORDER BY i.inbox_sequence
     `)
       .all(windowId) as unknown as InboxEventRow[];
-    return { id: row.window_id, chatId: row.chat_id, reason: row.reason, messages: messages.map(decodeIncoming) };
+    return {
+      id: row.window_id,
+      chatId: row.chat_id,
+      reason: row.reason,
+      ...windowContents(events.map(decodeCoalescerEvent)),
+    };
   };
 
   const decodeAdmission = (row: AdmissionRow): WindowAdmission => {
@@ -309,7 +346,7 @@ export const createManagedChatInbox = (
       append: (event) =>
         archive.transaction((transaction) => {
           const inserted = transaction.append(event);
-          if (inserted && acceptedArrival(event, options.allowed)) {
+          if (inserted && (acceptedArrival(event, options.allowed) || acceptedUpdate(event, options.allowed))) {
             transaction.database
               .prepare(`
             INSERT INTO managed_chat_inbox (event_id, chat_id, accepted_at_ms)
@@ -321,19 +358,19 @@ export const createManagedChatInbox = (
         }),
     },
     unwindowed: () =>
-      archive.transaction(({ database }) => selectInbox(database, "WHERE i.window_id IS NULL").map(decodeIncoming)),
-    pendingArrival: (chatId, messageId) =>
+      archive.transaction(({ database }) => selectInbox(database, "WHERE i.window_id IS NULL").map(decodeCoalescerEvent)),
+    pending: (event) =>
       archive.transaction(({ database }) => {
         const row = database
           .prepare(`
-            SELECT e.event_id, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
+            SELECT e.event_id, e.kind, e.provider_message_id, e.chat_id, e.sender_id, e.sender_name,
                    e.direction, e.occurred_at_ms, e.payload_json
               FROM managed_chat_inbox i
               JOIN conversation_events e ON e.event_id = i.event_id
              WHERE i.event_id = ? AND i.window_id IS NULL
           `)
-          .get(`arrival:${chatId}:${messageId}`) as unknown as InboxEventRow | undefined;
-        return row === undefined ? undefined : decodeIncoming(row);
+          .get(eventIdOf(event)) as unknown as InboxEventRow | undefined;
+        return row === undefined ? undefined : decodeCoalescerEvent(row);
       }),
     pendingWindows: () =>
       archive.transaction(({ database }) => {
@@ -365,11 +402,12 @@ export const createManagedChatInbox = (
         return row === undefined ? undefined : readWindow(database, row.window_id);
       }),
     createWindow: (draft) => {
-      if (draft.messages.length === 0) throw new Error("A Managed Chat Window must contain at least one arrival.");
-      if (draft.messages.some(({ chatId }) => chatId !== draft.chatId)) {
+      const events: readonly CoalescerEvent[] = [...draft.messages, ...draft.updates];
+      if (events.length === 0) throw new Error("A Managed Chat Window must contain at least one event.");
+      if (events.some(({ chatId }) => chatId !== draft.chatId)) {
         throw new Error("A Managed Chat Window cannot mix chats.");
       }
-      const eventIds = draft.messages.map(eventIdOf);
+      const eventIds = events.map(eventIdOf);
       return archive.transaction(({ database }) => {
         const selectAssignment = database.prepare(
           "SELECT event_id, window_id FROM managed_chat_inbox WHERE event_id = ?",
@@ -378,21 +416,22 @@ export const createManagedChatInbox = (
           (eventId) => selectAssignment.get(eventId) as unknown as AssignmentRow | undefined,
         );
         if (assignments.some((assignment) => assignment === undefined)) {
-          throw new Error("A Managed Chat Window may contain only accepted Inbox arrivals.");
+          throw new Error("A Managed Chat Window may contain only accepted Inbox events.");
         }
         const assigned = new Set(assignments.map((assignment) => assignment!.window_id).filter(Boolean));
         if (assigned.size === 1 && assignments.every((assignment) => assignment!.window_id !== null)) {
           const existing = readWindow(database, [...assigned][0]!);
-          const existingEventIds = existing.messages.map(eventIdOf);
+          const existingEventIds = [...existing.messages, ...existing.updates].map(eventIdOf);
+          const expected = new Set(eventIds);
           if (
             existingEventIds.length === eventIds.length &&
-            existingEventIds.every((id, index) => id === eventIds[index])
+            existingEventIds.every((id) => expected.has(id))
           ) {
             return existing;
           }
-          throw new Error("A Managed Chat arrival already belongs to a different Window assignment.");
+          throw new Error("A Managed Chat event already belongs to a different Window assignment.");
         }
-        if (assigned.size > 0) throw new Error("A Managed Chat arrival cannot belong to more than one Window.");
+        if (assigned.size > 0) throw new Error("A Managed Chat event cannot belong to more than one Window.");
 
         const oldestPending = database
           .prepare(`
@@ -402,11 +441,9 @@ export const createManagedChatInbox = (
              LIMIT ?
           `)
           .all(draft.chatId, eventIds.length) as unknown as Array<{ readonly event_id: string }>;
-        if (
-          oldestPending.length !== eventIds.length ||
-          oldestPending.some(({ event_id }, index) => event_id !== eventIds[index])
-        ) {
-          throw new Error("A Managed Chat Window must claim the oldest pending arrivals in observed order.");
+        const included = new Set(eventIds);
+        if (oldestPending.length !== eventIds.length || oldestPending.some(({ event_id }) => !included.has(event_id))) {
+          throw new Error("A Managed Chat Window must claim the oldest pending events in observed order.");
         }
 
         const windowId = createId();
@@ -426,9 +463,9 @@ export const createManagedChatInbox = (
           UPDATE managed_chat_inbox SET window_id = ?
            WHERE event_id = ? AND chat_id = ? AND window_id IS NULL
         `);
-        for (const eventId of eventIds) {
+        for (const { event_id: eventId } of oldestPending) {
           const result = assign.run(windowId, eventId, draft.chatId);
-          if (result.changes !== 1) throw new Error("Managed Chat Window assignment lost an accepted arrival.");
+          if (result.changes !== 1) throw new Error("Managed Chat Window assignment lost an accepted event.");
         }
         return { id: windowId, ...draft };
       });

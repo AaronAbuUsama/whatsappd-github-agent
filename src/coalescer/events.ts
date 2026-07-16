@@ -1,5 +1,11 @@
+import type {
+  ConversationEdit,
+  ConversationReaction,
+  ConversationRevocation,
+} from "../intake/conversation-event.ts";
+
 /**
- * The Coalescer's inbound event shape.
+ * The Coalescer's inbound message shape.
  *
  * This mirrors — deliberately, field for field — the *full-fidelity* event
  * whatsappd emits in-process from `WhatsAppSession.onMessage`. The production
@@ -36,21 +42,34 @@ export interface IncomingMessage {
   readonly quotedFrom?: string;
 }
 
+export type ConversationUpdate = ConversationEdit | ConversationReaction | ConversationRevocation;
+export type CoalescerEvent = IncomingMessage | ConversationUpdate;
+
+export const isConversationUpdate = (event: CoalescerEvent): event is ConversationUpdate => "kind" in event;
+
 /** Why the Coalescer fired: an ambient burst settled, or the bot was addressed. */
 export type FireReason = "debounce" | "maximum-wait" | "capacity" | "mention" | "quote-reply";
 
 /**
- * The window dispatched to Ambience on each flush: messages buffered since the
- * last dispatch, plus why it fired. This is the Coalescer's entire output.
+ * The window dispatched to Ambience on each flush: messages and updates buffered
+ * since the last dispatch, plus why it fired. This is the Coalescer's entire output.
  */
 export interface ConversationWindow {
   readonly id: string;
   readonly chatId: string;
   readonly messages: readonly IncomingMessage[];
+  readonly updates: readonly ConversationUpdate[];
   readonly reason: FireReason;
 }
 
 export type ConversationWindowDraft = Omit<ConversationWindow, "id">;
+
+export const windowContents = (
+  events: readonly CoalescerEvent[],
+): Pick<ConversationWindow, "messages" | "updates"> => ({
+  messages: events.filter((event): event is IncomingMessage => !isConversationUpdate(event)),
+  updates: events.filter(isConversationUpdate),
+});
 
 /**
  * Does this message directly address the bot — an @-mention or a quote-reply of

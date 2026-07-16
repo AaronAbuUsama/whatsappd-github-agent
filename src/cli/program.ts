@@ -43,7 +43,7 @@ import {
 } from "../setup/github.js";
 import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
 import { createWhatsAppAccount } from "../whatsapp/account.js";
-import { createConversationArchive } from "../intake/conversation-archive.js";
+import { createConversationArchive, migrateConversationArchiveSchema } from "../intake/conversation-archive.js";
 import { createDeviceCodeCallbacks, createWhatsAppCallbacks, defaultSetupPrompts, type SetupPrompts } from "./prompts.js";
 import {
   parseRuntimePort,
@@ -521,6 +521,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
             : `Refusing to start ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
         );
       }
+      // Application schema migrations must run before diagnostics compare the
+      // on-disk version with the current owned schema.
+      migrateConversationArchiveSchema(paths.applicationDatabase);
       const blockingCheck = (await inspectManagedServices(paths)).find(
         ({ state }) => state !== "ready" && state !== "paired",
       );

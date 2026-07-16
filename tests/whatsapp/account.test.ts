@@ -269,6 +269,18 @@ describe("managed WhatsApp account", () => {
     });
 
     for (const listener of fake.messageListeners) {
+      await listener(
+        message({
+          id: "reaction-envelope-49",
+          live: true,
+          kind: "unsupported",
+          rawType: "reactionMessage",
+        } as Partial<IncomingMessage>),
+      );
+    }
+    expect(archive.events().some(({ providerMessageId }) => providerMessageId === "reaction-envelope-49")).toBe(false);
+
+    for (const listener of fake.messageListeners) {
       await listener(message({ id: "live-unmanaged-49", chatId: "unmanaged-live-49@g.us", live: true }));
     }
     // A reconnect may repeat a provider ID after it already belongs to a durable

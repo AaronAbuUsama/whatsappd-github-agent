@@ -154,9 +154,16 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
   const mergeSync = (batch: ConversationSyncBatch): void => {
     for (const contact of batch.contacts) contacts.set(contact.id, contact);
     for (const chat of batch.chats) chats.set(chat.id, chat);
-    for (const message of batch.messages) options.archive.append(conversationArrival(message));
+    for (const message of batch.messages) {
+      if (message.kind !== "unsupported" || message.rawType !== "reactionMessage") {
+        options.archive.append(conversationArrival(message));
+      }
+    }
   };
   const ingestMessage = async (message: IncomingMessage): Promise<void> => {
+    // whatsappd also exposes reactionMessage through onUpdate; do not admit its
+    // unsupported message envelope as a second conversation event.
+    if (message.kind === "unsupported" && message.rawType === "reactionMessage") return;
     const inserted = options.archive.append(conversationArrival(message));
     if (!inserted) return;
     for (const subscriber of messageSubscribers) await subscriber(message);

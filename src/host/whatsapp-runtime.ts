@@ -152,7 +152,7 @@ export const runWhatsAppSession = (
       Layer.mergeAll(
         whatsappEventSource(session, options.gate.allowed, {
           replay: () => options.inbox.unwindowed(),
-          accepted: (message) => options.inbox.pendingArrival(message.chatId, message.id),
+          accepted: (event) => options.inbox.pending(event),
         }),
         makeAmbienceWindowDispatcher(options.inbox, options.dispatch),
         managedChatWindowStore(options.inbox),

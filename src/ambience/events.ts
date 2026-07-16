@@ -2,6 +2,15 @@ import type { ConversationWindow } from "../coalescer/events.ts";
 import * as v from "valibot";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
+const updateBase = {
+  id: nonEmptyString,
+  providerMessageId: nonEmptyString,
+  chatId: nonEmptyString,
+  senderId: v.optional(nonEmptyString),
+  senderName: v.optional(v.string()),
+  direction: v.union([v.literal("inbound"), v.literal("outbound")]),
+  occurredAt: v.pipe(v.number(), v.finite()),
+};
 
 const whatsappWindowInputSchema = v.object({
   type: v.literal("whatsapp.window"),
@@ -28,6 +37,29 @@ const whatsappWindowInputSchema = v.object({
       mentions: v.array(nonEmptyString),
       quotedFrom: v.optional(nonEmptyString),
     }),
+  ),
+  updates: v.array(
+    v.union([
+      v.object({
+        ...updateBase,
+        kind: v.literal("edit"),
+        payload: v.object({ messageKind: nonEmptyString, text: v.string() }),
+      }),
+      v.object({
+        ...updateBase,
+        kind: v.literal("reaction"),
+        payload: v.object({
+          by: v.optional(nonEmptyString),
+          emoji: v.optional(v.string()),
+          removed: v.boolean(),
+        }),
+      }),
+      v.object({
+        ...updateBase,
+        kind: v.literal("revocation"),
+        payload: v.object({ by: v.optional(nonEmptyString) }),
+      }),
+    ]),
   ),
 });
 
@@ -99,4 +131,5 @@ export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowI
     chatId: window.chatId,
     reason: window.reason,
     messages: window.messages,
+    updates: window.updates,
   });

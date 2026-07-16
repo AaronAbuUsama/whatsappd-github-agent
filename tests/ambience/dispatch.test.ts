@@ -98,6 +98,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
                   expect.objectContaining({ text: "first", pushName: "Alice" }),
                   expect.objectContaining({ text: "second", pushName: "Alice" }),
                 ],
+                updates: [],
               },
             },
           ]);

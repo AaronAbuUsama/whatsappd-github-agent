@@ -2,8 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { ReceiptStatus } from "whatsappd";
-
+import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "../managed/database-versions.ts";
 import type { ConversationDirection, ConversationEvent } from "./conversation-event.ts";
 
 export interface ProjectedConversationMessage {
@@ -41,16 +40,6 @@ interface MessageRow {
   revoked: number;
 }
 
-interface ReactionRow {
-  actor_id: string;
-  emoji: string;
-}
-
-interface ReceiptRow {
-  actor_id: string;
-  status: ReceiptStatus;
-}
-
 const decodeEvent = (row: EventRow): ConversationEvent => ({
   id: row.event_id,
   kind: row.kind,
@@ -80,11 +69,7 @@ export interface ConversationArchive {
   events(chatId?: string): readonly ConversationEvent[];
   readThread(chatId: string, limit?: number): readonly ProjectedConversationMessage[];
   search(chatId: string, query: string, limit?: number): readonly ProjectedConversationMessage[];
-  messageState(chatId: string, messageId: string): (ProjectedConversationMessage & {
-    readonly revoked: boolean;
-    readonly reactions: readonly { readonly by: string; readonly emoji: string }[];
-    readonly receipts: readonly { readonly by: string; readonly status: ReceiptStatus }[];
-  }) | undefined;
+  messageState(chatId: string, messageId: string): (ProjectedConversationMessage & { readonly revoked: boolean }) | undefined;
   close(): void;
 }
 
@@ -96,12 +81,44 @@ export interface ConversationArchiveTransaction {
 const escapeLike = (query: string): string =>
   query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 
+const migrateProjectionSchema = (database: DatabaseSync): void => {
+  const applicationId = (database.prepare("PRAGMA application_id").get() as { application_id: number }).application_id;
+  const schemaVersion = (database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (applicationId === APPLICATION_DATABASE_ID && schemaVersion === 1) {
+    database.exec(`
+      BEGIN IMMEDIATE;
+      DROP TABLE IF EXISTS conversation_reactions;
+      DROP TABLE IF EXISTS conversation_receipts;
+      PRAGMA user_version = ${APPLICATION_DATABASE_SCHEMA_VERSION};
+      COMMIT;
+    `);
+  } else if (applicationId === 0 && schemaVersion === 0) {
+    database.exec(`
+      DROP TABLE IF EXISTS conversation_reactions;
+      DROP TABLE IF EXISTS conversation_receipts;
+    `);
+  }
+};
+
+export const migrateConversationArchiveSchema = (databasePath: string): void => {
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec("PRAGMA busy_timeout = 5000;");
+    migrateProjectionSchema(database);
+  } finally {
+    database.close();
+  }
+};
+
 export const createConversationArchive = (databasePath: string): ConversationArchive => {
   mkdirSync(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA busy_timeout = 5000;
+  `);
+  migrateProjectionSchema(database);
+  database.exec(`
     CREATE TABLE IF NOT EXISTS conversation_events (
       event_id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -130,20 +147,6 @@ export const createConversationArchive = (databasePath: string): ConversationArc
     );
     CREATE INDEX IF NOT EXISTS conversation_messages_chat_time_idx
       ON conversation_messages(chat_id, timestamp_ms, message_id);
-    CREATE TABLE IF NOT EXISTS conversation_reactions (
-      chat_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      emoji TEXT NOT NULL,
-      PRIMARY KEY (chat_id, message_id, actor_id)
-    );
-    CREATE TABLE IF NOT EXISTS conversation_receipts (
-      chat_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      PRIMARY KEY (chat_id, message_id, actor_id)
-    );
   `);
 
   const insertEvent = database.prepare(`
@@ -170,26 +173,6 @@ export const createConversationArchive = (databasePath: string): ConversationArc
   const projectRevocation = database.prepare(`
     UPDATE conversation_messages SET revoked = 1 WHERE chat_id = ? AND message_id = ?
   `);
-  const projectReaction = database.prepare(`
-    INSERT INTO conversation_reactions (chat_id, message_id, actor_id, emoji)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(chat_id, message_id, actor_id) DO UPDATE SET emoji = excluded.emoji
-  `);
-  const removeReaction = database.prepare(`
-    DELETE FROM conversation_reactions WHERE chat_id = ? AND message_id = ? AND actor_id = ?
-  `);
-  const projectReceipt = database.prepare(`
-    INSERT INTO conversation_receipts (chat_id, message_id, actor_id, status)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(chat_id, message_id, actor_id) DO UPDATE SET status = CASE
-      WHEN (CASE excluded.status
-        WHEN 'pending' THEN 0 WHEN 'server_ack' THEN 1 WHEN 'delivered' THEN 2
-        WHEN 'read' THEN 3 WHEN 'played' THEN 4 WHEN 'error' THEN 5 ELSE -1 END)
-        >= (CASE conversation_receipts.status
-          WHEN 'pending' THEN 0 WHEN 'server_ack' THEN 1 WHEN 'delivered' THEN 2
-          WHEN 'read' THEN 3 WHEN 'played' THEN 4 WHEN 'error' THEN 5 ELSE -1 END)
-      THEN excluded.status ELSE conversation_receipts.status END
-  `);
   const selectMessageArrival = database.prepare(`
     SELECT * FROM conversation_events
      WHERE chat_id = ? AND provider_message_id = ? AND kind = 'arrival'
@@ -201,13 +184,6 @@ export const createConversationArchive = (databasePath: string): ConversationArc
      WHERE chat_id = ? AND provider_message_id = ? AND kind <> 'arrival'
      ORDER BY CASE WHEN occurred_at_ms = 0 THEN 1 ELSE 0 END, occurred_at_ms, rowid
   `);
-  const clearMessageReactions = database.prepare(
-    "DELETE FROM conversation_reactions WHERE chat_id = ? AND message_id = ?",
-  );
-  const clearMessageReceipts = database.prepare(
-    "DELETE FROM conversation_receipts WHERE chat_id = ? AND message_id = ?",
-  );
-
   const projectUpdate = (event: Exclude<ConversationEvent, { readonly kind: "arrival" }>): void => {
     switch (event.kind) {
       case "edit":
@@ -216,22 +192,8 @@ export const createConversationArchive = (databasePath: string): ConversationArc
       case "revocation":
         projectRevocation.run(event.chatId, event.providerMessageId);
         break;
-      case "reaction": {
-        const actor = event.payload.by ?? "account";
-        if (event.payload.removed) {
-          removeReaction.run(event.chatId, event.providerMessageId, actor);
-        } else {
-          projectReaction.run(event.chatId, event.providerMessageId, actor, event.payload.emoji ?? "");
-        }
-        break;
-      }
+      case "reaction":
       case "receipt":
-        projectReceipt.run(
-          event.chatId,
-          event.providerMessageId,
-          event.payload.by ?? "account",
-          event.payload.status,
-        );
         break;
     }
   };
@@ -251,8 +213,6 @@ export const createConversationArchive = (databasePath: string): ConversationArc
       arrival.payload.text,
       arrival.occurredAt,
     );
-    clearMessageReactions.run(chatId, messageId);
-    clearMessageReceipts.run(chatId, messageId);
     for (const updateRow of selectMessageUpdates.all(chatId, messageId) as unknown as EventRow[]) {
       const update = decodeEvent(updateRow);
       if (update.kind !== "arrival") projectUpdate(update);
@@ -325,19 +285,9 @@ export const createConversationArchive = (databasePath: string): ConversationArc
         "SELECT * FROM conversation_messages WHERE chat_id = ? AND message_id = ?",
       ).get(chatId, messageId) as unknown as MessageRow | undefined;
       if (row === undefined) return undefined;
-      const reactions = database.prepare(`
-        SELECT actor_id, emoji FROM conversation_reactions
-         WHERE chat_id = ? AND message_id = ? ORDER BY actor_id
-      `).all(chatId, messageId) as unknown as ReactionRow[];
-      const receipts = database.prepare(`
-        SELECT actor_id, status FROM conversation_receipts
-         WHERE chat_id = ? AND message_id = ? ORDER BY actor_id
-      `).all(chatId, messageId) as unknown as ReceiptRow[];
       return {
         ...decodeMessage(row),
         revoked: row.revoked === 1,
-        reactions: reactions.map(({ actor_id, emoji }) => ({ by: actor_id, emoji })),
-        receipts: receipts.map(({ actor_id, status }) => ({ by: actor_id, status })),
       };
     },
     close: () => database.close(),

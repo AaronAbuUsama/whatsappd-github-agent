@@ -144,6 +144,50 @@ describe("managed service diagnostics", () => {
     ]);
   });
 
+  it("reports the application database healthy after upgrading the current projection schema", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-projection-upgrade-"));
+    roots.push(root);
+    const paths = managedPaths({ dataDirectory: root });
+    await mkdir(paths.whatsapp, { mode: 0o700 });
+    await Promise.all([
+      writeFile(paths.applicationDatabase, ""),
+      writeFile(paths.flueDatabase, ""),
+      writeFile(join(paths.whatsapp, "creds.json"), JSON.stringify({ registered: true })),
+    ]);
+    createConversationArchive(paths.applicationDatabase).close();
+    const current = new DatabaseSync(paths.applicationDatabase);
+    current.exec(`
+      PRAGMA application_id = ${APPLICATION_DATABASE_ID};
+      PRAGMA user_version = 1;
+      CREATE TABLE IF NOT EXISTS conversation_reactions (
+        chat_id TEXT NOT NULL, message_id TEXT NOT NULL, actor_id TEXT NOT NULL, emoji TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id, actor_id)
+      );
+      CREATE TABLE IF NOT EXISTS conversation_receipts (
+        chat_id TEXT NOT NULL, message_id TEXT NOT NULL, actor_id TEXT NOT NULL, status TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id, actor_id)
+      );
+    `);
+    current.close();
+
+    createConversationArchive(paths.applicationDatabase).close();
+
+    const upgraded = new DatabaseSync(paths.applicationDatabase, { readOnly: true });
+    expect((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(
+      APPLICATION_DATABASE_SCHEMA_VERSION,
+    );
+    expect(
+      upgraded
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?) ORDER BY name")
+        .all("conversation_reactions", "conversation_receipts"),
+    ).toEqual([]);
+    upgraded.close();
+
+    await expect(inspectManagedServices(paths)).resolves.toContainEqual(
+      expect.objectContaining({ name: "application-database", state: "ready", code: "database.ready" }),
+    );
+  });
+
   it("rejects foreign populated databases that do not carry positive owned-schema evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-foreign-"));
     roots.push(root);

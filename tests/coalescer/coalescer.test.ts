@@ -16,7 +16,12 @@ import { Duration, Effect, Layer, Queue, Ref } from "effect";
 import { TestClock } from "effect/testing";
 import * as Coalescer from "../../src/coalescer/coalescer.ts";
 import { type CoalescerConfigValues, configLayer } from "../../src/coalescer/config.ts";
-import type { ConversationWindow, IncomingMessage } from "../../src/coalescer/events.ts";
+import type {
+  CoalescerEvent,
+  ConversationUpdate,
+  ConversationWindow,
+  IncomingMessage,
+} from "../../src/coalescer/events.ts";
 import { inMemoryWindowStore, queueEventSource, recordingWindowDispatcher } from "../../src/coalescer/mocks.ts";
 import { WindowDispatcher, WindowDispatchError, WindowStore, WindowStoreError } from "../../src/coalescer/ports.ts";
 
@@ -43,9 +48,20 @@ const mkMsg = (text: string, over: Partial<IncomingMessage> = {}): IncomingMessa
   };
 };
 
+const mkReaction = (): ConversationUpdate => ({
+  id: "reaction:agent-message:thumbs-up",
+  kind: "reaction",
+  providerMessageId: "agent-message",
+  chatId: CHAT,
+  senderId: "u@s.whatsapp.net",
+  direction: "outbound",
+  occurredAt: 1_000,
+  payload: { by: "u@s.whatsapp.net", emoji: "👍", removed: false },
+});
+
 /** Fork the real Coalescer over a test source + recording window dispatcher + given config. */
 const startRecording = (
-  source: Queue.Dequeue<IncomingMessage>,
+  source: Queue.Dequeue<CoalescerEvent>,
   turns: Ref.Ref<readonly ConversationWindow[]>,
   cfg: Partial<CoalescerConfigValues> = {},
 ) =>
@@ -83,6 +99,49 @@ describe("Coalescer", () => {
       expect(t).toHaveLength(1);
       expect(t[0]!.reason).toBe("debounce");
       expect(texts(t[0]!)).toEqual(["hello?"]);
+    }),
+  );
+
+  it.effect("a reaction opens a cold Window but only dispatches after debounce", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<CoalescerEvent>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      yield* startRecording(source, turns);
+      const reaction = mkReaction();
+
+      yield* Queue.offer(source, reaction);
+      yield* TestClock.adjust(Duration.zero);
+      expect(yield* Ref.get(turns)).toEqual([]);
+
+      yield* TestClock.adjust(WINDOW);
+      expect(yield* Ref.get(turns)).toEqual([
+        expect.objectContaining({ reason: "debounce", messages: [], updates: [reaction] }),
+      ]);
+    }),
+  );
+
+  it.effect("updates extend the debounce and never count toward message capacity", () =>
+    Effect.gen(function* () {
+      const source = yield* Queue.unbounded<CoalescerEvent>();
+      const turns = yield* Ref.make<readonly ConversationWindow[]>([]);
+      yield* startRecording(source, turns, { maxWindowMessages: 2 });
+      const reaction = mkReaction();
+
+      yield* Queue.offer(source, mkMsg("first"));
+      yield* TestClock.adjust(Duration.seconds(2));
+      yield* Queue.offer(source, reaction);
+      yield* TestClock.adjust(Duration.seconds(2));
+      expect(yield* Ref.get(turns)).toEqual([]);
+
+      yield* Queue.offer(source, mkMsg("second"));
+      yield* TestClock.adjust(Duration.zero);
+      expect(yield* Ref.get(turns)).toEqual([
+        expect.objectContaining({
+          reason: "capacity",
+          messages: [expect.objectContaining({ text: "first" }), expect.objectContaining({ text: "second" })],
+          updates: [reaction],
+        }),
+      ]);
     }),
   );
 
@@ -263,6 +322,7 @@ describe("Coalescer", () => {
         id: "window-pending-1",
         chatId: CHAT,
         messages: [mkMsg("persisted before restart")],
+        updates: [],
         reason: "debounce",
       };
       const store = Layer.succeed(WindowStore, {
@@ -298,12 +358,14 @@ describe("Coalescer", () => {
         id: "window-a-pending",
         chatId: chatA,
         messages: [mkMsg("A pending", { chatId: chatA })],
+        updates: [],
         reason: "debounce",
       };
       const pendingB: ConversationWindow = {
         id: "window-b-pending",
         chatId: chatB,
         messages: [mkMsg("B pending", { chatId: chatB })],
+        updates: [],
         reason: "debounce",
       };
       let created = 0;

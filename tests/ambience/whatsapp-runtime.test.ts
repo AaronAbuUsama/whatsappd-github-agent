@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
 import { makeManagedChatGate } from "../../src/coalescer/chat-gate.ts";
+import { windowContents } from "../../src/coalescer/events.ts";
 import {
   createWhatsAppHost,
   getWhatsAppRuntimeStatus,
@@ -370,9 +371,9 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
               },
             },
           ]);
-          expect(archive.messageState(CHAT, "inbound-31")).toMatchObject({
-            reactions: [expect.objectContaining({ emoji: "👀" })],
-          });
+          expect(archive.events(CHAT)).toContainEqual(
+            expect.objectContaining({ kind: "reaction", providerMessageId: "inbound-31" }),
+          );
           yield* Effect.promise(async () => {
             for (const listener of fake.updateListeners) {
               await listener({
@@ -408,6 +409,103 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       ),
     );
 
+    await account.stop();
+    archive.close();
+  });
+
+  it("opens a reaction-only Window and carries it into Ambience while excluding receipts", async () => {
+    const { archive, storeDirectory } = temporaryArchive();
+    const fake = fakeSession();
+    const gate = makeManagedChatGate([CHAT]);
+    const inbox = createManagedChatInbox(archive, {
+      allowed: gate.allowed,
+      createId: () => "window-reaction-31",
+    });
+    const account = createWhatsAppAccount({
+      storeDirectory,
+      archive: inbox.recorder,
+      sessionFactory: () => fake.session,
+    });
+    await account.authenticate({});
+    const dispatches: AmbienceDispatchRequest[] = [];
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(
+            runWhatsAppSession(account.session(), {
+              gate,
+              history: archive,
+              inbox,
+              coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+              dispatch: async (request) => {
+                dispatches.push(request);
+                return { dispatchId: "dispatch-reaction-31", acceptedAt: "2026-07-16T21:00:00.000Z" };
+              },
+            }),
+          );
+          yield* Effect.yieldNow;
+          yield* Effect.promise(async () => {
+            for (const listener of fake.updateListeners) {
+              await listener({
+                kind: "reaction",
+                ref: { id: "agent-message-31", chatId: CHAT, fromMe: true },
+                at: 2_000,
+                by: "15551112222@s.whatsapp.net",
+                emoji: "👍",
+                removed: false,
+              });
+              await listener({
+                kind: "edit",
+                ref: { id: "agent-message-31", chatId: CHAT, fromMe: true },
+                at: 2_050,
+                message: inbound({ id: "agent-message-31", fromMe: true, timestamp: 2_050, text: "Corrected text" }),
+              });
+              await listener({
+                kind: "revoke",
+                ref: { id: "agent-message-31", chatId: CHAT, fromMe: true },
+                at: 2_075,
+                by: "15551112222@s.whatsapp.net",
+              });
+              await listener({
+                kind: "receipt",
+                ref: { id: "agent-message-31", chatId: CHAT, fromMe: true },
+                at: 2_100,
+                by: "15551112222@s.whatsapp.net",
+                status: "read",
+              });
+            }
+          });
+          yield* Effect.sleep(Duration.millis(30));
+        }),
+      ),
+    );
+
+    expect(dispatches).toEqual([
+      {
+        id: CHAT,
+        input: expect.objectContaining({
+          type: "whatsapp.window",
+          windowId: "window-reaction-31",
+          chatId: CHAT,
+          reason: "debounce",
+          messages: [],
+          updates: [
+            expect.objectContaining({
+              kind: "reaction",
+              providerMessageId: "agent-message-31",
+              payload: { by: "15551112222@s.whatsapp.net", emoji: "👍", removed: false },
+            }),
+            expect.objectContaining({ kind: "edit", payload: { messageKind: "text", text: "Corrected text" } }),
+            expect.objectContaining({
+              kind: "revocation",
+              payload: { by: "15551112222@s.whatsapp.net" },
+            }),
+          ],
+        }),
+      },
+    ]);
+    expect(archive.events(CHAT).map(({ kind }) => kind)).toEqual(["reaction", "edit", "revocation", "receipt"]);
     await account.stop();
     archive.close();
   });
@@ -501,7 +599,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     inbox.recorder.append(conversationArrival(inbound({ id: "pending-window-31" })));
     const pending = inbox.createWindow({
       chatId: CHAT,
-      messages: inbox.unwindowed(),
+      ...windowContents(inbox.unwindowed()),
       reason: "debounce",
     });
     expect(inbox.admission(pending.id)).toEqual({ status: "pending", windowId: pending.id });

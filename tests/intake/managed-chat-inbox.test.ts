@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { windowContents } from "../../src/coalescer/events.ts";
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
-import { conversationArrival, smokeCanaryArrival } from "../../src/intake/conversation-event.ts";
+import { conversationArrival, conversationUpdate, smokeCanaryArrival } from "../../src/intake/conversation-event.ts";
 import { inspectWindowDeliveryCounts } from "../../src/intake/managed-chat-inbox.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../support/managed-chat-inbox.ts";
-import type { IncomingMessage } from "whatsappd";
+import type { IncomingMessage, Update } from "whatsappd";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -53,6 +54,47 @@ describe("Managed Chat Inbox", () => {
     archive.close();
   });
 
+  it("persists an observed reaction-only Window across restart and excludes receipts", () => {
+    const path = fixture();
+    const archive = createConversationArchive(path);
+    const inbox = createManagedChatInbox(archive, {
+      allowed: (chatId) => chatId === "managed@g.us",
+      createId: () => "window-reaction",
+    });
+    const ref = { id: "agent-message", chatId: "managed@g.us", fromMe: true } as const;
+    const reaction = conversationUpdate({
+      kind: "reaction",
+      ref,
+      at: 2_000,
+      by: "15551112222@s.whatsapp.net",
+      emoji: "👍",
+      removed: false,
+    });
+    const receipt = conversationUpdate({
+      kind: "receipt",
+      ref,
+      at: 2_100,
+      by: "15551112222@s.whatsapp.net",
+      status: "read",
+    } satisfies Update);
+
+    expect(inbox.recorder.append(reaction)).toBe(true);
+    expect(inbox.recorder.append(receipt)).toBe(true);
+    expect(inbox.unwindowed()).toEqual([reaction]);
+    const window = inbox.createWindow({
+      chatId: "managed@g.us",
+      ...windowContents(inbox.unwindowed()),
+      reason: "debounce",
+    });
+    expect(window).toMatchObject({ messages: [], updates: [reaction] });
+    archive.close();
+
+    const reopenedArchive = createConversationArchive(path);
+    const reopened = createManagedChatInbox(reopenedArchive, { allowed: () => true });
+    expect(reopened.pendingWindows()).toEqual([window]);
+    reopenedArchive.close();
+  });
+
   it("rolls Archive and projection writes back when Inbox acceptance fails", () => {
     const archive = createConversationArchive(fixture());
     const inbox = createManagedChatInbox(archive, { allowed: () => true });
@@ -87,7 +129,7 @@ describe("Managed Chat Inbox", () => {
     expect(() =>
       inbox.createWindow({
         chatId: "managed@g.us",
-        messages: inbox.unwindowed(),
+        ...windowContents(inbox.unwindowed()),
         reason: "debounce",
       }),
     ).toThrow("injected window failure");
@@ -114,13 +156,13 @@ describe("Managed Chat Inbox", () => {
     expect(() =>
       inbox.createWindow({
         chatId: "managed@g.us",
-        messages: inbox.unwindowed().slice(1, 2),
+        ...windowContents(inbox.unwindowed().slice(1, 2)),
         reason: "debounce",
       }),
-    ).toThrow("must claim the oldest pending arrivals in observed order");
+    ).toThrow("must claim the oldest pending events in observed order");
     const window = inbox.createWindow({
       chatId: "managed@g.us",
-      messages: inbox.unwindowed().slice(0, 2),
+      ...windowContents(inbox.unwindowed().slice(0, 2)),
       reason: "capacity",
     });
     expect(window).toMatchObject({ id: "window-stable-1", reason: "capacity" });
@@ -130,6 +172,7 @@ describe("Managed Chat Inbox", () => {
       inbox.createWindow({
         chatId: "managed@g.us",
         messages: window.messages,
+        updates: window.updates,
         reason: "debounce",
       }),
     ).toEqual(window);
@@ -137,13 +180,14 @@ describe("Managed Chat Inbox", () => {
       inbox.createWindow({
         chatId: "managed@g.us",
         messages: window.messages.slice(0, 1),
+        updates: [],
         reason: "debounce",
       }),
     ).toThrow("already belongs to a different Window assignment");
     currentTime = 4_000;
     const secondWindow = inbox.createWindow({
       chatId: "managed@g.us",
-      messages: inbox.unwindowed(),
+      ...windowContents(inbox.unwindowed()),
       reason: "debounce",
     });
     const windowedIds = inbox.pendingWindows().flatMap(({ messages }) => messages.map(({ id }) => id));
@@ -169,9 +213,9 @@ describe("Managed Chat Inbox", () => {
       now: () => 1_000,
     });
     inbox.recorder.append(conversationArrival(message("m1")));
-    const done = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    const done = inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     inbox.recorder.append(conversationArrival(message("m2")));
-    const failed = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    const failed = inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
 
     inbox.markDone(done.id, { dispatchId: "dispatch-1", acceptedAt: "2026-07-15T01:00:00.000Z" });
     inbox.markFailed(failed.id, "Flue unreachable after bounded retries");
@@ -221,7 +265,7 @@ describe("Managed Chat Inbox", () => {
     expect(inbox.recorder.append(smokeCanaryArrival(canary))).toBe(true);
     const window = inbox.createWindow({
       chatId: "managed@g.us",
-      messages: inbox.unwindowed(),
+      ...windowContents(inbox.unwindowed()),
       reason: "debounce",
     });
     inbox.markDone(window.id, { dispatchId: "dispatch-smoke", acceptedAt: "2026-07-16T18:00:00.000Z" });
@@ -248,12 +292,12 @@ describe("Managed Chat Inbox", () => {
     const archive = createConversationArchive(fixture());
     const inbox = createManagedChatInbox(archive, { allowed: () => true, createId: () => "window-failed" });
     inbox.recorder.append(conversationArrival(message("m1")));
-    const window = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    const window = inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     inbox.markFailed(window.id, "dispatch failed after bounded retries");
 
     inbox.recorder.append(conversationArrival(message("m2")));
     expect(inbox.unwindowed().map(({ id }) => id)).toEqual(["m2"]);
-    expect(inbox.pendingArrival("managed@g.us", "m2")?.id).toBe("m2");
+    expect(inbox.pending(inbox.unwindowed()[0]!)?.id).toBe("m2");
     archive.close();
   });
 
@@ -267,7 +311,7 @@ describe("Managed Chat Inbox", () => {
     });
     for (const id of ["m1", "m2", "m3", "m4", "m5"]) {
       inbox.recorder.append(conversationArrival(message(id)));
-      inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+      inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     }
     archive.transaction(({ database }) =>
       database.exec(`
@@ -343,7 +387,7 @@ describe("Managed Chat Inbox", () => {
     });
     for (const id of ["m1", "m2"]) {
       inbox.recorder.append(conversationArrival(message(id)));
-      inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+      inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     }
     archive.transaction(({ database }) =>
       database.exec(`
@@ -370,9 +414,9 @@ describe("Managed Chat Inbox", () => {
     let nextWindow = 0;
     const inbox = createManagedChatInbox(archive, { allowed: () => true, createId: () => `window-${++nextWindow}` });
     inbox.recorder.append(conversationArrival(message("m1")));
-    inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     inbox.recorder.append(conversationArrival(message("m2")));
-    const failing = inbox.createWindow({ chatId: "managed@g.us", messages: inbox.unwindowed(), reason: "debounce" });
+    const failing = inbox.createWindow({ chatId: "managed@g.us", ...windowContents(inbox.unwindowed()), reason: "debounce" });
     inbox.markFailed(failing.id, "dispatch failed after bounded retries");
     archive.close();
 

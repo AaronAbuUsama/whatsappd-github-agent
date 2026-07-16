@@ -65,7 +65,7 @@ describe("Conversation Archive", () => {
     archive.close();
   });
 
-  it("retains edit, reaction, receipt, and revocation facts while projecting current thread state", () => {
+  it("retains edit, reaction, receipt, and revocation facts while projecting current message state", () => {
     const archive = createConversationArchive(databasePath());
     archive.append(conversationArrival(arrival()));
     const ref = { id: "message-49", chatId: "team-49@g.us", fromMe: false };
@@ -107,8 +107,6 @@ describe("Conversation Archive", () => {
       text: "The corrected stable base should remember this.",
       timestamp: 1_000,
       revoked: true,
-      reactions: [{ by: "15553334444@s.whatsapp.net", emoji: "✅" }],
-      receipts: [{ by: "15555556666@s.whatsapp.net", status: "read" }],
     });
     expect(archive.readThread("team-49@g.us")).toEqual([]);
 
@@ -143,7 +141,6 @@ describe("Conversation Archive", () => {
 
     expect(archive.messageState("team-49@g.us", "message-49")).toMatchObject({
       text: "An edit can arrive before reconnect history.",
-      receipts: [{ by: "15555556666@s.whatsapp.net", status: "read" }],
     });
     archive.close();
 
@@ -152,7 +149,6 @@ describe("Conversation Archive", () => {
     expect(reopened.events("team-49@g.us")).toHaveLength(3);
     expect(reopened.messageState("team-49@g.us", "message-49")).toMatchObject({
       text: "An edit can arrive before reconnect history.",
-      receipts: [{ by: "15555556666@s.whatsapp.net", status: "read" }],
     });
     reopened.close();
   });
@@ -194,21 +190,6 @@ describe("Conversation Archive", () => {
     expect(archive.events("team-49@g.us").filter(({ kind }) => kind === "edit")).toHaveLength(2);
     expect(archive.messageState("team-49@g.us", "message-49")).toMatchObject({ text: "Alpha second edit." });
 
-    archive.append(conversationUpdate({
-      kind: "receipt",
-      ref,
-      by: "15555556666@s.whatsapp.net",
-      status: "played",
-    }));
-    archive.append(conversationUpdate({
-      kind: "receipt",
-      ref,
-      by: "15555556666@s.whatsapp.net",
-      status: "server_ack",
-    }));
-    expect(archive.messageState("team-49@g.us", "message-49")).toMatchObject({
-      receipts: [{ by: "15555556666@s.whatsapp.net", status: "played" }],
-    });
     archive.close();
   });
 

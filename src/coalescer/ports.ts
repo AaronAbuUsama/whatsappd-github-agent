@@ -6,7 +6,7 @@
  * Decisions D1/D3/D4 in `docs/COALESCER-DESIGN.md`.
  */
 import { Context, Data, type Effect, type Stream } from "effect";
-import type { ConversationWindow, ConversationWindowDraft, IncomingMessage } from "./events.ts";
+import type { CoalescerEvent, ConversationWindow, ConversationWindowDraft } from "./events.ts";
 
 // ── Window dispatcher ────────────────────────────────────────────────────────
 // The Coalescer's sole output. Production dispatches every accepted window to
@@ -42,6 +42,6 @@ export class WindowStore extends Context.Service<WindowStore, WindowStoreService
 export class EventSource extends Context.Service<
   EventSource,
   {
-    readonly events: Stream.Stream<IncomingMessage>;
+    readonly events: Stream.Stream<CoalescerEvent>;
   }
 >()("EventSource") {}

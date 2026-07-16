@@ -1,7 +1,7 @@
 /**
  * The Coalescer — the timing layer with no model.
  *
- * One actor fiber per `chatId`, each draining its own `Queue<IncomingMessage>`.
+ * One actor fiber per `chatId`, each draining its own `Queue<CoalescerEvent>`.
  * The flush rule is a throttle with a settle window: "take the next message, but
  * give up after `min(debounceWindow, timeLeftUntilCap)`" (`Queue.take` raced
  * against a virtual sleep via `timeoutOption`). The `debounceWindow` leg restarts
@@ -18,11 +18,13 @@
 import { Clock, Duration, Effect, HashMap, Option, Queue, Ref, type Scope, Stream } from "effect";
 import {
   addressesBot,
+  type CoalescerEvent,
   type ConversationWindow,
   type ConversationWindowDraft,
   type FireReason,
-  type IncomingMessage,
+  isConversationUpdate,
   reasonOf,
+  windowContents,
 } from "./events.ts";
 import { CoalescerConfig, type CoalescerConfigValues } from "./config.ts";
 import { EventSource, WindowDispatcher, WindowStore, type WindowStoreService } from "./ports.ts";
@@ -53,7 +55,7 @@ const stopAfterReplayReadError = (cause: unknown): Effect.Effect<never> =>
   );
 
 const fire = (dispatcher: WindowDispatcherService, window: ConversationWindow): Effect.Effect<void> =>
-  window.messages.length === 0
+  window.messages.length + window.updates.length === 0
     ? Effect.void
     : dispatcher
         .dispatch(window)
@@ -72,10 +74,10 @@ const makeChatLoop = (
   const debounceMillis = Duration.toMillis(config.debounceWindow);
   const capacity = Math.max(1, config.maxWindowMessages);
 
-  return (chatId: string, queue: Queue.Dequeue<IncomingMessage>): Effect.Effect<never> => {
+  return (chatId: string, queue: Queue.Dequeue<CoalescerEvent>): Effect.Effect<never> => {
     // Dispatch the buffered window to Ambience, then go cold for the next burst.
-    const fireAndReset = (messages: readonly IncomingMessage[], reason: FireReason): Effect.Effect<never> => {
-      const draft: ConversationWindowDraft = { chatId, messages, reason };
+    const fireAndReset = (events: readonly CoalescerEvent[], reason: FireReason): Effect.Effect<never> => {
+      const draft: ConversationWindowDraft = { chatId, ...windowContents(events), reason };
       return store.create(draft).pipe(
         Effect.catch(stopAfterStoreError(chatId)),
         Effect.catchDefect(stopAfterStoreError(chatId)),
@@ -84,32 +86,34 @@ const makeChatLoop = (
       );
     };
 
-    // A message landed: buffer it, and either flush now (bot addressed) or keep
-    // waiting. `burstStart` is the clock time of the burst's first message — the
+    // An event landed: buffer it, and either flush now (bot addressed) or keep
+    // waiting. `burstStart` is the clock time of the burst's first event — the
     // cap is measured from it and carried unchanged through the whole burst.
-    const onMessage = (
-      buffer: readonly IncomingMessage[],
+    const onEvent = (
+      buffer: readonly CoalescerEvent[],
       burstStart: number,
-      msg: IncomingMessage,
+      event: CoalescerEvent,
     ): Effect.Effect<never> => {
-      const next = [...buffer, msg];
-      return addressesBot(msg, config.botIds)
-        ? fireAndReset(next, reasonOf(msg, config.botIds))
-        : next.length >= capacity
+      const next = [...buffer, event];
+      return isConversationUpdate(event)
+        ? warm(next, burstStart)
+        : addressesBot(event, config.botIds)
+          ? fireAndReset(next, reasonOf(event, config.botIds))
+          : windowContents(next).messages.length >= capacity
           ? fireAndReset(next, "capacity")
           : warm(next, burstStart);
     };
 
-    // Cold: no buffered messages. Block indefinitely for the burst's first message,
+    // Cold: no buffered events. Block indefinitely for the burst's first event,
     // stamping `burstStart` from the clock the instant it arrives.
     const cold: Effect.Effect<never> = Queue.take(queue).pipe(
-      Effect.flatMap((msg) => Clock.currentTimeMillis.pipe(Effect.flatMap((now) => onMessage([], now, msg)))),
+      Effect.flatMap((event) => Clock.currentTimeMillis.pipe(Effect.flatMap((now) => onEvent([], now, event)))),
     );
 
-    // Warm: a burst is accumulating. Wait for the next message, but give up when the
+    // Warm: a burst is accumulating. Wait for the next event, but give up when the
     // chat goes quiet (`debounceWindow`) OR the cap elapses (`maxWait` since
     // `burstStart`), whichever comes first — then fire and start a fresh burst.
-    const warm = (buffer: readonly IncomingMessage[], burstStart: number): Effect.Effect<never> =>
+    const warm = (buffer: readonly CoalescerEvent[], burstStart: number): Effect.Effect<never> =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => {
           const capLeft = Math.max(0, burstStart + maxWaitMillis - now);
@@ -119,7 +123,7 @@ const makeChatLoop = (
             Effect.flatMap(
               Option.match({
                 onNone: () => fireAndReset(buffer, capLeft <= debounceMillis ? "maximum-wait" : "debounce"),
-                onSome: (msg) => onMessage(buffer, burstStart, msg),
+                onSome: (event) => onEvent(buffer, burstStart, event),
               }),
             ),
           );
@@ -149,19 +153,19 @@ export const run: Effect.Effect<
   const dispatcher = yield* WindowDispatcher;
   const store = yield* WindowStore;
   const chatLoop = makeChatLoop(config, dispatcher, store);
-  const registry = yield* Ref.make(HashMap.empty<string, Queue.Queue<IncomingMessage>>());
+  const registry = yield* Ref.make(HashMap.empty<string, Queue.Queue<CoalescerEvent>>());
 
-  const routeTo = (msg: IncomingMessage): Effect.Effect<void, never, Scope.Scope> =>
+  const routeTo = (event: CoalescerEvent): Effect.Effect<void, never, Scope.Scope> =>
     Effect.gen(function* () {
-      const existing = HashMap.get(yield* Ref.get(registry), msg.chatId);
+      const existing = HashMap.get(yield* Ref.get(registry), event.chatId);
       if (Option.isSome(existing)) {
-        yield* Queue.offer(existing.value, msg);
+        yield* Queue.offer(existing.value, event);
         return;
       }
-      const queue = yield* Queue.unbounded<IncomingMessage>();
-      yield* Ref.update(registry, HashMap.set(msg.chatId, queue));
-      yield* Effect.forkScoped(chatLoop(msg.chatId, queue));
-      yield* Queue.offer(queue, msg);
+      const queue = yield* Queue.unbounded<CoalescerEvent>();
+      yield* Ref.update(registry, HashMap.set(event.chatId, queue));
+      yield* Effect.forkScoped(chatLoop(event.chatId, queue));
+      yield* Queue.offer(queue, event);
     });
 
   const pending = yield* store.pendingWindows.pipe(
@@ -189,7 +193,7 @@ export const run: Effect.Effect<
 
   yield* events.pipe(
     // fromMe = the bot's own messages; live=false = history backfill. Neither drives the loop.
-    Stream.filter((m) => m.live && !m.fromMe),
+    Stream.filter((event) => isConversationUpdate(event) || (event.live && !event.fromMe)),
     Stream.runForEach(routeTo),
   );
 });

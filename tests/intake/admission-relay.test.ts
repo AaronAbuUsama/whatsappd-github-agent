@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { admitWindow } from "../../src/intake/admission-relay.ts";
+import { windowContents } from "../../src/coalescer/events.ts";
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../support/managed-chat-inbox.ts";
@@ -44,7 +45,7 @@ const fixture = () => {
   inbox.recorder.append(conversationArrival(arrival));
   const window = inbox.createWindow({
     chatId: CHAT,
-    messages: inbox.unwindowed(),
+    ...windowContents(inbox.unwindowed()),
     reason: "debounce",
   });
   return { archive, inbox, window };
@@ -115,7 +116,7 @@ describe("Admission Relay", () => {
     });
     expect(inbox.pendingWindows()).toEqual([]);
     // The chat is never blocked: a later arrival remains reachable.
-    expect(inbox.pendingArrival(CHAT, "message-1")).toBeUndefined();
+    expect(inbox.pending(window.messages[0]!)).toBeUndefined();
     archive.close();
   });
 

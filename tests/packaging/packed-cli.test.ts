@@ -10,9 +10,11 @@ import { sqlite } from "@flue/runtime/node";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { createIssueOperationStore } from "../../src/capabilities/issue-management/operation-store.ts";
+import { windowContents } from "../../src/coalescer/events.ts";
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
 import { createManagedChatInbox } from "../../src/intake/managed-chat-inbox.ts";
+import { APPLICATION_DATABASE_SCHEMA_VERSION } from "../../src/managed/database-versions.ts";
 import { inspectManagedData } from "../../src/managed/installation.ts";
 import { managedPaths } from "../../src/managed/paths.ts";
 import type { InboundMessage } from "whatsappd";
@@ -239,6 +241,20 @@ describe("packed ambient-agent executable", () => {
       ],
     });
 
+    const predecessor = new DatabaseSync(managedPaths({ dataDirectory }).applicationDatabase);
+    predecessor.exec(`
+      PRAGMA user_version = 1;
+      CREATE TABLE conversation_reactions (
+        chat_id TEXT NOT NULL, message_id TEXT NOT NULL, actor_id TEXT NOT NULL, emoji TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id, actor_id)
+      );
+      CREATE TABLE conversation_receipts (
+        chat_id TEXT NOT NULL, message_id TEXT NOT NULL, actor_id TEXT NOT NULL, status TEXT NOT NULL,
+        PRIMARY KEY (chat_id, message_id, actor_id)
+      );
+    `);
+    predecessor.close();
+
     const port = await availablePort();
     await executeAmbientAgent(["--data-dir", dataDirectory, "config", "--port", String(port)], fixtureEnvironment);
     const runtime = await startPackedRuntime(dataDirectory, port);
@@ -257,6 +273,18 @@ describe("packed ambient-agent executable", () => {
         observedRuntime: { state: "healthy", whatsapp: { phase: "online" } },
         checks: expect.arrayContaining([expect.objectContaining({ name: "whatsapp-session", state: "online" })]),
       });
+      const doctor = await executeAmbientAgent(["--data-dir", dataDirectory, "doctor", "--json"], fixtureEnvironment);
+      expect(JSON.parse(doctor.stdout)).toMatchObject({ state: "ready" });
+      const upgraded = new DatabaseSync(managedPaths({ dataDirectory }).applicationDatabase, { readOnly: true });
+      expect((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(
+        APPLICATION_DATABASE_SCHEMA_VERSION,
+      );
+      expect(
+        upgraded
+          .prepare("SELECT name FROM sqlite_master WHERE type = ? AND name IN (?, ?) ORDER BY name")
+          .all("table", "conversation_reactions", "conversation_receipts"),
+      ).toEqual([]);
+      upgraded.close();
       // Runtime diagnostics live on stderr (ADR 0016); stdout stays free for command responses.
       expect(runtime.stderr()).toContain("Ambience WhatsApp online");
       expect(runtime.stderr()).not.toContain("packed-github-secret");
@@ -462,7 +490,7 @@ describe("packed ambient-agent executable", () => {
     sourceInbox.recorder.append(conversationArrival(arrival("backup-terminal", "terminal archive fact", 58_001)));
     const terminalWindow = sourceInbox.createWindow({
       chatId,
-      messages: sourceInbox.unwindowed(),
+      ...windowContents(sourceInbox.unwindowed()),
       reason: "debounce",
     });
     sourceInbox.markDone(terminalWindow.id, {
@@ -492,7 +520,7 @@ describe("packed ambient-agent executable", () => {
     const incompatibleDatabase = new DatabaseSync(
       managedPaths({ dataDirectory: incompatibleData }).applicationDatabase,
     );
-    incompatibleDatabase.exec("PRAGMA user_version = 2");
+    incompatibleDatabase.exec(`PRAGMA user_version = ${APPLICATION_DATABASE_SCHEMA_VERSION + 1}`);
     incompatibleDatabase.close();
     await expect(
       executeAmbientAgent(["--data-dir", incompatibleData, "doctor", "--json"], restoredEnvironment),

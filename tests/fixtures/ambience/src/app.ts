@@ -21,7 +21,7 @@ import {
 import { configureWhatsAppParticipationPort } from "../../../../src/capabilities/whatsapp-participation/whatsapp-port.js";
 import * as Coalescer from "../../../../src/coalescer/coalescer.js";
 import { configLayer } from "../../../../src/coalescer/config.js";
-import type { IncomingMessage } from "../../../../src/coalescer/events.js";
+import type { CoalescerEvent, IncomingMessage } from "../../../../src/coalescer/events.js";
 import { queueEventSource } from "../../../../src/coalescer/mocks.js";
 import { installGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
 import { createFakeIssueRepository } from "../../../support/fake-issue-repository.js";
@@ -252,7 +252,7 @@ const githubIngressStore = installGitHubIngressRuntime(
   async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
   issueOperations,
 );
-const source = await Effect.runPromise(Queue.unbounded<IncomingMessage>());
+const source = await Effect.runPromise(Queue.unbounded<CoalescerEvent>());
 configureWhatsAppParticipationPort({
   say: fakeWhatsApp.say,
   react: fakeWhatsApp.react,
@@ -304,7 +304,7 @@ app.post("/test/archive", async (context) => {
 app.post("/test/coalescer", async (context) => {
   const input = await context.req.json<IncomingMessage>();
   inbox.recorder.append(conversationEvent(input));
-  const accepted = inbox.pendingArrival(input.chatId, input.id);
+  const accepted = inbox.pending(input);
   if (accepted !== undefined) await Effect.runPromise(Queue.offer(source, accepted));
   return context.json({ accepted: true }, 202);
 });

@@ -3,12 +3,12 @@
  * They are `Ref`-backed so timing tests can inspect exactly what fired.
  */
 import { Effect, Layer, Queue, Ref, Stream } from "effect";
-import type { ConversationWindow, IncomingMessage } from "./events.ts";
+import type { CoalescerEvent, ConversationWindow } from "./events.ts";
 import { EventSource, WindowDispatcher, WindowStore } from "./ports.ts";
 
 // ── EventSource: a Stream fed from a Queue the test controls ─────────────────
 
-export const queueEventSource = (queue: Queue.Dequeue<IncomingMessage>): Layer.Layer<EventSource, never> =>
+export const queueEventSource = (queue: Queue.Dequeue<CoalescerEvent>): Layer.Layer<EventSource, never> =>
   Layer.succeed(EventSource, { events: Stream.fromQueue(queue) });
 
 // ── Window dispatcher: record every dispatch (for timing tests) ───────────────

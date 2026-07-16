@@ -69,10 +69,10 @@ const LEGACY_APPLICATION_CORE_SCHEMA = [
     "conversation_messages",
     ["chat_id", "message_id", "direction", "sender_id", "sender_name", "kind", "text", "timestamp_ms", "revoked"],
   ],
-  ["conversation_reactions", ["chat_id", "message_id", "actor_id", "emoji"]],
-  ["conversation_receipts", ["chat_id", "message_id", "actor_id", "status"]],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;
 const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
+  ["conversation_reactions", ["chat_id", "message_id", "actor_id", "emoji"]],
+  ["conversation_receipts", ["chat_id", "message_id", "actor_id", "status"]],
   ["managed_chat_windows", ["window_id", "chat_id", "reason", "created_at_ms"]],
   ["managed_chat_inbox", ["inbox_sequence", "event_id", "chat_id", "window_id", "accepted_at_ms"]],
   ["managed_chat_admissions", ["window_id", "status", "dispatch_id", "accepted_at", "reason", "updated_at_ms"]],
