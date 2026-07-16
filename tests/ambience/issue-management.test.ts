@@ -953,6 +953,7 @@ describe("production Issue Management tools", () => {
       readFile(join(process.cwd(), "src/capabilities/issue-management/SKILL.md"), "utf8"),
     ).resolves.toContain('version: "2.0.0"');
     expect(config.tools?.map((tool) => tool.name)).toEqual([
+      "react",
       "say",
       "whatsapp_read_thread",
       "whatsapp_search",

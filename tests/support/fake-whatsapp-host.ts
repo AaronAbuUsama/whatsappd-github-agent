@@ -1,7 +1,6 @@
 import {
   type WhatsAppDeliveryResult,
-  type WhatsAppReplyTarget,
-  type WhatsAppSayPort,
+  type WhatsAppOutboundPort,
   type WhatsAppSayResult,
   withTypingResult,
 } from "../../src/capabilities/whatsapp-participation/whatsapp-port.ts";
@@ -18,7 +17,7 @@ export type FakeWhatsAppEvent =
       readonly kind: "send";
       readonly chatId: string;
       readonly text: string;
-      readonly replyTo?: WhatsAppReplyTarget;
+      readonly replyTo?: string;
       readonly outcome: "sent";
       readonly messageId: string;
     }
@@ -26,12 +25,18 @@ export type FakeWhatsAppEvent =
       readonly kind: "send";
       readonly chatId: string;
       readonly text: string;
-      readonly replyTo?: WhatsAppReplyTarget;
+      readonly replyTo?: string;
       readonly outcome: "failed" | "unknown";
       readonly error: string;
+    }
+  | {
+      readonly kind: "react";
+      readonly chatId: string;
+      readonly messageId: string;
+      readonly emoji: string;
     };
 
-export interface FakeWhatsAppHost extends WhatsAppSayPort {
+export interface FakeWhatsAppHost extends WhatsAppOutboundPort {
   readonly events: () => readonly FakeWhatsAppEvent[];
   readonly failNextSend: (error: Error, delivery?: "failed" | "unknown") => void;
   readonly failNextTypingFinalization: (error: Error) => void;
@@ -90,6 +95,10 @@ export const createFakeWhatsAppHost = (): FakeWhatsAppHost => {
       if (typingError === undefined) recorded.push({ kind: "typing", chatId, on: false });
       else recorded.push({ kind: "typing", chatId, on: false, outcome: "unknown", error: typingError.message });
       return withTypingResult(delivery, typingError?.message);
+    },
+    react: async (chatId, messageId, emoji): Promise<WhatsAppSayResult> => {
+      recorded.push({ kind: "react", chatId, messageId, emoji });
+      return withTypingResult({ delivery: "sent", messageId: `fake-message-${++nextMessage}` });
     },
   };
 };

@@ -39,6 +39,18 @@ const format = (messages: readonly ProjectedConversationMessage[]): string =>
     })
     .join("\n");
 
+export const createReactTool = (chatId: string) =>
+  defineTool({
+    name: "react",
+    description: "React to one message in the WhatsApp chat bound to this Ambience instance.",
+    input: v.object({
+      messageId: nonEmptyString,
+      emoji: v.pipe(v.string(), v.minLength(1), v.maxLength(8)),
+    }),
+    output: sayOutputSchema,
+    run: ({ input }) => getWhatsAppParticipationPort().react(chatId, input.messageId, input.emoji),
+  });
+
 export const createSayTool = (chatId: string) =>
   defineTool({
     name: "say",
@@ -46,13 +58,7 @@ export const createSayTool = (chatId: string) =>
       "Send one message to the WhatsApp chat bound to this Ambience instance, optionally replying to a triggering message.",
     input: v.object({
       text: v.pipe(v.string(), v.minLength(1), v.maxLength(4_096)),
-      replyTo: v.optional(
-        v.object({
-          messageId: nonEmptyString,
-          fromMe: v.boolean(),
-          participant: v.optional(nonEmptyString),
-        }),
-      ),
+      replyTo: v.optional(nonEmptyString),
     }),
     output: sayOutputSchema,
     run: ({ input }) => getWhatsAppParticipationPort().say(chatId, input.text, input.replyTo),
@@ -85,6 +91,7 @@ export const createSearchWhatsAppHistoryTool = (chatId: string) =>
   });
 
 export const createWhatsAppParticipationTools = (chatId: string): ToolDefinition[] => [
+  createReactTool(chatId),
   createSayTool(chatId),
   createReadWhatsAppThreadTool(chatId),
   createSearchWhatsAppHistoryTool(chatId),

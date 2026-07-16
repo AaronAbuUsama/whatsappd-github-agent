@@ -26,6 +26,7 @@ import { createConversationArchive } from "../../src/intake/conversation-archive
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../support/managed-chat-inbox.ts";
 import {
+  createReactTool,
   createReadWhatsAppThreadTool,
   createSayTool,
   createSearchWhatsAppHistoryTool,
@@ -219,11 +220,63 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
             messageId: "real-host-message-1",
             typing: "cleared",
           });
+          expect(
+            yield* Effect.promise(() =>
+              Promise.resolve(say.run({ input: { text: "one quoted reply", replyTo: "inbound-31" } })),
+            ),
+          ).toEqual({
+            delivery: "sent",
+            messageId: "real-host-message-2",
+            typing: "cleared",
+          });
+          const react = createReactTool(CHAT);
+          expect(
+            yield* Effect.promise(() =>
+              Promise.resolve(react.run({ input: { messageId: "inbound-31", emoji: "👀" } })),
+            ),
+          ).toEqual({
+            delivery: "sent",
+            messageId: "real-host-message-3",
+            typing: "cleared",
+          });
           expect(fake.typing).toEqual([
             { chatId: CHAT, on: true },
             { chatId: CHAT, on: false },
+            { chatId: CHAT, on: true },
+            { chatId: CHAT, on: false },
           ]);
-          expect(fake.sent).toEqual([{ chatId: CHAT, content: { text: "one controlled reply" } }]);
+          expect(fake.sent).toEqual([
+            { chatId: CHAT, content: { text: "one controlled reply" } },
+            {
+              chatId: CHAT,
+              content: { text: "one quoted reply" },
+              options: {
+                quote: {
+                  id: "inbound-31",
+                  chatId: CHAT,
+                  fromMe: false,
+                  participant: "15551112222@s.whatsapp.net",
+                },
+              },
+            },
+            {
+              chatId: CHAT,
+              content: {
+                react: {
+                  to: {
+                    id: "inbound-31",
+                    chatId: CHAT,
+                    fromMe: false,
+                    participant: "15551112222@s.whatsapp.net",
+                  },
+                  emoji: "👀",
+                },
+              },
+            },
+          ]);
+          expect(archive.messageState(CHAT, "inbound-31")).toMatchObject({
+            reactions: [expect.objectContaining({ emoji: "👀" })],
+          });
 
           const read = createReadWhatsAppThreadTool(CHAT);
           const search = createSearchWhatsAppHistoryTool(CHAT);
@@ -232,6 +285,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
               expect.objectContaining({ id: "history-sync-31", text: "older synced context" }),
               expect.objectContaining({ id: "inbound-31", direction: "inbound" }),
               expect.objectContaining({ id: "real-host-message-1", direction: "outbound" }),
+              expect.objectContaining({ id: "real-host-message-2", direction: "outbound" }),
             ],
           });
           expect(archive.readThread(CHAT, 10).filter(({ id }) => id === "history-sync-31")).toHaveLength(1);
@@ -530,13 +584,14 @@ describe("real WhatsApp Host outcome boundary", () => {
 
   it("quotes the requested triggering message without exposing chat selection to the model", async () => {
     const fake = fakeSession();
-    const host = createWhatsAppHost(fake.session);
-
-    await host.say(CHAT, "threaded reply", {
-      messageId: "incoming-31",
+    const host = createWhatsAppHost(fake.session, (_chatId, messageId) => ({
+      id: messageId,
+      chatId: CHAT,
       fromMe: false,
       participant: "15551112222@s.whatsapp.net",
-    });
+    }));
+
+    await host.say(CHAT, "threaded reply", "incoming-31");
 
     expect(fake.sent).toEqual([
       {

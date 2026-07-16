@@ -7,10 +7,10 @@ import { configLayer } from "../../src/coalescer/config.ts";
 import type { IncomingMessage } from "../../src/coalescer/events.ts";
 import { inMemoryWindowStore, queueEventSource } from "../../src/coalescer/mocks.ts";
 import { makeAmbienceWindowDispatcher, type AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
-import { createSayTool } from "../../src/capabilities/whatsapp-participation/tools.ts";
+import { createReactTool, createSayTool } from "../../src/capabilities/whatsapp-participation/tools.ts";
 import {
   configureWhatsAppParticipationPort,
-  type WhatsAppSayPort,
+  type WhatsAppOutboundPort,
 } from "../../src/capabilities/whatsapp-participation/whatsapp-port.ts";
 import { createFakeWhatsAppHost } from "../support/fake-whatsapp-host.ts";
 import type { ManagedChatInbox, WindowAdmission } from "../../src/intake/managed-chat-inbox.ts";
@@ -18,8 +18,8 @@ import type { ManagedChatInbox, WindowAdmission } from "../../src/intake/managed
 const BOT = "bot@s.whatsapp.net";
 const CHAT = "team@g.us";
 
-const sayToolFor = (host: WhatsAppSayPort) => {
-  configureWhatsAppParticipationPort({ say: host.say, readThread: () => [], search: () => [] });
+const sayToolFor = (host: WhatsAppOutboundPort) => {
+  configureWhatsAppParticipationPort({ say: host.say, react: host.react, readThread: () => [], search: () => [] });
   return createSayTool(CHAT);
 };
 
@@ -144,11 +144,7 @@ describe("say", () => {
       say.run({
         input: {
           text: "reply in context",
-          replyTo: {
-            messageId: "incoming-27",
-            fromMe: false,
-            participant: "15551112222@s.whatsapp.net",
-          },
+          replyTo: "incoming-27",
         },
       }),
     ).resolves.toMatchObject({ delivery: "sent" });
@@ -156,11 +152,7 @@ describe("say", () => {
       kind: "send",
       chatId: CHAT,
       text: "reply in context",
-      replyTo: {
-        messageId: "incoming-27",
-        fromMe: false,
-        participant: "15551112222@s.whatsapp.net",
-      },
+      replyTo: "incoming-27",
       outcome: "sent",
       messageId: "fake-message-1",
     });
@@ -222,10 +214,31 @@ describe("say", () => {
   it("declares a runtime output schema that rejects a malformed host receipt", async () => {
     const malformedHost = {
       say: async () => ({ delivery: "sent", messageId: "", typing: "cleared" }),
-    } as unknown as WhatsAppSayPort;
+      react: async () => ({ delivery: "sent", messageId: "", typing: "cleared" }),
+    } as unknown as WhatsAppOutboundPort;
     const say = sayToolFor(malformedHost);
     const result = await say.run({ input: { text: "validate the receipt" } });
 
     expect(v.safeParse(say.output, result).success).toBe(false);
+  });
+});
+
+describe("react", () => {
+  it("records one chat-bound reaction without manufacturing typing activity", async () => {
+    const host = createFakeWhatsAppHost();
+    configureWhatsAppParticipationPort({
+      say: host.say,
+      react: host.react,
+      readThread: () => [],
+      search: () => [],
+    });
+    const react = createReactTool(CHAT);
+
+    await expect(react.run({ input: { messageId: "incoming-27", emoji: "👀" } })).resolves.toEqual({
+      delivery: "sent",
+      messageId: "fake-message-1",
+      typing: "cleared",
+    });
+    expect(host.events()).toEqual([{ kind: "react", chatId: CHAT, messageId: "incoming-27", emoji: "👀" }]);
   });
 });

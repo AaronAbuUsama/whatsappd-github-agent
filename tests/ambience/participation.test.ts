@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import * as v from "valibot";
 import { describe, expect, it } from "vite-plus/test";
 
 import ambience from "../../src/agents/ambience.ts";
@@ -8,6 +9,7 @@ import {
   createIssueManagementPolicy,
 } from "../../src/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "../../src/capabilities/issue-management/operation-store.ts";
+import { createReactTool, createSayTool } from "../../src/capabilities/whatsapp-participation/tools.ts";
 import { createFakeIssueRepository } from "../support/fake-issue-repository.ts";
 
 const root = process.cwd();
@@ -51,13 +53,38 @@ describe("WhatsApp Participation capability", () => {
     expect(skill).toContain("Send one message per concern, threaded by reply-to to the source message");
   });
 
-  it("assembles Say, thread-read, and history-search as one chat-bound capability", async () => {
+  it("keeps React and Say chat-bound while exposing only message IDs at the tool boundary", () => {
+    const react = createReactTool("participation-test@g.us");
+    const say = createSayTool("participation-test@g.us");
+
+    expect(v.safeParse(react.input, { messageId: "source-31", emoji: "👀" }).success).toBe(true);
+    expect(v.safeParse(react.input, { messageId: "source-31", emoji: "" }).success).toBe(false);
+    expect(v.safeParse(react.input, { messageId: "source-31", emoji: "123456789" }).success).toBe(false);
+    const chatOverride = v.safeParse(react.input, {
+      chatId: "other@g.us",
+      messageId: "source-31",
+      emoji: "👀",
+    });
+    expect(chatOverride).toMatchObject({ success: true, output: { messageId: "source-31", emoji: "👀" } });
+    if (chatOverride.success) expect(chatOverride.output).not.toHaveProperty("chatId");
+
+    expect(v.safeParse(say.input, { text: "Threaded answer", replyTo: "source-31" }).success).toBe(true);
+    expect(
+      v.safeParse(say.input, {
+        text: "Provider details must stay private",
+        replyTo: { messageId: "source-31", fromMe: false },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("assembles React, Say, thread-read, and history-search as one chat-bound capability", async () => {
     const [tools, port] = await Promise.all([
       read("src/capabilities/whatsapp-participation/tools.ts"),
       read("src/capabilities/whatsapp-participation/whatsapp-port.ts"),
     ]);
 
     expect(tools).toContain("createWhatsAppParticipationTools");
+    expect(tools).toContain("createReactTool(chatId)");
     expect(tools).toContain("createSayTool(chatId)");
     expect(tools).toContain("createReadWhatsAppThreadTool(chatId)");
     expect(tools).toContain("createSearchWhatsAppHistoryTool(chatId)");

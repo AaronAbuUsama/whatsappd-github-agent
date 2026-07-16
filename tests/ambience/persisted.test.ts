@@ -228,7 +228,11 @@ async function waitFor(predicate: () => Promise<boolean>, label: string): Promis
 }
 
 let messageSequence = 0;
-async function coalescerMessage(chatId: string, text: string, overrides: Partial<IncomingMessage> = {}): Promise<void> {
+async function coalescerMessage(
+  chatId: string,
+  text: string,
+  overrides: Partial<IncomingMessage> = {},
+): Promise<string> {
   const n = ++messageSequence;
   const input: IncomingMessage = {
     id: `fixture-${n}`,
@@ -249,6 +253,7 @@ async function coalescerMessage(chatId: string, text: string, overrides: Partial
     body: JSON.stringify(input),
   });
   expect(response.status, await response.text()).toBe(202);
+  return input.id;
 }
 
 type FixtureAdmission =
@@ -580,6 +585,49 @@ describe("persisted Ambience admission", () => {
     const history = await historyText(chatId);
     expect(history).toContain("Private speech outcome retained for the next Ambience turn.");
     expect(JSON.stringify(events)).not.toContain("Private speech outcome");
+  });
+
+  it("records the rig transcript for a reaction and quote-reply to one source message", async () => {
+    const chatId = "participation-proof-27@g.us";
+    await resetWhatsApp();
+
+    const messageId = await coalescerMessage(chatId, "REACT_AND_REPLY", {
+      mentions: ["bot@s.whatsapp.net"],
+    });
+    await waitFor(async () => {
+      const events = await whatsappEvents();
+      return (
+        events.some(
+          (event) =>
+            event.kind === "react" && event.chatId === chatId && event.messageId === messageId && event.emoji === "👀",
+        ) &&
+        events.some(
+          (event) =>
+            event.kind === "send" &&
+            event.chatId === chatId &&
+            event.replyTo === messageId &&
+            event.text === "I am following this one.",
+        )
+      );
+    }, "reaction and quote-reply transcript");
+
+    const events = await whatsappEvents();
+    expect(events.filter((event) => event.kind === "react")).toEqual([
+      { kind: "react", chatId, messageId, emoji: "👀" },
+    ]);
+    expect(events.filter((event) => event.kind === "send")).toEqual([
+      expect.objectContaining({
+        kind: "send",
+        chatId,
+        text: "I am following this one.",
+        replyTo: messageId,
+        outcome: "sent",
+      }),
+    ]);
+    expect(events.filter((event) => event.kind === "typing")).toEqual([
+      { kind: "typing", chatId, on: true },
+      { kind: "typing", chatId, on: false },
+    ]);
   });
 
   it("finalizes typing and does not retry when a send outcome is unknown", async () => {

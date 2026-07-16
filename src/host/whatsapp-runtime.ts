@@ -1,11 +1,12 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
-import type { WhatsAppSession } from "whatsappd";
+import type { MessageRef, WhatsAppSession } from "whatsappd";
 
 import { makeAmbienceWindowDispatcher, type DispatchAmbience } from "../ambience/dispatch.js";
 import {
   configureWhatsAppParticipationPort,
   type WhatsAppHistoryPort,
-  type WhatsAppSayPort,
+  type WhatsAppMessageLookupPort,
+  type WhatsAppOutboundPort,
   type WhatsAppDeliveryResult,
   withTypingResult,
 } from "../capabilities/whatsapp-participation/whatsapp-port.js";
@@ -25,8 +26,11 @@ import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account
 const isKnownPreSendFailure = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
 const TYPING_LEAD_MS = 750;
 
-/** The sole real implementation behind Ambience's `say` tool. It never retries an uncertain provider outcome. */
-export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort => ({
+/** The sole real implementation behind Ambience's outbound participation tools. */
+export const createWhatsAppHost = (
+  session: WhatsAppSession,
+  lookupMessage: (chatId: string, messageId: string) => MessageRef | undefined = () => undefined,
+): WhatsAppOutboundPort => ({
   say: async (chatId, text, replyTo) => {
     const log = getLogger("whatsapp");
     let typingStarted = false;
@@ -43,26 +47,21 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort =>
     let typingError: string | undefined;
     try {
       try {
-        const message = await session.send(
-          chatId,
-          { text },
-          replyTo === undefined
-            ? undefined
-            : {
-                quote: {
-                  id: replyTo.messageId,
-                  chatId,
-                  fromMe: replyTo.fromMe,
-                  ...(replyTo.participant === undefined ? {} : { participant: replyTo.participant }),
-                },
-              },
-        );
-        delivery = { delivery: "sent", messageId: message.id };
-        if (!reportAgentSpoke(chatId, text, message.id)) {
-          log.info(
-            { operatorEvent: "agent.say", text, chatId, messageId: message.id },
-            "Ambience said a WhatsApp message",
-          );
+        const quote = replyTo === undefined ? undefined : lookupMessage(chatId, replyTo);
+        if (replyTo !== undefined && quote === undefined) {
+          delivery = {
+            delivery: "failed",
+            deliveryError: `WhatsApp message ${replyTo} is not available in ${chatId}.`,
+          };
+        } else {
+          const message = await session.send(chatId, { text }, quote === undefined ? undefined : { quote });
+          delivery = { delivery: "sent", messageId: message.id };
+          if (!reportAgentSpoke(chatId, text, message.id)) {
+            log.info(
+              { operatorEvent: "agent.say", text, chatId, messageId: message.id },
+              "Ambience said a WhatsApp message",
+            );
+          }
         }
       } catch (cause) {
         const deliveryError = errorMessage(cause);
@@ -81,11 +80,33 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort =>
     }
     return withTypingResult(delivery, typingError);
   },
+  react: async (chatId, messageId, emoji) => {
+    const target = lookupMessage(chatId, messageId);
+    if (target === undefined) {
+      return withTypingResult({
+        delivery: "failed",
+        deliveryError: `WhatsApp message ${messageId} is not available in ${chatId}.`,
+      });
+    }
+    try {
+      const message = await session.send(chatId, { react: { to: target, emoji } });
+      getLogger("whatsapp").info(
+        { operatorEvent: "agent.react", emoji, chatId, targetMessageId: messageId },
+        "Ambience reacted to a WhatsApp message",
+      );
+      return withTypingResult({ delivery: "sent", messageId: message.id });
+    } catch (cause) {
+      const deliveryError = errorMessage(cause);
+      const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
+      getLogger("whatsapp").error({ chatId, error: deliveryError }, `WhatsApp reaction delivery ${outcome}`);
+      return withTypingResult({ delivery: outcome, deliveryError });
+    }
+  },
 });
 
 export interface WhatsAppSessionRuntimeOptions {
   readonly gate: ChatGate;
-  readonly history: WhatsAppHistoryPort;
+  readonly history: WhatsAppHistoryPort & WhatsAppMessageLookupPort;
   readonly inbox: ManagedChatInbox;
   readonly dispatch?: DispatchAmbience;
   readonly coalescer?: Partial<CoalescerConfigValues>;
@@ -97,9 +118,22 @@ export const runWhatsAppSession = (
   session: WhatsAppSession,
   options: WhatsAppSessionRuntimeOptions,
 ): Effect.Effect<void, never, Scope.Scope> => {
-  const sayPort = createWhatsAppHost(session);
+  const outbound = createWhatsAppHost(session, (chatId, messageId) => {
+    const message = options.history.messageState(chatId, messageId);
+    return message === undefined
+      ? undefined
+      : {
+          id: message.id,
+          chatId: message.chatId,
+          fromMe: message.direction === "outbound",
+          ...(message.chatId.endsWith("@g.us") && message.senderId !== undefined
+            ? { participant: message.senderId }
+            : {}),
+        };
+  });
   configureWhatsAppParticipationPort({
-    say: sayPort.say,
+    say: outbound.say,
+    react: outbound.react,
     readThread: (chatId, limit) => options.history.readThread(chatId, limit),
     search: (chatId, query, limit) => options.history.search(chatId, query, limit),
   });

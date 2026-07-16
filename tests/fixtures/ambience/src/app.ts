@@ -141,6 +141,17 @@ const respond = async (context: Context) => {
       { stopReason: "toolUse" },
     );
   }
+  if (serialized.includes("REACT_AND_REPLY")) {
+    const messageId = serialized.match(/fixture-[0-9]+/)?.[0];
+    if (!messageId) throw new Error("Participation proof input is missing its source message ID");
+    return fauxAssistantMessage(
+      [
+        fauxToolCall("react", { messageId, emoji: "👀" }),
+        fauxToolCall("say", { text: "I am following this one.", replyTo: messageId }),
+      ],
+      { stopReason: "toolUse" },
+    );
+  }
   if (serialized.includes("SPEAK_ONCE")) {
     return fauxAssistantMessage(fauxToolCall("say", { text: "one explicit outbound" }), { stopReason: "toolUse" });
   }
@@ -208,6 +219,7 @@ const githubIngressStore = installGitHubIngressRuntime(
 const source = await Effect.runPromise(Queue.unbounded<IncomingMessage>());
 configureWhatsAppParticipationPort({
   say: fakeWhatsApp.say,
+  react: fakeWhatsApp.react,
   readThread: (chatId, limit) => archive.readThread(chatId, limit),
   search: (chatId, query, limit) => archive.search(chatId, query, limit),
 });
