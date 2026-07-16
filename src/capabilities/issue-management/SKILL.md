@@ -1,52 +1,31 @@
 ---
 name: issue-management
-description: Develop, find, create, correct, discuss, and resolve authorized GitHub issues with the current managed chat.
+description: Capture bug and feature reports as conversations, file complete issues, and return issue and pull-request links to the managed chat.
 metadata:
-  version: "1.2.0"
+  version: "2.0.0"
 ---
 
 # Issue Management
 
-Use this capability when the managed chat wants to report a bug or request a feature.
-Also use it when the chat wants to correct, discuss, close, or reopen an issue.
+This policy is derived only from Axes 3, 4, 5, and 6 of the ratified [Participation Rubric](https://github.com/AaronAbuUsama/ambient-agent/blob/docs/wayfinder-map/docs/planning/PARTICIPATION-RUBRIC.md).
 
-## Develop the report privately
+Use this skill when a managed-chat message may be a bug report or feature request, and when a pull request lands for an issue captured from that chat.
 
-- Infer whether the request is a bug or feature from the conversation.
-- For a bug, obtain a clear observed problem, expected behavior, and useful reproduction or context.
-- For a feature, obtain the desired outcome, who needs it, and why it matters.
-- Ask one focused question only when information needed for a useful issue is missing. Do not call any GitHub Tool until the report is useful enough to search and compare.
-- Keep ordinary assistant prose private. Use the WhatsApp Participation capability if a clarification or acknowledgement should be sent to the chat.
+## Respect the hard-silence carve-out
 
-## Search before creation
+Never capture, say, or react to system, pairing, or status traffic or to a message prefixed with `SMOKE `. (Axis 5)
 
-- Search the authorized repository for the central terms before proposing creation.
-- Read a likely match when its summary is not enough.
-- If existing work already represents the request, do not create another issue. Explain or acknowledge the match through `say` only when useful.
+## Make capture a conversation
 
-## Create exactly one issue
+1. Read [references/report-templates.md](references/report-templates.md) and determine which report template applies. (Axis 3)
+2. If the report is not template-fillable, ask for the missing information in the chat before filing. (Axis 3)
+3. Keep eliciting for as many turns and questions as the report needs. Make each question pointed; batch related questions sensibly; never repeat a question; do not add reminder or nag mechanics. (Axis 6)
+4. Treat each report as its own concern and thread each elicitation message to that report's source message. Do not mix it with chatter or another concern. (Axis 4)
 
-- Use `github_create_issue` only after the report is complete and no duplicate represents it.
-- Write a concise, specific title.
-- Write a self-contained body that preserves facts from the chat and clearly separates expected behavior from observed behavior or desired value.
-- Never invent reproduction steps, impact, labels, assignees, milestones, or provider state.
-- The application owns repository authorization and Operation Identity. Never ask the chat for an operation ID or claim success beyond the Tool receipt.
-- If creation is Uncertain, do not call create again. Preserve the Operation Identity from the receipt for operator reconciliation.
+## File and close the loop
 
-## Correct or organize an existing issue
+1. Once the report is template-fillable, file the issue. (Axis 3)
+2. Reply to the report's source message with the filed issue link. (Axes 3–4)
+3. When a pull request lands for a captured issue, post the pull-request link back to the chat as its own task-workflow message. (Axes 3–4)
 
-- Search for the intended issue when its number is not explicit, then read the exact issue before deciding any mutation.
-- Use `github_list_issue_options` before applying labels, assignees, or a milestone. Only existing returned values are eligible.
-- Use one `github_update_issue` call for the complete requested title, body, label, assignee, and milestone correction.
-- Empty label or assignee lists remove all of that metadata; a null milestone removes the milestone. Confirm that destructive replacement matches the chat's request.
-- Do not create or administer labels, users, milestones, projects, issue types, or dependency structures.
-- After a definite updated or reconciled receipt, acknowledge the exact correction through `say` when useful. If the result is Uncertain, do not repeat the mutation or claim success.
-
-## Discuss and resolve an issue
-
-- Use `github_read_issue_discussion` immediately before choosing any comment, close, or reopen mutation. Base the action on the current issue and complete current discussion, not an earlier summary.
-- Create a comment only when it adds requested, useful information. Edit or delete one exact comment only when the chat clearly identifies the intended correction or removal.
-- Never delete an issue. Issue deletion is intentionally unavailable.
-- Close an issue only with the meaningful reason that matches the evidence: `completed`, `not_planned`, or `duplicate`. Reopen only with reason `reopened`.
-- The application owns Operation Identity for every comment and state mutation. If any receipt is Uncertain, do not repeat the mutation and do not claim it succeeded.
-- After a definite created, updated, deleted, changed, or reconciled receipt, acknowledge exactly what GitHub accepted through `say` when useful.
+Repository label names are technical reference data, not participation policy. Read [references/labels.md](references/labels.md) only when a label is needed.
