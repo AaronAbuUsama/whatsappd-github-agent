@@ -91,8 +91,12 @@ describeEval(
         window: {
           texts: [
             "Beautiful sunset today.",
-            "Ambience, what room is the release call in?",
-            "Please file this bug: after restart a queued scheduler job disappears instead of running. I can reproduce it by queueing a job, stopping the process, and starting it again; the queued job should run.",
+            { text: "Ambience, what room is the release call in?", from: "bob@s.whatsapp.net", pushName: "Bob" },
+            {
+              text: "Please file this bug: after restart a queued scheduler job disappears instead of running. I can reproduce it by queueing a job, stopping the process, and starting it again; the queued job should run.",
+              from: "carol@s.whatsapp.net",
+              pushName: "Carol",
+            },
           ],
         },
         fixture: {

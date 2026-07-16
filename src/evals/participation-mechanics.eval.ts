@@ -21,7 +21,12 @@ describeEval(
       expect(result.output.githubEvents).toEqual([]);
       expect(result.output.githubOperations).toEqual([]);
       expect(result.output.windowMessages).toEqual([
-        { id: expect.stringMatching(/^eval-window-/), text: "Beautiful sunset today." },
+        {
+          id: expect.stringMatching(/^eval-window-/),
+          text: "Beautiful sunset today.",
+          from: "alice@s.whatsapp.net",
+          pushName: "Alice",
+        },
       ]);
       recordRubricScore({
         axis: 1,

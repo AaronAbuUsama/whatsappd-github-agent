@@ -52,14 +52,16 @@ export type FlueAgentEvalInput =
     }
   | {
       message?: never;
-      window: { texts: string[] };
+      window: { texts: WindowText[] };
       fixture?: FlueAgentEvalFixture;
     };
+
+export type WindowText = string | { text: string; from: string; pushName: string };
 
 export type FlueAgentEvalOutput = {
   text: string;
   instanceId: string;
-  windowMessages?: Array<{ id: string; text: string }>;
+  windowMessages?: Array<{ id: string; text: string; from: string; pushName: string }>;
   whatsappEvents: JsonValue[];
   githubEvents: JsonValue[];
   githubOperations: JsonValue[];
@@ -149,12 +151,15 @@ interface FixtureAdmission {
 const submitWindow = async (
   baseUrl: string,
   instanceId: string,
-  texts: string[],
+  texts: WindowText[],
   signal?: AbortSignal,
-): Promise<{ dispatchId: string; messages: Array<{ id: string; text: string }> }> => {
+): Promise<{ dispatchId: string; messages: Array<{ id: string; text: string; from: string; pushName: string }> }> => {
   if (texts.length === 0) throw new Error("A coalesced eval Window requires at least one text.");
   const timestamp = Date.now();
-  const messages = texts.map((text, index) => ({ id: `eval-window-${crypto.randomUUID()}-${index}`, text }));
+  const messages = texts.map((entry, index) => {
+    const message = typeof entry === "string" ? { text: entry, from: "alice@s.whatsapp.net", pushName: "Alice" } : entry;
+    return { id: `eval-window-${crypto.randomUUID()}-${index}`, ...message };
+  });
   for (const [index, message] of messages.entries()) {
     await checkedFetch(`${baseUrl}/test/coalescer`, {
       method: "POST",
@@ -162,8 +167,8 @@ const submitWindow = async (
       body: JSON.stringify({
         id: message.id,
         chatId: instanceId,
-        from: "alice@s.whatsapp.net",
-        pushName: "Alice",
+        from: message.from,
+        pushName: message.pushName,
         text: message.text,
         timestamp: timestamp + index,
         isGroup: true,
@@ -295,7 +300,7 @@ export function createFlueAgentHarness(options: FlueAgentHarnessOptions) {
       let history: FlueConversationSnapshot;
       let submissionId: string | undefined;
       let dispatchId: string | undefined;
-      let windowMessages: Array<{ id: string; text: string }> | undefined;
+      let windowMessages: Array<{ id: string; text: string; from: string; pushName: string }> | undefined;
       if (input.window === undefined) {
         const invocation = await client.agents.prompt(options.agentName, instanceId, {
           message: input.message,
