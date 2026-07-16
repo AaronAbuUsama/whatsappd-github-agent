@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { inspectManagedData, installManagedData, installPreparedManagedData } from "../../src/managed/installation.ts";
+import {
+  inspectGitHubCredentialComponent,
+  inspectManagedData,
+  installManagedData,
+  installPreparedManagedData,
+  promoteReplacementWhatsAppStore,
+} from "../../src/managed/installation.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import { createManagedChatGptCredentialStore } from "../../src/model/chatgpt-authentication.ts";
 
@@ -43,7 +49,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     const paths = managedPaths(input);
 
     expect(result.created).toBe(true);
-    expect(result.inspection.state).toBe("configured");
+    expect(result.inspection.state).toBe("ready");
     expect((await lstat(paths.root)).mode & 0o777).toBe(0o700);
     for (const path of [paths.credentials, paths.whatsapp, paths.logs]) {
       expect((await lstat(path)).mode & 0o777).toBe(0o700);
@@ -97,7 +103,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     ).rejects.toThrow("cancelled");
 
     await expect(lstat(base.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(inspectManagedData(base)).resolves.toMatchObject({ state: "unconfigured" });
+    await expect(inspectManagedData(base)).resolves.toMatchObject({ state: "absent" });
   });
 
   it("discovers setup values inside the private stage before atomically promoting them", async () => {
@@ -121,7 +127,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
       },
     });
 
-    expect(result).toMatchObject({ created: true, inspection: { state: "configured" } });
+    expect(result).toMatchObject({ created: true, inspection: { state: "ready" } });
     expect(stagedRoot).not.toBe(base.dataDirectory);
     await expect(lstat(stagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(managedPaths(base).config, "utf8")).toContain("120363000@g.us");
@@ -139,7 +145,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     ).rejects.toThrow("Managed staging verification failed");
 
     await expect(lstat(base.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(inspectManagedData(base)).resolves.toMatchObject({ state: "unconfigured" });
+    await expect(inspectManagedData(base)).resolves.toMatchObject({ state: "absent" });
   });
 
   it("refuses a concurrent setup for the same managed directory", async () => {
@@ -176,9 +182,9 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     await expect(first).resolves.toMatchObject({ created: true });
   });
 
-  it("distinguishes an absent install from a damaged install", async () => {
+  it("distinguishes an absent install from a corrupt install", async () => {
     const base = await fixture();
-    expect((await inspectManagedData(base)).state).toBe("unconfigured");
+    expect((await inspectManagedData(base)).state).toBe("absent");
 
     await installManagedData({
       ...base,
@@ -187,9 +193,90 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     });
     await writeFile(managedPaths(base).config, "not json", "utf8");
 
-    const damaged = await inspectManagedData(base);
-    expect(damaged.state).toBe("damaged");
-    expect(damaged.diagnostics.map((item) => item.code)).toContain("json.invalid");
+    const corrupt = await inspectManagedData(base);
+    expect(corrupt.state).toBe("corrupt");
+    expect(corrupt.diagnostics.map((item) => item.code)).toContain("json.invalid");
+  });
+
+  it("classifies missing skeleton pieces as incomplete, never corrupt", async () => {
+    const base = await fixture();
+    await installManagedData({
+      ...base,
+      managedChats: ["120363000@g.us"],
+      defaultRepository: "owner/repo",
+    });
+    const paths = managedPaths(base);
+    await rm(paths.config);
+    await rm(paths.logs, { recursive: true });
+
+    const incomplete = await inspectManagedData(base);
+    expect(incomplete.state).toBe("incomplete");
+    expect(incomplete.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["path.missing-file", "path.missing-directory"]),
+    );
+  });
+
+  it("keeps the installation ready when only component-owned paths are missing", async () => {
+    const base = await fixture();
+    await installManagedData({
+      ...base,
+      managedChats: ["120363000@g.us"],
+      defaultRepository: "owner/repo",
+    });
+    const paths = managedPaths(base);
+    await rm(paths.whatsapp, { recursive: true });
+    await rm(paths.githubCredential);
+    await rm(paths.chatGptOAuthCredential);
+
+    const inspection = await inspectManagedData(base);
+    expect(inspection.state).toBe("ready");
+    expect(inspection.diagnostics).toEqual([]);
+  });
+
+  it("classifies a broken GitHub credential file into the component, not the installation", async () => {
+    const base = await fixture();
+    await installManagedData({
+      ...base,
+      managedChats: ["120363000@g.us"],
+      defaultRepository: "owner/repo",
+    });
+    const paths = managedPaths(base);
+    await writeFile(paths.githubCredential, "not json", { mode: 0o600 });
+
+    expect((await inspectManagedData(base)).state).toBe("ready");
+    const component = await inspectGitHubCredentialComponent(paths);
+    expect(component.state).toBe("reauthentication-required");
+    expect(component.diagnostics.map((item) => item.code)).toContain("json.invalid");
+
+    await rm(paths.githubCredential);
+    await expect(inspectGitHubCredentialComponent(paths)).resolves.toMatchObject({
+      state: "reauthentication-required",
+      diagnostics: [{ code: "path.missing-file" }],
+    });
+  });
+
+  it("promotes only the replacement WhatsApp store and touches nothing else", async () => {
+    const base = await fixture();
+    await installManagedData({
+      ...base,
+      managedChats: ["120363000@g.us"],
+      defaultRepository: "owner/repo",
+    });
+    const paths = managedPaths(base);
+    await rm(paths.whatsapp, { recursive: true });
+    const configBefore = await readFile(paths.config, "utf8");
+    const credentialBefore = await readFile(paths.githubCredential, "utf8");
+    const replacement = join(base.parent, "replacement-whatsapp");
+    await mkdir(replacement, { mode: 0o700 });
+    await writeFile(join(replacement, "creds.json"), JSON.stringify({ registered: true }), { mode: 0o600 });
+
+    await promoteReplacementWhatsAppStore(paths, replacement);
+
+    await expect(readFile(join(paths.whatsapp, "creds.json"), "utf8")).resolves.toContain('"registered":true');
+    await expect(lstat(replacement)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(paths.config, "utf8")).resolves.toBe(configBefore);
+    await expect(readFile(paths.githubCredential, "utf8")).resolves.toBe(credentialBefore);
+    expect((await inspectManagedData(base)).state).toBe("ready");
   });
 
   it("rejects oversized managed JSON without reading the full payload", async () => {
@@ -202,23 +289,24 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     await writeFile(managedPaths(base).config, Buffer.alloc(1024 * 1024 + 1, 0x20), { mode: 0o600 });
 
     const inspection = await inspectManagedData(base);
-    expect(inspection.state).toBe("damaged");
+    expect(inspection.state).toBe("corrupt");
     expect(inspection.diagnostics.map((item) => item.code)).toContain("file.too-large");
   });
 
-  it("reports actionable permission failures without exposing credential contents", async () => {
+  it("reports actionable credential permission failures without exposing credential contents", async () => {
     const base = await fixture();
     await installManagedData({
       ...base,
       managedChats: ["120363000@g.us"],
       defaultRepository: "owner/repo",
     });
-    const credential = managedPaths(base).githubCredential;
-    await chmod(credential, 0o644);
+    const paths = managedPaths(base);
+    await chmod(paths.githubCredential, 0o644);
 
-    const inspection = await inspectManagedData(base);
-    const output = JSON.stringify(inspection);
-    expect(inspection.state).toBe("damaged");
+    expect((await inspectManagedData(base)).state).toBe("ready");
+    const component = await inspectGitHubCredentialComponent(paths);
+    const output = JSON.stringify(component);
+    expect(component.state).toBe("reauthentication-required");
     expect(output).toContain("mode 0600");
     expect(output).not.toContain(base.githubToken);
     expect(output).not.toContain(base.chatGptCredential.access);
@@ -259,22 +347,16 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
       JSON.stringify({ schemaVersion: 1, kind: "personal-token", token: 123456789 }),
       { mode: 0o600 },
     );
-    await writeFile(
-      paths.chatGptOAuthCredential,
-      JSON.stringify({ type: "oauth", access: 987654321, refresh: "hidden-refresh", expires: 0 }),
-      { mode: 0o600 },
-    );
 
     const output = JSON.stringify(await inspectManagedData(base));
     expect(output).toContain("managedChats");
-    expect(output).toContain("token");
-    expect(output).toContain("access");
     expect(output).not.toContain("123456789");
-    expect(output).not.toContain("987654321");
-    expect(output).not.toContain("hidden-refresh");
+    const component = JSON.stringify(await inspectGitHubCredentialComponent(paths));
+    expect(component).toContain("token");
+    expect(component).not.toContain("123456789");
   });
 
-  it("never reflects unknown property names from credential files into diagnostics", async () => {
+  it("never reflects unknown property names from credential files into component diagnostics", async () => {
     const base = await fixture();
     await installManagedData({
       ...base,
@@ -294,7 +376,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
       { mode: 0o600 },
     );
 
-    const output = JSON.stringify(await inspectManagedData(base));
+    const output = JSON.stringify(await inspectGitHubCredentialComponent(paths));
     expect(output).toContain("<unknown field>");
     expect(output).not.toContain(secretAsPropertyName);
   });
@@ -313,7 +395,7 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     await symlink(outside, configPath);
 
     const inspection = await inspectManagedData(base);
-    expect(inspection.state).toBe("damaged");
+    expect(inspection.state).toBe("corrupt");
     expect(inspection.diagnostics.map((item) => item.code)).toContain("path.not-file");
     expect(JSON.stringify(inspection)).not.toContain("must-never-be-read");
   });
@@ -338,16 +420,16 @@ describe.skipIf(process.platform === "win32")("managed installation on POSIX", (
     await symlink(outside, paths.credentials);
 
     const inspection = await inspectManagedData(base);
-    expect(inspection.state).toBe("damaged");
+    expect(inspection.state).toBe("corrupt");
     expect(inspection.diagnostics.map((item) => item.code)).toContain("path.not-directory");
     expect(JSON.stringify(inspection)).not.toContain(secretAsPropertyName);
   });
 
-  it("classifies a dangling root symlink as damaged instead of unconfigured", async () => {
+  it("classifies a dangling root symlink as corrupt instead of absent", async () => {
     const base = await fixture();
     await symlink(join(base.parent, "missing-target"), base.dataDirectory);
     const inspection = await inspectManagedData(base);
-    expect(inspection.state).toBe("damaged");
+    expect(inspection.state).toBe("corrupt");
     expect(inspection.diagnostics.map((item) => item.code)).toContain("path.not-directory");
   });
 });
@@ -364,7 +446,7 @@ describe("managed installation platform support", () => {
       }),
     ).rejects.toThrow("fails closed");
     await expect(inspectManagedData({ ...base, platform: "win32" })).resolves.toMatchObject({
-      state: "unconfigured",
+      state: "absent",
       diagnostics: [{ code: "platform.unsupported" }],
     });
   });

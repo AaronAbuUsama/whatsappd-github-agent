@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { WhatsAppRuntimeStatus } from "../host/whatsapp-runtime.js";
 
-export type AmbientRuntimeState = "configured" | "stopped" | "starting" | "healthy" | "degraded" | "failed";
+export type AmbientRuntimeState = "stopped" | "starting" | "healthy" | "failed";
 
 export interface AmbientRuntimeHealth {
   readonly state: AmbientRuntimeState;
@@ -17,24 +17,16 @@ export const ambientRuntimeHealth = (whatsapp: WhatsAppRuntimeStatus): AmbientRu
   state:
     whatsapp.phase === "online"
       ? "healthy"
-      : whatsapp.phase === "starting"
-        ? "starting"
-        : whatsapp.phase === "failed"
-          ? "failed"
-          : whatsapp.phase === "stopped"
-            ? "stopped"
-            : "degraded",
+      : whatsapp.phase === "failed"
+        ? "failed"
+        : whatsapp.phase === "stopped"
+          ? "stopped"
+          : // "disabled" is the instant between the HTTP bind and the deferred WhatsApp start.
+            "starting",
   whatsapp,
 });
 
-const runtimeStates = new Set<AmbientRuntimeState>([
-  "configured",
-  "stopped",
-  "starting",
-  "healthy",
-  "degraded",
-  "failed",
-]);
+const runtimeStates = new Set<AmbientRuntimeState>(["stopped", "starting", "healthy", "failed"]);
 const whatsappPhases = new Set<WhatsAppRuntimeStatus["phase"]>(["disabled", "starting", "online", "failed", "stopped"]);
 
 /** Bounded local HTTP observation; only an explicit refusal means stopped, never stale-process inference. */

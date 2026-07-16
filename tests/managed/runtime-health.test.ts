@@ -8,7 +8,7 @@ import {
 
 describe("managed runtime health", () => {
   it.each([
-    ["disabled", "degraded"],
+    ["disabled", "starting"],
     ["starting", "starting"],
     ["online", "healthy"],
     ["failed", "failed"],

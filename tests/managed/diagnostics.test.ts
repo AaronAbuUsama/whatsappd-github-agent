@@ -18,9 +18,15 @@ describe("managed service diagnostics", () => {
     roots.push(root);
     const paths = managedPaths({ dataDirectory: root });
     await mkdir(paths.whatsapp, { mode: 0o700 });
+    await mkdir(paths.credentials, { mode: 0o700 });
     await Promise.all([
       writeFile(paths.applicationDatabase, ""),
       writeFile(paths.flueDatabase, ""),
+      writeFile(
+        paths.githubCredential,
+        JSON.stringify({ schemaVersion: 1, kind: "personal-token", token: "github-secret" }),
+        { mode: 0o600 },
+      ),
       writeFile(
         join(paths.whatsapp, "creds.json"),
         JSON.stringify({ registered: true, privateNoise: "must-not-escape" }),
@@ -28,8 +34,33 @@ describe("managed service diagnostics", () => {
     ]);
 
     const checks = await inspectManagedServices(paths);
-    expect(checks.map(({ state }) => state)).toEqual(["ready", "ready", "ready"]);
+    expect(checks.map(({ state }) => state)).toEqual(["ready", "ready", "paired", "ready"]);
     expect(JSON.stringify(checks)).not.toContain("must-not-escape");
+    expect(JSON.stringify(checks)).not.toContain("github-secret");
+  });
+
+  it("classifies a broken GitHub credential file as reauthentication-required, never an installation failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-github-"));
+    roots.push(root);
+    const paths = managedPaths({ dataDirectory: root });
+    await mkdir(paths.whatsapp, { mode: 0o700 });
+    await mkdir(paths.credentials, { mode: 0o700 });
+    await Promise.all([
+      writeFile(paths.applicationDatabase, ""),
+      writeFile(paths.flueDatabase, ""),
+      writeFile(paths.githubCredential, "not json with private-token-material", { mode: 0o600 }),
+      writeFile(join(paths.whatsapp, "creds.json"), JSON.stringify({ registered: true })),
+    ]);
+
+    const checks = await inspectManagedServices(paths);
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        name: "github-credential",
+        state: "reauthentication-required",
+        code: "github.reauthentication-required",
+      }),
+    );
+    expect(JSON.stringify(checks)).not.toContain("private-token-material");
   });
 
   it("recognizes a persisted WhatsApp Web linked-device identity", async () => {
@@ -48,20 +79,48 @@ describe("managed service diagnostics", () => {
 
     const checks = await inspectManagedServices(paths);
     expect(checks).toContainEqual(
-      expect.objectContaining({ name: "whatsapp-session", state: "ready", code: "whatsapp.ready" }),
+      expect.objectContaining({ name: "whatsapp-session", state: "paired", code: "whatsapp.paired" }),
     );
+    expect(checks.find(({ name }) => name === "whatsapp-session")?.message).toContain("liveness is unverified");
     expect(JSON.stringify(checks)).not.toContain("linked-device-identity-must-not-escape");
   });
 
-  it("reports a missing WhatsApp credential without creating it", async () => {
+  it("classifies a missing or cleared WhatsApp store as re-pair-required without creating it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-missing-"));
     roots.push(root);
     const paths = managedPaths({ dataDirectory: root });
     await mkdir(paths.whatsapp, { mode: 0o700 });
     await Promise.all([writeFile(paths.applicationDatabase, ""), writeFile(paths.flueDatabase, "")]);
 
+    const missingCredential = await inspectManagedServices(paths);
+    expect(missingCredential).toContainEqual(
+      expect.objectContaining({
+        name: "whatsapp-session",
+        state: "re-pair-required",
+        code: "whatsapp.store-missing",
+        remediation: expect.stringContaining("ambient-agent repair whatsapp"),
+      }),
+    );
+
+    await rm(paths.whatsapp, { recursive: true });
     await expect(inspectManagedServices(paths)).resolves.toContainEqual(
-      expect.objectContaining({ name: "whatsapp-session", state: "warning", code: "whatsapp.credential-missing" }),
+      expect.objectContaining({ name: "whatsapp-session", state: "re-pair-required" }),
+    );
+  });
+
+  it("classifies an unregistered persisted store as re-pair-required", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-unregistered-"));
+    roots.push(root);
+    const paths = managedPaths({ dataDirectory: root });
+    await mkdir(paths.whatsapp, { mode: 0o700 });
+    await Promise.all([
+      writeFile(paths.applicationDatabase, ""),
+      writeFile(paths.flueDatabase, ""),
+      writeFile(join(paths.whatsapp, "creds.json"), JSON.stringify({ registered: false })),
+    ]);
+
+    await expect(inspectManagedServices(paths)).resolves.toContainEqual(
+      expect.objectContaining({ name: "whatsapp-session", state: "re-pair-required", code: "whatsapp.not-registered" }),
     );
   });
 
@@ -80,7 +139,8 @@ describe("managed service diagnostics", () => {
     await expect(inspectManagedServices(paths)).resolves.toEqual([
       expect.objectContaining({ name: "application-database", state: "ready" }),
       expect.objectContaining({ name: "flue-database", state: "ready" }),
-      expect.objectContaining({ name: "whatsapp-session", state: "ready" }),
+      expect.objectContaining({ name: "whatsapp-session", state: "paired" }),
+      expect.objectContaining({ name: "github-credential" }),
     ]);
   });
 

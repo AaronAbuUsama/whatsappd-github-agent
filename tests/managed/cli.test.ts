@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { runCli, type CliOutput } from "../../src/cli/program.ts";
+import { inspectManagedData } from "../../src/managed/installation.ts";
 import { deferWhatsAppRuntimeStart, getManagedRuntimeDependencies } from "../../src/managed/runtime-dependencies.ts";
 import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
 import type { ChatGptOAuthAdapter } from "../../src/model/chatgpt-authentication.ts";
@@ -160,7 +161,7 @@ describe("managed CLI", () => {
     const damaged = harness();
 
     expect(await runCli(["--data-dir", paths.data, "start"], { ...damaged, startRuntime })).toBe(1);
-    expect(damaged.stderr()).toContain("Refusing to start damaged managed data");
+    expect(damaged.stderr()).toContain("Refusing to start corrupt managed data");
     expect(startRuntime).not.toHaveBeenCalled();
     await expect(lstat(join(outside, "chatgpt-oauth.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -380,8 +381,9 @@ describe("managed CLI", () => {
     const status = harness();
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(0);
     expect(JSON.parse(status.stdout())).toMatchObject({
-      state: "configured",
+      state: "ready",
       dataDirectory: paths.data,
+      chatgpt: "ready",
       modelAuthentication: { state: "ready" },
     });
     expect(status.stdout()).not.toContain("access-secret");
@@ -605,7 +607,6 @@ describe("managed CLI", () => {
     ["stopped", 0],
     ["starting", 0],
     ["healthy", 0],
-    ["degraded", 3],
     ["failed", 3],
   ] as const)("reports observed local runtime state %s", async (runtimeState, expectedExit) => {
     const paths = await files();
@@ -630,12 +631,12 @@ describe("managed CLI", () => {
         runtimeHealthFor: async () => ({
           state: runtimeState,
           whatsapp: {
-            phase: runtimeState === "healthy" ? "online" : runtimeState === "degraded" ? "disabled" : runtimeState,
+            phase: runtimeState === "healthy" ? "online" : runtimeState,
           },
         }),
       }),
     ).toBe(expectedExit);
-    expect(JSON.parse(status.stdout())).toMatchObject({ runtimeState, observedRuntime: { state: runtimeState } });
+    expect(JSON.parse(status.stdout())).toMatchObject({ observedRuntime: { state: runtimeState } });
   });
 
   it("explains the read-only predecessor webhook-secret migration state", async () => {
@@ -662,12 +663,12 @@ describe("managed CLI", () => {
     const status = harness();
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
     expect(JSON.parse(status.stdout())).toMatchObject({
-      runtimeState: "degraded",
       observedRuntime: { state: "stopped" },
       checks: [
         { name: "application-database", state: "ready" },
         { name: "flue-database", state: "ready" },
-        { name: "whatsapp-session", state: "ready" },
+        { name: "whatsapp-session", state: "paired" },
+        { name: "github-credential", state: "ready" },
         {
           name: "github-webhook-secret",
           state: "warning",
@@ -771,7 +772,6 @@ describe("managed CLI", () => {
     const status = harness();
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
     expect(JSON.parse(status.stdout())).toMatchObject({
-      runtimeState: "degraded",
       uncertainWork: {
         health: "degraded",
         externalMutations: 1,
@@ -805,7 +805,6 @@ describe("managed CLI", () => {
 
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
     expect(JSON.parse(status.stdout())).toMatchObject({
-      runtimeState: "failed",
       checks: expect.arrayContaining([expect.objectContaining({ name: "application-database", state: "failed" })]),
     });
     expect(status.stderr()).toBe("");
@@ -888,6 +887,70 @@ describe("managed CLI", () => {
     expect(JSON.parse(failed.stdout())).toMatchObject({
       uncertainAction: { ref: "mutation:operation-3", outcome: "failed" },
       uncertainWork: { health: "healthy", total: 0 },
+    });
+  });
+
+  it("fails uncertain-work actions loudly when the GitHub credential is unusable", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    await writeFile(managedPaths({ dataDirectory: paths.data }).githubCredential, "not json", { mode: 0o600 });
+
+    const cli = harness();
+    const uncertainWorkFor = vi.fn();
+    expect(
+      await runCli(["--data-dir", paths.data, "doctor", "--retry", "mutation:operation-1", "--json"], {
+        ...cli,
+        uncertainWorkFor,
+      }),
+    ).toBe(1);
+    expect(cli.stderr()).toContain("usable GitHub credential");
+    expect(uncertainWorkFor).not.toHaveBeenCalled();
+  });
+
+  it("still observes the runtime when the GitHub credential is unusable", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    await writeFile(managedPaths({ dataDirectory: paths.data }).githubCredential, "not json", { mode: 0o600 });
+
+    const status = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "status", "--json"], {
+        ...status,
+        runtimeHealthFor: async () => ({ state: "healthy", whatsapp: { phase: "online" } }),
+      }),
+    ).toBe(3);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      observedRuntime: { state: "healthy" },
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "whatsapp-session", state: "online" }),
+        expect.objectContaining({ name: "github-credential", state: "reauthentication-required" }),
+      ]),
     });
   });
 
@@ -1030,7 +1093,6 @@ describe("managed CLI", () => {
       }),
     ).toBe(1);
     expect(JSON.parse(live.stdout())).toMatchObject({
-      runtimeState: "failed",
       checks: expect.arrayContaining([
         expect.objectContaining({ name: "github-access", state: "failed", code: "github.access-failed" }),
       ]),
@@ -1298,7 +1360,7 @@ describe("managed CLI", () => {
 
     expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
     expect(JSON.parse(status.stdout())).toMatchObject({
-      state: "damaged",
+      state: "corrupt",
       modelAuthentication: { state: "unusable" },
     });
     const textStatus = harness();
@@ -1363,7 +1425,7 @@ describe("managed CLI", () => {
     const status = harness();
     expect(await runCli(["--data-dir", paths.data], status)).toBe(0);
     expect(status.stdout()).toContain(`Data directory: ${paths.data}`);
-    expect(status.stdout()).toContain("configured");
+    expect(status.stdout()).toContain("Ambient Agent: ready");
   });
 
   it("never opens prompts in a non-interactive process with missing scripted values", async () => {
@@ -1403,16 +1465,16 @@ describe("managed CLI", () => {
     expect(cli.stderr()).toContain("valid managed ChatGPT credential");
   });
 
-  it("returns stable nonzero codes for unconfigured and damaged installs", async () => {
+  it("returns stable nonzero codes for absent and incomplete installs", async () => {
     const paths = await files();
     const missing = harness();
     expect(await runCli(["--data-dir", paths.data, "status"], missing)).toBe(2);
-    expect(missing.stdout()).toContain("unconfigured");
+    expect(missing.stdout()).toContain("absent");
 
     const broken = harness();
     await import("node:fs/promises").then(({ mkdir }) => mkdir(paths.data, { mode: 0o700 }));
     expect(await runCli(["--data-dir", paths.data, "doctor"], broken)).toBe(1);
-    expect(broken.stdout()).toContain("damaged");
+    expect(broken.stdout()).toContain("incomplete");
     expect(broken.stdout()).toContain("Fix:");
   });
 
@@ -1457,7 +1519,268 @@ describe("managed CLI", () => {
     }
     expect(migrations).toBe(1);
     expect(migratedCli.stderr()).toContain(`Moved managed data from ${join(paths.parent, "legacy")} to ${paths.data}`);
-    expect(JSON.parse(migratedCli.stdout())).toMatchObject({ state: "unconfigured" });
+    expect(JSON.parse(migratedCli.stdout())).toMatchObject({ state: "absent" });
+  });
+
+  it("reports a missing WhatsApp store as ready + re-pair-required and refuses start with the repair pointer", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    await rm(managedPaths({ dataDirectory: paths.data }).whatsapp, { recursive: true });
+
+    const status = harness();
+    expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(3);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      state: "ready",
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "whatsapp-session", state: "re-pair-required" }),
+      ]),
+    });
+
+    const start = harness();
+    const startRuntime = vi.fn(async () => undefined);
+    expect(await runCli(["--data-dir", paths.data, "start"], { ...start, startRuntime })).toBe(1);
+    expect(start.stderr()).toContain("ambient-agent repair whatsapp");
+    expect(startRuntime).not.toHaveBeenCalled();
+  });
+
+  it("re-pairs WhatsApp through a validated private stage while preserving everything else", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    await rm(managed.whatsapp, { recursive: true });
+    const configBefore = await readFile(managed.config, "utf8");
+    const credentialBefore = await readFile(managed.githubCredential, "utf8");
+    const modelBefore = await readFile(managed.chatGptOAuthCredential, "utf8");
+    const applicationBefore = await readFile(managed.applicationDatabase);
+
+    const repair = harness();
+    const staged: string[] = [];
+    expect(
+      await runCli(["--data-dir", paths.data, "repair", "whatsapp"], {
+        ...repair,
+        runtimeHealthFor: async () => ({ state: "stopped", whatsapp: { phase: "stopped" } }),
+        firstRunServices: {
+          ...repair.firstRunServices,
+          whatsappFor: (staging: ManagedPaths) => ({
+            authenticate: async () => {
+              staged.push(staging.whatsapp);
+              expect(staging.whatsapp).not.toBe(managed.whatsapp);
+              await writeFile(join(staging.whatsapp, "creds.json"), JSON.stringify({ registered: true }), {
+                mode: 0o600,
+              });
+              return { jid: "15550000000@s.whatsapp.net" };
+            },
+            synchronizedChats: async () => [
+              { jid: "120363000@g.us", name: "Managed Test Chat", kind: "group" as const, lastActivityAt: 1_000 },
+            ],
+            session: () => {
+              throw new Error("not used during repair");
+            },
+            stop: async () => undefined,
+          }),
+        },
+      }),
+    ).toBe(0);
+    expect(staged).toHaveLength(1);
+    expect(repair.stdout()).toContain("Replaced the managed WhatsApp store");
+    await expect(readFile(join(managed.whatsapp, "creds.json"), "utf8")).resolves.toContain('"registered":true');
+    await expect(readFile(managed.config, "utf8")).resolves.toBe(configBefore);
+    await expect(readFile(managed.githubCredential, "utf8")).resolves.toBe(credentialBefore);
+    await expect(readFile(managed.chatGptOAuthCredential, "utf8")).resolves.toBe(modelBefore);
+    await expect(readFile(managed.applicationDatabase)).resolves.toEqual(applicationBefore);
+    await expect(lstat(staged[0]!)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const status = harness();
+    expect(await runCli(["--data-dir", paths.data, "status", "--json"], status)).toBe(0);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      state: "ready",
+      checks: expect.arrayContaining([expect.objectContaining({ name: "whatsapp-session", state: "paired" })]),
+    });
+  });
+
+  it("promotes nothing when the newly paired account cannot see the configured managed chat", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    await rm(managed.whatsapp, { recursive: true });
+
+    const repair = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "repair", "whatsapp"], {
+        ...repair,
+        runtimeHealthFor: async () => ({ state: "stopped", whatsapp: { phase: "stopped" } }),
+        firstRunServices: {
+          ...repair.firstRunServices,
+          whatsappFor: (staging: ManagedPaths) => ({
+            authenticate: async () => {
+              await writeFile(join(staging.whatsapp, "creds.json"), JSON.stringify({ registered: true }), {
+                mode: 0o600,
+              });
+              return { jid: "19998887777@s.whatsapp.net" };
+            },
+            synchronizedChats: async () => [
+              { jid: "other@g.us", name: "Wrong Chat", kind: "group" as const, lastActivityAt: 1_000 },
+            ],
+            session: () => {
+              throw new Error("not used during repair");
+            },
+            stop: async () => undefined,
+          }),
+        },
+      }),
+    ).toBe(1);
+    expect(repair.stderr()).toContain("does not see the configured managed chat");
+    await expect(lstat(managed.whatsapp)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await inspectManagedData({ dataDirectory: paths.data })).state).toBe("ready");
+  });
+
+  it("fails non-interactive repair with an actionable human-required message", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    await rm(managedPaths({ dataDirectory: paths.data }).whatsapp, { recursive: true });
+
+    const repair = harness();
+    expect(await runCli(["--data-dir", paths.data, "repair", "whatsapp"], { ...repair, interactive: false })).toBe(1);
+    expect(repair.stderr()).toContain("requires a human to scan a QR code");
+    expect(repair.stderr()).toContain("interactive terminal");
+  });
+
+  it.each(["healthy", "starting", "failed"] as const)(
+    "refuses repair while a runtime is observed %s",
+    async (state) => {
+      const paths = await files();
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+          "--github-token-file",
+          paths.token,
+        ],
+        harness(),
+      );
+      await rm(managedPaths({ dataDirectory: paths.data }).whatsapp, { recursive: true });
+
+      const repair = harness();
+      expect(
+        await runCli(["--data-dir", paths.data, "repair"], {
+          ...repair,
+          runtimeHealthFor: async () => ({ state, whatsapp: { phase: state === "healthy" ? "online" : state } }),
+        }),
+      ).toBe(1);
+      expect(repair.stderr()).toContain("Stop the running ambient-agent start process");
+    },
+  );
+
+  it("refuses repair when the store is already paired", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const storeBefore = await readFile(join(managed.whatsapp, "creds.json"), "utf8");
+
+    const repair = harness();
+    expect(await runCli(["--data-dir", paths.data, "repair", "whatsapp"], repair)).toBe(1);
+    expect(repair.stderr()).toContain("already paired; nothing to repair");
+    await expect(readFile(join(managed.whatsapp, "creds.json"), "utf8")).resolves.toBe(storeBefore);
+  });
+
+  it("routes a bare interactive invocation into guided re-pair when the store is missing", async () => {
+    const paths = await files();
+    await runCli(
+      [
+        "--data-dir",
+        paths.data,
+        "init",
+        "--chat",
+        "120363000@g.us",
+        "--repository",
+        "owner/repo",
+        "--github-token-file",
+        paths.token,
+      ],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    await rm(managed.whatsapp, { recursive: true });
+
+    const bare = harness();
+    expect(
+      await runCli(["--data-dir", paths.data], {
+        ...bare,
+        runtimeHealthFor: async () => ({ state: "stopped", whatsapp: { phase: "stopped" } }),
+      }),
+    ).toBe(0);
+    expect(bare.stdout()).toContain("Replaced the managed WhatsApp store");
+    await expect(readFile(join(managed.whatsapp, "creds.json"), "utf8")).resolves.toContain('"registered":true');
   });
 
   it("fails closed with a nonzero exit code when the root migration refuses to choose", async () => {

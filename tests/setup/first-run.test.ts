@@ -118,7 +118,7 @@ describe("transactional first-run setup", () => {
       whatsappCallbacks: {},
     });
 
-    expect(result).toMatchObject({ created: true, inspection: { state: "configured" } });
+    expect(result).toMatchObject({ created: true, inspection: { state: "ready" } });
     expect(events).toEqual([
       "chatgpt.authenticate",
       "whatsapp.authenticate",
@@ -302,7 +302,7 @@ describe("transactional first-run setup", () => {
         }),
       ).rejects.toThrow(/cancelled/i);
       await expect(lstat(paths.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "unconfigured" });
+      await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "absent" });
     },
   );
 
@@ -323,7 +323,7 @@ describe("transactional first-run setup", () => {
       }),
     ).rejects.toThrow("cancelled before promotion");
     await expect(lstat(paths.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "unconfigured" });
+    await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "absent" });
   });
 
   it("does not promote when the timeout fires while final review is pending", async () => {
@@ -348,7 +348,7 @@ describe("transactional first-run setup", () => {
       }),
     ).rejects.toThrow("cancelled or timed out before promotion");
     await expect(lstat(paths.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "unconfigured" });
+    await expect(inspectManagedData(paths)).resolves.toMatchObject({ state: "absent" });
   });
 
   it("fails non-interactive setup before writing when managed provider credentials are absent", async () => {

@@ -11,11 +11,16 @@ import type {
   Update,
   WhatsAppSession,
 } from "whatsappd";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { AmbienceDispatchRequest } from "../../src/ambience/dispatch.ts";
 import { makeChatGate } from "../../src/coalescer/chat-gate.ts";
-import { createWhatsAppHost, runWhatsAppSession } from "../../src/host/whatsapp-runtime.ts";
+import {
+  createWhatsAppHost,
+  getWhatsAppRuntimeStatus,
+  runWhatsAppSession,
+  startWhatsAppRuntime,
+} from "../../src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../src/intake/conversation-event.ts";
 import { createManagedChatInbox } from "../../src/intake/managed-chat-inbox.ts";
@@ -462,6 +467,49 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     });
     await restartedAccount.stop();
     reopenedArchive.close();
+  });
+});
+
+describe("foreground runtime terminal logged_out", () => {
+  it("fails the runtime status and exits cleanly pointing at the guided re-pair", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      async start() {
+        for (const listener of statusListeners) await listener({ phase: "logged_out" } as Status);
+      },
+      async stop() {},
+      identity: () => undefined,
+    } as unknown as WhatsAppSession;
+    const exits: number[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const runtime = startWhatsAppRuntime({
+        storeDirectory,
+        applicationDatabase,
+        managedChats: [CHAT],
+        sessionFactory: () => session,
+        exit: (code) => {
+          exits.push(code);
+        },
+      });
+      await vi.waitFor(() => expect(exits).toEqual([1]));
+      expect(getWhatsAppRuntimeStatus().phase).toBe("failed");
+      const written = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(written).toContain("logged_out");
+      expect(written).toContain("ambient-agent repair whatsapp");
+      await runtime.stop();
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });
 

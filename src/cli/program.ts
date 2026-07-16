@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -7,7 +7,13 @@ import * as prompts from "@clack/prompts";
 import packageManifest from "../../package.json" with { type: "json" };
 
 import { configureLogging, upstreamWhatsAppLogger, type LogFormat } from "../logging/logging.js";
-import { inspectManagedData, type InstallationInspection } from "../managed/installation.js";
+import {
+  acquireSetupLock,
+  inspectManagedData,
+  promoteReplacementWhatsAppStore,
+  releaseSetupLock,
+  type InstallationInspection,
+} from "../managed/installation.js";
 import { createManagedChatGptAuthentication } from "../managed/chatgpt-authentication.js";
 import {
   readManagedConfig,
@@ -15,14 +21,13 @@ import {
   ensureManagedGitHubWebhookSecret,
   writeManagedConfiguration,
 } from "../managed/configuration.js";
-import { inspectManagedServices, type ManagedCheck } from "../managed/diagnostics.js";
+import { inspectManagedServices, inspectWhatsAppSession, type ManagedCheck } from "../managed/diagnostics.js";
 import { migrateLegacyManagedData, type ManagedDataMigration } from "../managed/migration.js";
 import { managedPaths, type ManagedPaths } from "../managed/paths.js";
 import {
   probeAmbientRuntimeHealth,
   runtimeInstallationId,
   type AmbientRuntimeHealth,
-  type AmbientRuntimeState,
 } from "../managed/runtime-health.js";
 import {
   installManagedRuntimeDependencies,
@@ -255,6 +260,12 @@ const defaultSetupPrompts: SetupPrompts = {
   validationError: (_field, message) => prompts.log.error(message),
 };
 
+/** Component roll-up of the internal five-state detail (#91): refreshable is machine-repairable, so ready. */
+const chatGptComponentState = (authentication: ChatGptAuthenticationStatus): "ready" | "reauthentication-required" =>
+  authentication.state === "ready" || authentication.state === "expired-refreshable"
+    ? "ready"
+    : "reauthentication-required";
+
 const renderInspection = (
   inspection: InstallationInspection,
   authentication: ChatGptAuthenticationStatus,
@@ -267,30 +278,13 @@ const renderInspection = (
   uncertainAction: UncertainActionResult | undefined,
   json: boolean,
 ): string => {
-  const localRuntimeState: AmbientRuntimeState =
-    inspection.state === "unconfigured"
-      ? "stopped"
-      : inspection.state === "damaged" || checks.some(({ state }) => state === "failed")
-        ? "failed"
-        : authentication.state !== "ready" ||
-            checks.some(({ state }) => state === "warning") ||
-            uncertainWork?.health === "degraded" ||
-            liveCheck?.request === "failed"
-          ? "degraded"
-          : "configured";
-  const runtimeState: AmbientRuntimeState =
-    localRuntimeState === "failed" || observedRuntime?.state === "failed"
-      ? "failed"
-      : localRuntimeState === "degraded" || observedRuntime?.state === "degraded"
-        ? "degraded"
-        : (observedRuntime?.state ?? localRuntimeState);
   if (json)
     return `${JSON.stringify(
       {
         ...inspection,
-        runtimeState,
         checks,
         observedRuntime,
+        ...(inspection.state === "ready" ? { chatgpt: chatGptComponentState(authentication) } : {}),
         modelAuthentication: authentication,
         liveCheck,
         uncertainWork,
@@ -301,11 +295,7 @@ const renderInspection = (
       null,
       2,
     )}\n`;
-  const lines = [
-    `Ambient Agent: ${inspection.state}`,
-    `Runtime state: ${runtimeState}`,
-    `Data directory: ${inspection.dataDirectory}`,
-  ];
+  const lines = [`Ambient Agent: ${inspection.state}`, `Data directory: ${inspection.dataDirectory}`];
   for (const item of inspection.diagnostics) {
     lines.push(`[${item.code}] ${item.message}`, `  Path: ${item.path}`, `  Fix: ${item.remediation}`);
   }
@@ -313,10 +303,11 @@ const renderInspection = (
     lines.push(`${check.name}: ${check.state} (${check.code})`, `  ${check.message}`);
     if (check.remediation !== undefined) lines.push(`  Fix: ${check.remediation}`);
   }
+  if (inspection.state === "ready") lines.push(`chatgpt: ${chatGptComponentState(authentication)}`);
   lines.push(`ChatGPT authentication: ${authentication.state}`);
   if (authentication.state === "missing") {
     lines.push(
-      inspection.state === "unconfigured"
+      inspection.state === "absent"
         ? "  Fix: Run ambient-agent init."
         : "  Fix: Run ambient-agent auth to authenticate again.",
     );
@@ -329,10 +320,13 @@ const renderInspection = (
   if (authentication.state === "unusable")
     lines.push(
       `  ${authentication.message}`,
-      inspection.state === "damaged"
+      inspection.state === "incomplete" || inspection.state === "corrupt"
         ? "  Fix: Run ambient-agent doctor and repair the managed installation."
         : "  Fix: Run ambient-agent auth to authenticate again.",
     );
+  if (observedRuntime !== undefined) {
+    lines.push(`Runtime: ${observedRuntime.state} (whatsapp ${observedRuntime.whatsapp.phase})`);
+  }
   if (liveCheck !== undefined) {
     lines.push(
       `ChatGPT live readiness: ${liveCheck.request}${liveCheck.reason === undefined ? "" : ` (${liveCheck.reason})`}`,
@@ -345,7 +339,7 @@ const renderInspection = (
     }
   }
   if (windowDeliveries !== undefined) {
-    lines.push(`Window batches: ${windowDeliveries.pending} pending, ${windowDeliveries.failed} failed`);
+    lines.push(`backlog: ${windowDeliveries.pending} pending, ${windowDeliveries.failed} failed`);
   }
   if (uncertainDoctor !== undefined) {
     for (const item of uncertainDoctor.diagnoses) {
@@ -461,19 +455,6 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   };
   const authenticationSignal = (): AbortSignal => operationSignal(20 * 60 * 1_000);
   const readinessSignal = (): AbortSignal => operationSignal(dependencies.readinessTimeoutMillis ?? 60_000);
-  const credentialDamageOnly = (inspection: InstallationInspection, paths: ManagedPaths): boolean => {
-    if (inspection.state !== "damaged" || inspection.diagnostics.length === 0) return false;
-    const credentialPaths = new Set([paths.chatGptOAuthCredential, paths.legacyPiAuthCredential]);
-    const repairableCodes = new Set([
-      "path.missing-file",
-      "permissions.file",
-      "json.invalid",
-      "schema.invalid",
-      "file.too-large",
-      "file.changed-during-read",
-    ]);
-    return inspection.diagnostics.every((item) => credentialPaths.has(item.path) && repairableCodes.has(item.code));
-  };
   const deviceCodeCallbacks: DeviceCodeCallbacks = {
     onDeviceCode: (info) => {
       output.stdout(`Open ${info.verificationUri} and enter code ${info.userCode}.\n`);
@@ -533,11 +514,14 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   }> => {
     const paths = managedPaths({ dataDirectory: program.opts().dataDir });
     const inspection = await inspectManagedData({ dataDirectory: paths.root });
-    const authenticationSafe = inspection.state === "configured" || credentialDamageOnly(inspection, paths);
-    const checks = inspection.state === "configured" ? [...(await inspectManagedServices(paths))] : [];
+    const ready = inspection.state === "ready";
+    const checks = ready ? [...(await inspectManagedServices(paths))] : [];
+    const githubCredentialReady = checks.some(
+      ({ name, state }) => name === "github-credential" && state === "ready",
+    );
     const managedGitHubCredential =
-      inspection.state === "configured" ? await readManagedGitHubCredential(paths.githubCredential) : undefined;
-    if (managedGitHubCredential?.webhookSecret === undefined && inspection.state === "configured") {
+      ready && githubCredentialReady ? await readManagedGitHubCredential(paths.githubCredential) : undefined;
+    if (managedGitHubCredential !== undefined && managedGitHubCredential.webhookSecret === undefined) {
       checks.push({
         name: "github-webhook-secret",
         state: "warning",
@@ -546,11 +530,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         remediation: "Run ambient-agent start once; startup performs the supported atomic migration before listening.",
       });
     }
-    if (live && inspection.state === "configured") {
+    if (live && managedGitHubCredential !== undefined) {
       const config = await readManagedConfig(paths.config);
       try {
         await firstRunServices.verifyGitHub(
-          managedGitHubCredential!.token,
+          managedGitHubCredential.token,
           config.github.defaultRepository,
           readinessSignal(),
         );
@@ -570,16 +554,30 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         });
       }
     }
-    const authentication = authenticationSafe ? authenticationFor(paths) : undefined;
+    const authentication = ready ? authenticationFor(paths) : undefined;
+    // The default probe derives its correlation ID from the GitHub credential's webhook
+    // secret; when that is unreadable the runtime is honestly unobservable, not stopped.
     const observedRuntime =
-      observeRuntime && inspection.state === "configured" ? await runtimeHealthFor(paths) : undefined;
+      observeRuntime && ready ? await runtimeHealthFor(paths).catch(() => undefined) : undefined;
+    if (observedRuntime?.whatsapp.phase === "online") {
+      // "online" comes only from live observation; static store evidence caps at "paired".
+      const online = checks.findIndex(({ name }) => name === "whatsapp-session");
+      if (online !== -1) {
+        checks[online] = {
+          name: "whatsapp-session",
+          state: "online",
+          code: "whatsapp.online",
+          message: "The running Ambient Agent runtime observes the WhatsApp session online.",
+        };
+      }
+    }
     let authenticationStatus: ChatGptAuthenticationStatus =
-      inspection.state === "unconfigured"
+      inspection.state === "absent"
         ? { state: "missing" }
-        : !authenticationSafe
+        : !ready
           ? {
               state: "unusable",
-              message: "ChatGPT authentication was not inspected because the managed installation is damaged.",
+              message: `ChatGPT authentication was not inspected because the managed installation is ${inspection.state}.`,
             }
           : await authentication!.inspect();
     if (refresh && authenticationStatus.state === "expired-refreshable") {
@@ -618,11 +616,16 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const applicationDatabaseReady = checks.some(
       ({ name, state }) => name === "application-database" && state === "ready",
     );
-    if (inspection.state === "configured" && applicationDatabaseReady && uncertainty !== undefined) {
+    if (ready && applicationDatabaseReady && uncertainty !== undefined) {
       if (uncertainty.mode === "status") {
         uncertainWork = inspectUncertainWork(paths.applicationDatabase);
         windowDeliveries = inspectWindowDeliveries(paths.applicationDatabase);
       } else {
+        if (!githubCredentialReady) {
+          throw new Error(
+            "Uncertain-work actions need a usable GitHub credential. Run ambient-agent config --github-token-file <path> with a valid scoped GitHub token.",
+          );
+        }
         const controller = await uncertainWorkFor(paths);
         try {
           if (uncertainty.retry !== undefined) uncertainAction = await controller.retry(uncertainty.retry);
@@ -675,13 +678,13 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const global = program.opts();
       const current = await inspectManagedData({ dataDirectory: global.dataDir });
       output.stdout(`Data directory: ${current.dataDirectory}\n`);
-      if (current.state === "configured") {
+      if (current.state === "ready") {
         output.stdout(`Managed installation already configured at ${current.dataDirectory}; no files changed.\n`);
         return;
       }
-      if (current.state === "damaged") {
+      if (current.state !== "absent") {
         throw new Error(
-          `Refusing to replace damaged managed data at ${current.dataDirectory}; run ambient-agent doctor.`,
+          `Refusing to replace ${current.state} managed data at ${current.dataDirectory}; run ambient-agent doctor.`,
         );
       }
       const scriptedCredential =
@@ -717,18 +720,27 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .action(async () => {
       const paths = managedPaths({ dataDirectory: program.opts().dataDir });
       const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state === "unconfigured") {
+      if (inspection.state === "absent") {
         throw new Error("Ambient Agent is not configured; run ambient-agent init first.");
       }
-      const credentialOnlyDamage = credentialDamageOnly(inspection, paths);
-      if (inspection.state === "damaged" && !credentialOnlyDamage) {
+      if (inspection.state !== "ready") {
         throw new Error(
-          `Refusing to authenticate against damaged managed data at ${paths.root}; run ambient-agent doctor.`,
+          `Refusing to authenticate against ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
         );
+      }
+      // Fail before the device flow when the credential path can never persist a login.
+      try {
+        if (!(await lstat(paths.chatGptOAuthCredential)).isFile()) {
+          throw new Error(
+            `The managed ChatGPT credential path at ${paths.chatGptOAuthCredential} is not a regular file; run ambient-agent doctor.`,
+          );
+        }
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
       await authenticationFor(paths).authenticate(deviceCodeCallbacks, authenticationSignal());
       const verified = await inspectManagedData({ dataDirectory: paths.root });
-      if (verified.state !== "configured") {
+      if (verified.state !== "ready") {
         throw new Error(`ChatGPT authentication was saved, but managed data verification failed at ${paths.root}.`);
       }
       output.stdout(`ChatGPT authentication updated at ${paths.chatGptOAuthCredential}.\n`);
@@ -744,11 +756,11 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .action(async (options) => {
       const paths = managedPaths({ dataDirectory: program.opts().dataDir });
       const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state !== "configured") {
+      if (inspection.state !== "ready") {
         throw new Error(
-          inspection.state === "unconfigured"
+          inspection.state === "absent"
             ? "Ambient Agent is not configured; run ambient-agent init first."
-            : `Refusing to reconfigure damaged managed data at ${paths.root}; run ambient-agent doctor.`,
+            : `Refusing to reconfigure ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
         );
       }
       const currentConfig = await readManagedConfig(paths.config);
@@ -858,6 +870,84 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     });
 
   program
+    .command("repair")
+    .description("guided component repair that preserves the rest of the managed installation")
+    .argument("[component]", "component to repair (whatsapp)", "whatsapp")
+    .action(async (component) => {
+      if (component !== "whatsapp") {
+        throw new Error(`Unknown repair component "${component}"; only whatsapp re-pairing is supported.`);
+      }
+      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
+      const inspection = await inspectManagedData({ dataDirectory: paths.root });
+      if (inspection.state !== "ready") {
+        throw new Error(
+          inspection.state === "absent"
+            ? "Ambient Agent is not configured; run ambient-agent init first."
+            : `Refusing to repair components of ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
+        );
+      }
+      if ((await inspectWhatsAppSession(paths)).state !== "re-pair-required") {
+        throw new Error(
+          "The managed WhatsApp store is already paired; nothing to repair. To pair a different account, unlink this device from the phone first (Linked devices), then run the repair again.",
+        );
+      }
+      if (!interactive) {
+        throw new Error(
+          "WhatsApp re-pairing requires a human to scan a QR code; run ambient-agent repair whatsapp in an interactive terminal.",
+        );
+      }
+      const configuration = await readManagedConfig(paths.config);
+      // An unprobeable runtime (no webhook secret to correlate) is undefined and does not
+      // block; any observed state other than an explicit "stopped" fails closed, because
+      // even a failed runtime process still holds the store directory open.
+      const observed = await runtimeHealthFor(paths).catch(() => undefined);
+      if (observed !== undefined && observed.state !== "stopped") {
+        throw new Error(
+          `Stop the running ambient-agent start process before re-pairing WhatsApp (observed runtime state: ${observed.state}).`,
+        );
+      }
+      const lock = await acquireSetupLock(paths.root);
+      const stagingPaths = managedPaths({ dataDirectory: lock.stagingRoot });
+      try {
+        await mkdir(lock.stagingRoot, { mode: 0o700 });
+        await chmod(lock.stagingRoot, 0o700);
+        await mkdir(stagingPaths.whatsapp, { mode: 0o700 });
+        await chmod(stagingPaths.whatsapp, 0o700);
+        // The staging archive absorbs the pairing sync and is discarded; the application
+        // database, credentials, configuration, and unresolved work are never touched.
+        const archive = createConversationArchive(stagingPaths.applicationDatabase);
+        const account = firstRunServices.whatsappFor(stagingPaths, archive);
+        try {
+          const identity = await account.authenticate(whatsappCallbacks, authenticationSignal());
+          const candidates = await account.synchronizedChats(authenticationSignal());
+          const managedChat = configuration.managedChats[0]!;
+          if (!candidates.some((candidate) => candidate.jid.toLowerCase() === managedChat.toLowerCase())) {
+            throw new Error(
+              `The newly paired WhatsApp account (${identity.jid}) does not see the configured managed chat ${managedChat}; nothing was replaced.`,
+            );
+          }
+          output.stdout(`Paired WhatsApp as ${identity.jid}; the configured managed chat is visible.\n`);
+        } finally {
+          try {
+            await account.stop();
+          } finally {
+            archive.close();
+          }
+        }
+        await promoteReplacementWhatsAppStore(paths, stagingPaths.whatsapp);
+        output.stdout(
+          `Replaced the managed WhatsApp store at ${paths.whatsapp}; configuration, credentials, and history are unchanged.\n`,
+        );
+      } finally {
+        try {
+          await rm(lock.stagingRoot, { recursive: true, force: true });
+        } finally {
+          await releaseSetupLock(lock);
+        }
+      }
+    });
+
+  program
     .command("start")
     .description("start the generated Flue server in the foreground")
     .option("--debug", "verbose diagnostic logging, including raw upstream WhatsApp records")
@@ -869,17 +959,21 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
       const paths = managedPaths({ dataDirectory: program.opts().dataDir });
       const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state !== "configured") {
+      if (inspection.state !== "ready") {
         throw new Error(
-          inspection.state === "unconfigured"
+          inspection.state === "absent"
             ? "Ambient Agent is not configured; run ambient-agent init first."
-            : `Refusing to start damaged managed data at ${paths.root}; run ambient-agent doctor.`,
+            : `Refusing to start ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
         );
       }
-      const failedCheck = (await inspectManagedServices(paths)).find(({ state }) => state !== "ready");
-      if (failedCheck !== undefined) {
+      const blockingCheck = (await inspectManagedServices(paths)).find(
+        ({ state }) => state !== "ready" && state !== "paired",
+      );
+      if (blockingCheck !== undefined) {
         throw new Error(
-          `Refusing to start managed data at ${paths.root}: ${failedCheck.code}. Run ambient-agent doctor.`,
+          blockingCheck.name === "whatsapp-session"
+            ? `WhatsApp requires re-pairing (${blockingCheck.code}). Run ambient-agent repair whatsapp; the rest of the managed installation is preserved.`
+            : `Refusing to start managed data at ${paths.root}: ${blockingCheck.code}. Run ambient-agent doctor.`,
         );
       }
       await startRuntime(paths, { debug: options.debug ?? false, ...(format === undefined ? {} : { format }) });
@@ -891,13 +985,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--json", "emit machine-readable JSON")
     .action(async (options) => {
       const report = await reportInspection(options.json ?? false, false, false, true, { mode: "status" });
-      if (report.installation.state === "unconfigured") exitCode = 2;
+      if (report.installation.state === "absent") exitCode = 2;
       else if (
-        report.installation.state === "damaged" ||
+        report.installation.state !== "ready" ||
         report.authentication.state !== "ready" ||
-        report.checks.some(({ state }) => state !== "ready") ||
+        report.checks.some(({ state }) => state !== "ready" && state !== "paired" && state !== "online") ||
         report.observedRuntime?.state === "failed" ||
-        report.observedRuntime?.state === "degraded" ||
         report.uncertainWork?.health === "degraded"
       )
         exitCode = 3;
@@ -932,9 +1025,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         },
       );
       if (
-        report.installation.state !== "configured" ||
+        report.installation.state !== "ready" ||
         report.authentication.state !== "ready" ||
-        report.checks.some(({ state }) => state !== "ready") ||
+        report.checks.some(({ state }) => state !== "ready" && state !== "paired" && state !== "online") ||
         report.liveCheck?.request === "failed" ||
         report.uncertainWork?.health === "degraded" ||
         report.uncertainAction?.outcome === "failed"
@@ -959,7 +1052,15 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     const bare = bareDataDirectory(args);
     if (bare !== undefined) {
       const inspection = await inspectManagedData({ dataDirectory: bare.dataDirectory });
-      args.push(inspection.state === "unconfigured" ? "init" : "status");
+      if (inspection.state === "absent") args.push("init");
+      else if (
+        inspection.state === "ready" &&
+        interactive &&
+        (await inspectWhatsAppSession(managedPaths({ dataDirectory: bare.dataDirectory }))).state ===
+          "re-pair-required"
+      ) {
+        args.push("repair", "whatsapp");
+      } else args.push("status");
     }
     await program.parseAsync(["node", "ambient-agent", ...args]);
     return exitCode;

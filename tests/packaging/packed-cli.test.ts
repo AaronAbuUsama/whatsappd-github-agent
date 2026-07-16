@@ -211,7 +211,7 @@ describe("packed ambient-agent executable", () => {
       executeAmbientAgent(["--data-dir", join(root, "non-interactive"), "status", "--json"]),
     ).rejects.toMatchObject({
       code: 2,
-      stdout: expect.stringContaining('"state": "unconfigured"'),
+      stdout: expect.stringContaining('"state": "absent"'),
     });
   });
 
@@ -228,13 +228,14 @@ describe("packed ambient-agent executable", () => {
 
     const status = await executeAmbientAgent(["--data-dir", dataDirectory, "status", "--json"], fixtureEnvironment);
     expect(JSON.parse(status.stdout)).toMatchObject({
-      state: "configured",
-      runtimeState: "stopped",
+      state: "ready",
       modelAuthentication: { state: "ready" },
+      observedRuntime: { state: "stopped" },
       checks: [
         { name: "application-database", state: "ready" },
         { name: "flue-database", state: "ready" },
-        { name: "whatsapp-session", state: "ready" },
+        { name: "whatsapp-session", state: "paired" },
+        { name: "github-credential", state: "ready" },
       ],
     });
 
@@ -253,8 +254,8 @@ describe("packed ambient-agent executable", () => {
         fixtureEnvironment,
       );
       expect(JSON.parse(liveStatus.stdout)).toMatchObject({
-        runtimeState: "healthy",
         observedRuntime: { state: "healthy", whatsapp: { phase: "online" } },
+        checks: expect.arrayContaining([expect.objectContaining({ name: "whatsapp-session", state: "online" })]),
       });
       // Runtime diagnostics live on stderr (ADR 0016); stdout stays free for command responses.
       expect(runtime.stderr()).toContain("Ambience WhatsApp online");
@@ -287,7 +288,7 @@ describe("packed ambient-agent executable", () => {
     const migrated = await executeAmbientAgent(["status", "--json"], migrationEnvironment);
     expect(migrated.stderr).toContain(`Moved managed data from ${legacyData} to ${adoptedData}.`);
     expect(JSON.parse(migrated.stdout)).toMatchObject({
-      state: "configured",
+      state: "ready",
       dataDirectory: adoptedData,
       modelAuthentication: { state: "ready" },
     });
@@ -301,7 +302,7 @@ describe("packed ambient-agent executable", () => {
 
     const settled = await executeAmbientAgent(["status", "--json"], migrationEnvironment);
     expect(settled.stderr).not.toContain("Moved managed data");
-    expect(JSON.parse(settled.stdout)).toMatchObject({ state: "configured", dataDirectory: adoptedData });
+    expect(JSON.parse(settled.stdout)).toMatchObject({ state: "ready", dataDirectory: adoptedData });
 
     const conflictedHome = join(root, "conflicted-home");
     const conflictedLegacy =
@@ -507,7 +508,7 @@ describe("packed ambient-agent executable", () => {
     });
 
     const restoredPaths = managedPaths({ dataDirectory: restoredData });
-    expect(await inspectManagedData({ dataDirectory: restoredData })).toMatchObject({ state: "configured" });
+    expect(await inspectManagedData({ dataDirectory: restoredData })).toMatchObject({ state: "ready" });
     expect((await stat(restoredData)).mode & 0o777).toBe(0o700);
     for (const privateFile of [
       restoredPaths.config,
@@ -524,12 +525,12 @@ describe("packed ambient-agent executable", () => {
       ["--data-dir", restoredData, "status", "--json"],
       restoredEnvironment,
     );
-    expect(JSON.parse(restoredStatus.stdout)).toMatchObject({ state: "configured", runtimeState: "stopped" });
+    expect(JSON.parse(restoredStatus.stdout)).toMatchObject({ state: "ready", observedRuntime: { state: "stopped" } });
     const restoredDoctor = await executeAmbientAgent(
       ["--data-dir", restoredData, "doctor", "--json"],
       restoredEnvironment,
     );
-    expect(JSON.parse(restoredDoctor.stdout)).toMatchObject({ state: "configured", runtimeState: "configured" });
+    expect(JSON.parse(restoredDoctor.stdout)).toMatchObject({ state: "ready", chatgpt: "ready" });
 
     const restoredSnapshot = new DatabaseSync(restoredPaths.applicationDatabase, { readOnly: true });
     expect(

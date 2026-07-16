@@ -4,18 +4,23 @@ import { DatabaseSync } from "node:sqlite";
 import { assertSupportedFlueSchemaVersion } from "@flue/runtime/adapter";
 
 import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "./database-versions.js";
+import { inspectGitHubCredentialComponent } from "./installation.js";
 import type { ManagedPaths } from "./paths.js";
 
 export type ManagedCheckState = "ready" | "warning" | "failed";
+/** Static evidence caps at "paired"; "online" comes only from live runtime observation. */
+export type WhatsAppComponentState = "re-pair-required" | "paired" | "online";
+export type CredentialComponentState = "ready" | "reauthentication-required";
 
 export interface ManagedCheck {
   readonly name:
     | "application-database"
     | "flue-database"
     | "github-access"
+    | "github-credential"
     | "github-webhook-secret"
     | "whatsapp-session";
-  readonly state: ManagedCheckState;
+  readonly state: ManagedCheckState | WhatsAppComponentState | CredentialComponentState;
   readonly code: string;
   readonly message: string;
   readonly remediation?: string;
@@ -190,7 +195,9 @@ const databaseCheck = (name: "application-database" | "flue-database", path: str
   }
 };
 
-const whatsappSessionCheck = async (path: string): Promise<ManagedCheck> => {
+/** Static store evidence caps at "paired"; a missing or cleared store is "re-pair-required". */
+export const inspectWhatsAppSession = async (paths: ManagedPaths): Promise<ManagedCheck> => {
+  const path = `${paths.whatsapp}/creds.json`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
@@ -209,34 +216,55 @@ const whatsappSessionCheck = async (path: string): Promise<ManagedCheck> => {
     return registered
       ? {
           name: "whatsapp-session",
-          state: "ready",
-          code: "whatsapp.ready",
+          state: "paired",
+          code: "whatsapp.paired",
           message:
-            "The app-owned WhatsApp credential contains persisted registration or linked-account identity evidence.",
+            "The app-owned WhatsApp store contains persisted pairing evidence; liveness is unverified until the runtime connects.",
         }
       : {
           name: "whatsapp-session",
-          state: "warning",
+          state: "re-pair-required",
           code: "whatsapp.not-registered",
-          message: "The app-owned WhatsApp credential is not a registered linked session.",
-          remediation: "Run ambient-agent init on a new installation, or repair the linked device before starting.",
+          message: "The app-owned WhatsApp store is not a registered linked session.",
+          remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
         };
   } catch {
     return {
       name: "whatsapp-session",
-      state: "warning",
-      code: "whatsapp.credential-missing",
-      message: "No readable app-owned WhatsApp session credential was found.",
-      remediation: "Run ambient-agent init on a new installation, or repair the linked device before starting.",
+      state: "re-pair-required",
+      code: "whatsapp.store-missing",
+      message: "No readable app-owned WhatsApp session store was found.",
+      remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
     };
   } finally {
     await handle?.close();
   }
 };
 
+const githubCredentialCheck = async (paths: ManagedPaths): Promise<ManagedCheck> => {
+  const component = await inspectGitHubCredentialComponent(paths);
+  return component.state === "ready"
+    ? {
+        name: "github-credential",
+        state: "ready",
+        code: "github.credential-ready",
+        message: "The app-owned GitHub credential file is a valid private credential.",
+      }
+    : {
+        name: "github-credential",
+        state: "reauthentication-required",
+        code: "github.reauthentication-required",
+        message: `The app-owned GitHub credential file is unusable: ${component.diagnostics
+          .map(({ code }) => code)
+          .join(", ")}.`,
+        remediation: "Run ambient-agent config --github-token-file <path> with a valid scoped GitHub token.",
+      };
+};
+
 /** Read-only local checks. Live provider checks remain explicit doctor operations. */
 export const inspectManagedServices = async (paths: ManagedPaths): Promise<readonly ManagedCheck[]> => [
   databaseCheck("application-database", paths.applicationDatabase),
   databaseCheck("flue-database", paths.flueDatabase),
-  await whatsappSessionCheck(`${paths.whatsapp}/creds.json`),
+  await inspectWhatsAppSession(paths),
+  await githubCredentialCheck(paths),
 ];

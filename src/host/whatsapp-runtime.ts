@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 
-import { Effect, Exit, Fiber, Layer, type Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { WhatsAppSession } from "whatsappd";
 
 import { makeAmbienceWindowDispatcher, type DispatchAmbience } from "../ambience/dispatch.js";
@@ -17,7 +17,7 @@ import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
 import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging/logging.js";
-import { createWhatsAppAccount } from "../whatsapp/account.js";
+import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
 
 const errorMessage = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 const isKnownPreSendFailure = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
@@ -127,6 +127,9 @@ export interface WhatsAppRuntimeOptions {
   readonly applicationDatabase: string;
   readonly managedChats: readonly string[];
   readonly botLid?: string;
+  /** Test seams only: a fake session and a captured exit instead of process.exit. */
+  readonly sessionFactory?: () => WhatsAppSession;
+  readonly exit?: (code: number) => void;
 }
 
 export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
@@ -134,7 +137,12 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
-  const account = createWhatsAppAccount({ storeDirectory: storeDir, archive: inbox.recorder, logger: upstreamWhatsAppLogger() });
+  const account = createWhatsAppAccount({
+    storeDirectory: storeDir,
+    archive: inbox.recorder,
+    logger: upstreamWhatsAppLogger(),
+    ...(options.sessionFactory === undefined ? {} : { sessionFactory: options.sessionFactory }),
+  });
   const log = getLogger("whatsapp");
   status = { phase: "starting", chatTarget: gate.describe() };
   let stopping = false;
@@ -172,6 +180,18 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     if (Exit.isFailure(exit) && !stopping) {
       status = { phase: "failed", chatTarget: gate.describe(), error: String(exit.cause) };
       log.error({ cause: String(exit.cause) }, "WhatsApp runtime failed");
+      const loggedOut = exit.cause.reasons
+        .filter(Cause.isDieReason)
+        .some(({ defect }) => defect instanceof WhatsAppAccountError && defect.code === "logged_out");
+      if (loggedOut) {
+        // whatsappd clears its store on terminal logged_out; the session is unrecoverable
+        // in-process. Exit cleanly (finalizers already ran) and point at the guided repair.
+        process.stderr.write(
+          "WhatsApp authentication ended in logged_out and the session store is no longer usable.\n" +
+            "Run ambient-agent repair whatsapp to pair again; configuration, credentials, and history are preserved.\n",
+        );
+        (options.exit ?? process.exit)(1);
+      }
     } else {
       status = { phase: "stopped", chatTarget: gate.describe() };
     }

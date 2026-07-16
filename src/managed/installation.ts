@@ -9,10 +9,8 @@ import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "./
 import { managedPaths, type ManagedPathEnvironment, type ManagedPaths } from "./paths.js";
 import {
   createManagedConfig,
-  ChatGptOAuthCredentialSchema,
   GitHubCredentialSchema,
   ManagedConfigSchema,
-  PiAuthSchema,
   type GitHubCredential,
   type ManagedConfig,
 } from "./schema.js";
@@ -38,17 +36,23 @@ const CONFIG_ISSUE_PATHS = new Set([
   "github.allowedRepositories.[]",
 ]);
 const GITHUB_CREDENTIAL_ISSUE_PATHS = new Set(["<root>", "schemaVersion", "kind", "token", "webhookSecret"]);
-const CHATGPT_OAUTH_ISSUE_PATHS = new Set(["<root>", "type", "access", "refresh", "expires"]);
-const LEGACY_PI_AUTH_ISSUE_PATHS = new Set([
-  "<root>",
-  "openai-codex",
-  "openai-codex.type",
-  "openai-codex.access",
-  "openai-codex.refresh",
-  "openai-codex.expires",
+
+export type InstallationState = "absent" | "incomplete" | "corrupt" | "ready";
+
+/** True integrity failures (#91 ratified vocabulary); everything else diagnosable is merely incomplete. */
+const CORRUPT_CODES = new Set([
+  "path.not-directory",
+  "path.not-file",
+  "filesystem.unreadable",
+  "json.invalid",
+  "schema.invalid",
+  "credential.reference",
+  "file.too-large",
+  "file.changed-during-read",
 ]);
 
-export type InstallationState = "unconfigured" | "configured" | "damaged";
+const classifyInstallation = (diagnostics: readonly InstallationDiagnostic[]): InstallationState =>
+  diagnostics.length === 0 ? "ready" : diagnostics.some(({ code }) => CORRUPT_CODES.has(code)) ? "corrupt" : "incomplete";
 
 export interface InstallationDiagnostic {
   readonly code: string;
@@ -434,7 +438,7 @@ export const inspectManagedData = async (
     rootExists = await exists(paths.root);
   } catch (cause) {
     return {
-      state: "damaged",
+      state: "corrupt",
       dataDirectory: paths.root,
       diagnostics: [
         diagnostic(
@@ -449,7 +453,8 @@ export const inspectManagedData = async (
   }
   if (platform === "win32") {
     return {
-      state: rootExists ? "damaged" : "unconfigured",
+      // Windows fails closed on unenforceable ACLs; that is mis-permissioning, not corruption.
+      state: rootExists ? "incomplete" : "absent",
       dataDirectory: paths.root,
       diagnostics: [
         diagnostic(
@@ -464,7 +469,7 @@ export const inspectManagedData = async (
   }
   if (!rootExists) {
     return {
-      state: "unconfigured",
+      state: "absent",
       dataDirectory: paths.root,
       diagnostics: [
         diagnostic("installation.missing", paths.root, "Ambient Agent is not configured.", "Run ambient-agent init."),
@@ -475,18 +480,19 @@ export const inspectManagedData = async (
 
   const rootDiagnostics = await inspectDirectory(paths.root, "Managed data directory", true);
   if (rootDiagnostics.length > 0) {
+    const diagnostics = [...lockDiagnostics, ...rootDiagnostics];
     return {
-      state: "damaged",
+      state: classifyInstallation(diagnostics),
       dataDirectory: paths.root,
-      diagnostics: [...lockDiagnostics, ...rootDiagnostics],
+      diagnostics,
     };
   }
 
+  // Component-owned paths (the whatsapp/ store and the credential files inside credentials/)
+  // never appear here: they classify into component states, not the installation verdict.
   const diagnostics = [...lockDiagnostics];
-  const credentialDirectoryDiagnostics = await inspectDirectory(paths.credentials, "Credential directory", true);
   diagnostics.push(
-    ...credentialDirectoryDiagnostics,
-    ...(await inspectDirectory(paths.whatsapp, "WhatsApp data directory", true)),
+    ...(await inspectDirectory(paths.credentials, "Credential directory", true)),
     ...(await inspectDirectory(paths.logs, "Log directory", true)),
   );
 
@@ -502,48 +508,42 @@ export const inspectManagedData = async (
     if (config.value !== undefined) diagnostics.push(...inspectConfigReferences(paths.config, config.value));
   }
 
-  if (credentialDirectoryDiagnostics.length === 0) {
-    const githubFileDiagnostics = await inspectFile(paths.githubCredential, "GitHub credential file", true);
-    const useLegacyCredential =
-      !(await exists(paths.chatGptOAuthCredential)) && (await exists(paths.legacyPiAuthCredential));
-    const chatGptCredentialPath = useLegacyCredential ? paths.legacyPiAuthCredential : paths.chatGptOAuthCredential;
-    const chatGptFileDiagnostics = await inspectFile(
-      chatGptCredentialPath,
-      useLegacyCredential ? "Provisional managed ChatGPT credential file" : "ChatGPT OAuth credential file",
-      true,
-    );
-    diagnostics.push(...githubFileDiagnostics, ...chatGptFileDiagnostics);
-    if (githubFileDiagnostics.length === 0) {
-      diagnostics.push(
-        ...(
-          await inspectJson(
-            paths.githubCredential,
-            "GitHub credential file",
-            GitHubCredentialSchema,
-            GITHUB_CREDENTIAL_ISSUE_PATHS,
-          )
-        ).diagnostics,
-      );
-    }
-    if (chatGptFileDiagnostics.length === 0) {
-      diagnostics.push(
-        ...(
-          await inspectJson(
-            chatGptCredentialPath,
-            useLegacyCredential ? "Provisional managed ChatGPT credential file" : "ChatGPT OAuth credential file",
-            useLegacyCredential ? PiAuthSchema : ChatGptOAuthCredentialSchema,
-            useLegacyCredential ? LEGACY_PI_AUTH_ISSUE_PATHS : CHATGPT_OAUTH_ISSUE_PATHS,
-          )
-        ).diagnostics,
-      );
-    }
-  }
-
   return {
-    state: diagnostics.length === 0 ? "configured" : "damaged",
+    state: classifyInstallation(diagnostics),
     dataDirectory: paths.root,
     diagnostics,
   };
+};
+
+export type CredentialComponentState = "ready" | "reauthentication-required";
+
+export interface GitHubCredentialComponent {
+  readonly state: CredentialComponentState;
+  readonly diagnostics: readonly InstallationDiagnostic[];
+}
+
+/** Static GitHub credential-file inspection; file damage is a component state, never an installation verdict. */
+export const inspectGitHubCredentialComponent = async (paths: ManagedPaths): Promise<GitHubCredentialComponent> => {
+  const diagnostics = [...(await inspectFile(paths.githubCredential, "GitHub credential file", true))];
+  if (diagnostics.length === 0) {
+    diagnostics.push(
+      ...(
+        await inspectJson(
+          paths.githubCredential,
+          "GitHub credential file",
+          GitHubCredentialSchema,
+          GITHUB_CREDENTIAL_ISSUE_PATHS,
+        )
+      ).diagnostics,
+    );
+  }
+  return { state: diagnostics.length === 0 ? "ready" : "reauthentication-required", diagnostics };
+};
+
+/** Atomically adopt a validated replacement WhatsApp store; everything else in the installation is untouched. */
+export const promoteReplacementWhatsAppStore = async (paths: ManagedPaths, replacement: string): Promise<void> => {
+  await rm(paths.whatsapp, { recursive: true, force: true });
+  await rename(replacement, paths.whatsapp);
 };
 
 const writeSecureFile = async (path: string, contents: string): Promise<void> => {
@@ -600,9 +600,11 @@ export const installPreparedManagedData = async (
     throw new Error("Secure managed credential ACLs are not implemented on Windows; setup fails closed.");
   }
   const before = await inspectManagedData(input);
-  if (before.state === "configured") return { created: false, inspection: before };
-  if (before.state === "damaged") {
-    throw new Error(`Refusing to replace damaged managed data at ${targetPaths.root}; run ambient-agent doctor.`);
+  if (before.state === "ready") return { created: false, inspection: before };
+  if (before.state !== "absent") {
+    throw new Error(
+      `Refusing to replace ${before.state} managed data at ${targetPaths.root}; run ambient-agent doctor.`,
+    );
   }
 
   await mkdir(dirname(targetPaths.root), { recursive: true, mode: DIRECTORY_MODE });
@@ -611,8 +613,8 @@ export const installPreparedManagedData = async (
   const stagingRoot = lock.stagingRoot;
   try {
     const current = await inspectManagedData(input, { ignoreSetupLock: true });
-    if (current.state === "configured") return { created: false, inspection: current };
-    if (current.state === "damaged") {
+    if (current.state === "ready") return { created: false, inspection: current };
+    if (current.state !== "absent") {
       throw new Error(`Refusing to replace existing managed data at ${targetPaths.root}.`);
     }
     const stagingPaths = managedPaths({ dataDirectory: stagingRoot });
@@ -632,7 +634,11 @@ export const installPreparedManagedData = async (
     if (!githubResult.success) throw new Error("The GitHub token must not be empty.");
     await writePreparedConfiguration(stagingPaths, configResult.output, githubResult.output);
     const stagingInspection = await inspectManagedData({ dataDirectory: stagingRoot });
-    if (stagingInspection.state !== "configured") {
+    const chatGptStaged =
+      (await exists(stagingPaths.chatGptOAuthCredential)) || (await exists(stagingPaths.legacyPiAuthCredential));
+    // Credential files are component-owned and never fail an existing installation,
+    // but first-run setup must still stage a complete tree before promotion.
+    if (stagingInspection.state !== "ready" || !chatGptStaged) {
       throw new Error("Managed staging verification failed; setup did not commit any files.");
     }
     if (input.signal?.aborted) {
@@ -648,7 +654,7 @@ export const installPreparedManagedData = async (
   }
 
   const inspection = await inspectManagedData(input);
-  if (inspection.state !== "configured") {
+  if (inspection.state !== "ready") {
     throw new Error(`Managed data verification failed at ${targetPaths.root}; run ambient-agent doctor.`);
   }
   return { created: true, inspection };
