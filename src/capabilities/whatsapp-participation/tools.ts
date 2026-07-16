@@ -9,6 +9,7 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme
 const emojiString = v.pipe(
   v.string(),
   v.minLength(1),
+  v.maxLength(64),
   v.check((value) => [...graphemeSegmenter.segment(value)].length <= 8, "Emoji must contain at most 8 characters."),
 );
 const historyMessageSchema = v.object({

@@ -61,6 +61,7 @@ describe("WhatsApp Participation capability", () => {
     expect(v.safeParse(react.input, { messageId: "source-31", emoji: "👨‍👩‍👧‍👦" }).success).toBe(true);
     expect(v.safeParse(react.input, { messageId: "source-31", emoji: "" }).success).toBe(false);
     expect(v.safeParse(react.input, { messageId: "source-31", emoji: "123456789" }).success).toBe(false);
+    expect(v.safeParse(react.input, { messageId: "source-31", emoji: `a${"\u0301".repeat(64)}` }).success).toBe(false);
     const chatOverride = v.safeParse(react.input, {
       chatId: "other@g.us",
       messageId: "source-31",
