@@ -38,10 +38,12 @@ someone goes and does the thing.
 
 None — **the map is complete** (all eight tickets resolved 2026-07-16). Master issue:
 [Tightening pass (#109)](https://github.com/AaronAbuUsama/ambient-agent/issues/109) in
-milestone 6. Next:
-/to-spec (specs reviewed by Aaron) → /to-tickets (files GitHub issues, master + children
-each fully self-contained: narrative, end state, mermaid architecture + sequence
-diagrams, blocking edges).
+milestone 6. Children FILED 2026-07-16 at working-session granularity (8, not 18 — per
+Aaron): #110 cleanups · #111 visible operation (incl. live-verify merged #108) ·
+#112 skill tree · #113 eval battery (evals-green) · #114 windows-everything ·
+#115 participation features · #116 CLI split + smoke · #117 monorepo split. Native
+sub-issue + blocked-by edges (#113←#112, #116←#111, #117←#110/#113/#114/#116).
+Stale issues closed: #44, #24, #12, #2. Work the frontier with /implement.
 
 ## Decisions so far
 
