@@ -251,6 +251,8 @@ Deletion tickets ship with their test deletions; behavior-preserving refactors
 
 ## Further Notes
 
+- Master issue: [Tightening pass: evals first, visible operation, then the monorepo split (#109)](https://github.com/AaronAbuUsama/ambient-agent/issues/109), milestone 6 — carries this spec's narrative and diagrams; children file via /to-tickets after spec review.
+
 - Ticket graph and per-ticket rationale: [T8 — the ratified DAG](wayfinder/tickets/T8-dag-ratification.md);
   decisions index: [MAP.md](wayfinder/MAP.md).
 - Filing requirements: master + every child issue self-contained — this spec's

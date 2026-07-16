@@ -36,7 +36,9 @@ someone goes and does the thing.
 
 ## Open tickets (the frontier, in suggested order)
 
-None — **the map is complete** (all eight tickets resolved 2026-07-16). Next:
+None — **the map is complete** (all eight tickets resolved 2026-07-16). Master issue:
+[Tightening pass (#109)](https://github.com/AaronAbuUsama/ambient-agent/issues/109) in
+milestone 6. Next:
 /to-spec (specs reviewed by Aaron) → /to-tickets (files GitHub issues, master + children
 each fully self-contained: narrative, end state, mermaid architecture + sequence
 diagrams, blocking edges).
