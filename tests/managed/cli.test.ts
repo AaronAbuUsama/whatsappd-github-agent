@@ -1302,4 +1302,61 @@ describe("managed CLI", () => {
     expect(broken.stdout()).toContain("damaged");
     expect(broken.stdout()).toContain("Fix:");
   });
+
+  it("prints the resolved data directory during init", async () => {
+    const paths = await files();
+    const cli = harness();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      cli,
+    );
+    expect(cli.stdout()).toContain(`Data directory: ${paths.data}`);
+    expect(cli.stdout()).toContain("Created secure managed installation");
+  });
+
+  it("runs the one-time root migration before commands and skips it under --data-dir", async () => {
+    const paths = await files();
+    let migrations = 0;
+    const skipped = harness();
+    await runCli(["--data-dir", paths.data, "status"], {
+      ...skipped,
+      migrateManagedData: async () => {
+        migrations += 1;
+        return { migrated: false, root: paths.data };
+      },
+    });
+    expect(migrations).toBe(0);
+
+    const migratedCli = harness();
+    vi.stubEnv("HOME", paths.parent);
+    try {
+      expect(
+        await runCli(["status"], {
+          ...migratedCli,
+          migrateManagedData: async () => {
+            migrations += 1;
+            return { migrated: true, root: paths.data, source: join(paths.parent, "legacy") };
+          },
+        }),
+      ).toBe(2);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(migrations).toBe(1);
+    expect(migratedCli.stdout()).toContain(`Moved managed data from ${join(paths.parent, "legacy")} to ${paths.data}`);
+  });
+
+  it("fails closed with a nonzero exit code when the root migration refuses to choose", async () => {
+    const cli = harness();
+    expect(
+      await runCli(["status"], {
+        ...cli,
+        migrateManagedData: async () => {
+          throw new Error("Managed data exists at both /home/a/.ambient-agent and the former default /home/a/.local/share/ambient-agent.");
+        },
+      }),
+    ).toBe(1);
+    expect(cli.stderr()).toContain("/home/a/.ambient-agent");
+    expect(cli.stderr()).toContain("/home/a/.local/share/ambient-agent");
+  });
 });

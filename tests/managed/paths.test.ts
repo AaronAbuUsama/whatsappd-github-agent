@@ -1,27 +1,53 @@
 import { describe, expect, it } from "vite-plus/test";
 import { posix, win32 } from "node:path";
 
-import { managedPaths, resolveManagedDataDirectory } from "../../src/managed/paths.ts";
+import {
+  managedPaths,
+  resolveLegacyManagedDataDirectory,
+  resolveManagedDataDirectory,
+} from "../../src/managed/paths.ts";
 
 describe("managed data paths", () => {
-  it("uses the macOS Application Support directory", () => {
+  it("uses ~/.ambient-agent on macOS and Linux, ignoring XDG_DATA_HOME", () => {
     expect(
       resolveManagedDataDirectory({
         platform: "darwin",
         homeDirectory: "/Users/alice",
         environment: {},
       }),
-    ).toBe(posix.join("/Users/alice", "Library", "Application Support", "ambient-agent"));
-  });
-
-  it("honours XDG_DATA_HOME on Linux", () => {
+    ).toBe("/Users/alice/.ambient-agent");
     expect(
       resolveManagedDataDirectory({
         platform: "linux",
         homeDirectory: "/home/alice",
         environment: { XDG_DATA_HOME: "/data" },
       }),
+    ).toBe("/home/alice/.ambient-agent");
+  });
+
+  it("resolves the pre-ADR-0015 legacy directory per platform", () => {
+    expect(
+      resolveLegacyManagedDataDirectory({
+        platform: "darwin",
+        homeDirectory: "/Users/alice",
+        environment: {},
+      }),
+    ).toBe(posix.join("/Users/alice", "Library", "Application Support", "ambient-agent"));
+    expect(
+      resolveLegacyManagedDataDirectory({
+        platform: "linux",
+        homeDirectory: "/home/alice",
+        environment: { XDG_DATA_HOME: "/data" },
+      }),
     ).toBe(posix.join("/data", "ambient-agent"));
+    expect(
+      resolveLegacyManagedDataDirectory({
+        platform: "linux",
+        homeDirectory: "/home/alice",
+        environment: {},
+      }),
+    ).toBe("/home/alice/.local/share/ambient-agent");
+    expect(resolveLegacyManagedDataDirectory({ platform: "win32", homeDirectory: "C:\\Users\\alice" })).toBeUndefined();
   });
 
   it("uses LOCALAPPDATA on Windows", () => {
@@ -49,16 +75,16 @@ describe("managed data paths", () => {
     });
   });
 
-  it("ignores empty or relative environment overrides and rejects relative explicit roots", () => {
+  it("ignores empty or relative legacy environment overrides and rejects relative explicit roots", () => {
     expect(
-      resolveManagedDataDirectory({
+      resolveLegacyManagedDataDirectory({
         platform: "linux",
         homeDirectory: "/home/alice",
         environment: { XDG_DATA_HOME: "relative-data" },
       }),
     ).toBe("/home/alice/.local/share/ambient-agent");
     expect(
-      resolveManagedDataDirectory({
+      resolveLegacyManagedDataDirectory({
         platform: "linux",
         homeDirectory: "/home/alice",
         environment: { XDG_DATA_HOME: "   " },
@@ -69,7 +95,7 @@ describe("managed data paths", () => {
     );
   });
 
-  it("rejects a relative fallback home without rejecting an absolute environment override", () => {
+  it("rejects a relative fallback home on every platform", () => {
     expect(() =>
       resolveManagedDataDirectory({
         platform: "linux",
@@ -84,13 +110,13 @@ describe("managed data paths", () => {
         environment: {},
       }),
     ).toThrow("home directory must be an absolute path");
-    expect(
-      resolveManagedDataDirectory({
+    expect(() =>
+      resolveLegacyManagedDataDirectory({
         platform: "linux",
         homeDirectory: "relative-home",
-        environment: { XDG_DATA_HOME: "/data" },
+        environment: {},
       }),
-    ).toBe("/data/ambient-agent");
+    ).toThrow("home directory must be an absolute path");
   });
 
   it("derives the complete stable skeleton from an injected root", () => {
