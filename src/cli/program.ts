@@ -555,8 +555,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       }
     }
     const authentication = ready ? authenticationFor(paths) : undefined;
+    // The default probe derives its correlation ID from the GitHub credential's webhook
+    // secret; when that is unreadable the runtime is honestly unobservable, not stopped.
     const observedRuntime =
-      observeRuntime && ready && githubCredentialReady ? await runtimeHealthFor(paths) : undefined;
+      observeRuntime && ready ? await runtimeHealthFor(paths).catch(() => undefined) : undefined;
     if (observedRuntime?.whatsapp.phase === "online") {
       // "online" comes only from live observation; static store evidence caps at "paired".
       const online = checks.findIndex(({ name }) => name === "whatsapp-session");
@@ -618,7 +620,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (uncertainty.mode === "status") {
         uncertainWork = inspectUncertainWork(paths.applicationDatabase);
         windowDeliveries = inspectWindowDeliveries(paths.applicationDatabase);
-      } else if (githubCredentialReady) {
+      } else {
+        if (!githubCredentialReady) {
+          throw new Error(
+            "Uncertain-work actions need a usable GitHub credential. Run ambient-agent config --github-token-file <path> with a valid scoped GitHub token.",
+          );
+        }
         const controller = await uncertainWorkFor(paths);
         try {
           if (uncertainty.retry !== undefined) uncertainAction = await controller.retry(uncertainty.retry);
@@ -879,15 +886,25 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
             : `Refusing to repair components of ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
         );
       }
+      if ((await inspectWhatsAppSession(paths)).state !== "re-pair-required") {
+        throw new Error(
+          "The managed WhatsApp store is already paired; nothing to repair. To pair a different account, unlink this device from the phone first (Linked devices), then run the repair again.",
+        );
+      }
       if (!interactive) {
         throw new Error(
           "WhatsApp re-pairing requires a human to scan a QR code; run ambient-agent repair whatsapp in an interactive terminal.",
         );
       }
       const configuration = await readManagedConfig(paths.config);
+      // An unprobeable runtime (no webhook secret to correlate) is undefined and does not
+      // block; any observed state other than an explicit "stopped" fails closed, because
+      // even a failed runtime process still holds the store directory open.
       const observed = await runtimeHealthFor(paths).catch(() => undefined);
-      if (observed?.state === "healthy" || observed?.state === "starting") {
-        throw new Error("Stop the running ambient-agent start process before re-pairing WhatsApp.");
+      if (observed !== undefined && observed.state !== "stopped") {
+        throw new Error(
+          `Stop the running ambient-agent start process before re-pairing WhatsApp (observed runtime state: ${observed.state}).`,
+        );
       }
       const lock = await acquireSetupLock(paths.root);
       const stagingPaths = managedPaths({ dataDirectory: lock.stagingRoot });
