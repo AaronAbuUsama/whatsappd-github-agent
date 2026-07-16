@@ -20,8 +20,9 @@ import { Writable } from "node:stream";
 import { Cause, Logger as EffectLogger, type Layer, References } from "effect";
 import type { LogLevel } from "effect/LogLevel";
 import { type DestinationStream, type Level, type Logger, multistream, pino, stdSerializers } from "pino";
-import pretty from "pino-pretty";
 import roll from "pino-roll";
+
+import { createOperatorConsoleSink } from "./operator-reporter.js";
 
 export type { Logger } from "pino";
 export type LogFormat = "pretty" | "json";
@@ -79,12 +80,8 @@ const summarizeRepeatedUpstream = (sink: NodeJS.WritableStream): Writable => {
 
 const consoleSink = (format: LogFormat, destination: NodeJS.WritableStream): NodeJS.WritableStream =>
   format === "pretty"
-    ? pretty({
-        destination,
+    ? createOperatorConsoleSink(destination, {
         colorize: destination === process.stderr && process.stderr.isTTY,
-        sync: true,
-        ignore: "subsystem",
-        messageFormat: "{if subsystem}[{subsystem}] {end}{msg}",
       })
     : destination;
 

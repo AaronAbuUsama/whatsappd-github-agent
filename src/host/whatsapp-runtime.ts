@@ -16,6 +16,7 @@ import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js"
 import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
 import { createConversationArchive } from "../intake/conversation-archive.js";
 import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
+import { configureAgentActivityRecovery } from "../logging/agent-activity-reporter.js";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging/logging.js";
 import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
 
@@ -51,7 +52,10 @@ export const createWhatsAppHost = (session: WhatsAppSession): WhatsAppSayPort =>
     try {
       const message = await session.send(chatId, { text });
       delivery = { delivery: "sent", messageId: message.id };
-      log.info({ chatId, messageId: message.id }, "WhatsApp reply sent");
+      log.info(
+        { operatorEvent: "agent.say", text, chatId, messageId: message.id },
+        "Ambience said a WhatsApp message",
+      );
     } catch (cause) {
       const deliveryError = errorMessage(cause);
       const outcome = isKnownPreSendFailure(deliveryError) ? "failed" : "unknown";
@@ -137,6 +141,12 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+  configureAgentActivityRecovery((dispatchId) => {
+    const window = inbox.windowForDispatch(dispatchId);
+    return window === undefined
+      ? undefined
+      : { windowId: window.id, chatId: window.chatId, messageCount: window.messages.length };
+  });
   const account = createWhatsAppAccount({
     storeDirectory: storeDir,
     archive: inbox.recorder,
@@ -171,7 +181,17 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     const session = account.session();
     const botIds = botIdsOf(session, options.botLid);
     status = { phase: "online", chatTarget: gate.describe(), botIds };
-    yield* Effect.logInfo(`Ambience WhatsApp online as ${botIds.join(" / ")} — watching ${gate.describe()}`);
+    yield* Effect.sync(() =>
+      log.info(
+        {
+          operatorEvent: "agent.online",
+          detail: "managed chat connected",
+          botIds,
+          chatTarget: gate.describe(),
+        },
+        "Ambience WhatsApp online",
+      ),
+    );
     yield* runWhatsAppSession(session, { gate, history: archive, inbox, botLid: options.botLid });
   });
 

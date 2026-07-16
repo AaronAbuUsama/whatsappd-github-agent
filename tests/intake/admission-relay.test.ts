@@ -66,6 +66,8 @@ describe("Admission Relay", () => {
       acceptedAt: "2026-07-15T01:00:00.000Z",
     });
     expect(inbox.pendingWindows()).toEqual([]);
+    expect(inbox.windowForDispatch("dispatch-1")).toEqual(window);
+    expect(inbox.windowForDispatch("missing-dispatch")).toBeUndefined();
     archive.close();
   });
 

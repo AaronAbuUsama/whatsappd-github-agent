@@ -10,6 +10,7 @@ import { createIssueOperationStore } from "./capabilities/issue-management/opera
 import { installGitHubIngressRuntime } from "./github/ingress-runtime.js";
 import { createOctokitIssueRepository } from "./host/github-issue-repository.js";
 import { getWhatsAppRuntimeStatus, startWhatsAppRuntime } from "./host/whatsapp-runtime.js";
+import { installAgentActivityReporter } from "./logging/agent-activity-reporter.js";
 import {
   deferWhatsAppRuntimeStart,
   getManagedRuntimeDependencies,
@@ -24,6 +25,7 @@ export const createAmbientAgentApp = async ({
   githubCredential,
   paths,
 }: ManagedRuntimeDependencies): Promise<Hono> => {
+  installAgentActivityReporter();
   const subscription = await connectPiChatGptSubscription({ authentication });
   installGitHubIngressRuntime(
     {

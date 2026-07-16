@@ -46,10 +46,24 @@ describe("default output contract", () => {
     const logger = createRootLogger({ format: "pretty", consoleStream: sink.stream });
     logger.child({ subsystem: "whatsapp" }).info({ chatId: "chat@g.us" }, "WhatsApp reply sent");
     const [line] = sink.lines();
-    expect(line).toContain("[whatsapp] WhatsApp reply sent");
+    expect(line).toMatch(/^\d{1,2}:\d{2}:\d{2} [AP]M  › \[AGENT\] WhatsApp reply sent$/);
     expect(line).not.toMatch(/^\{/);
     expect(line).not.toContain("(#");
     expect(line).not.toContain("fiber");
+  });
+
+  it("routes semantic records through the flat operator renderer", () => {
+    const sink = capture();
+    const logger = createRootLogger({ format: "pretty", consoleStream: sink.stream });
+    logger.info(
+      { operatorEvent: "chat.received", actor: "Lavin UK", text: "What repos do you have access to" },
+      "Managed chat message received",
+    );
+
+    expect(sink.lines()[0]).toMatch(
+      /^\d{1,2}:\d{2}:\d{2} [AP]M  ← \[Lavin UK\] What repos do you have access to$/,
+    );
+    expect(sink.lines()[0]).not.toContain("operatorEvent");
   });
 
   it("suppresses debug records, including message bodies, by default", () => {

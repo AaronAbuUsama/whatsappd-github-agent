@@ -50,11 +50,29 @@ export const admitWindow = async (
           );
         }
         getLogger("intake").error(
-          { windowId: window.id, chatId: window.chatId, attempt, reason },
+          {
+            operatorEvent: "agent.failed",
+            detail: reason,
+            windowId: window.id,
+            chatId: window.chatId,
+            attempt,
+            reason,
+          },
           "Flue dispatch failed; the Window settled as failed",
         );
         throw cause;
       }
+      getLogger("intake").warn(
+        {
+          operatorEvent: "agent.retrying",
+          detail: `dispatch attempt ${attempt + 1} of ${Math.max(1, retry.attempts)}`,
+          windowId: window.id,
+          chatId: window.chatId,
+          attempt,
+          reason: errorMessage(cause),
+        },
+        "Retrying Ambience dispatch",
+      );
       await sleep(retry.delayMs(attempt));
     }
   }

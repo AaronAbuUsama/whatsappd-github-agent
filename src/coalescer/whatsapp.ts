@@ -30,17 +30,33 @@ const textOf = (msg: WaMessage): string => {
 };
 
 /**
- * Trace one inbound message as it arrives off the wire, with why-it-was-ignored
- * tags. Debug level only — message bodies never reach default output (ADR 0016).
+ * Report live accepted human messages to the operator feed. Self, history, and
+ * ignored traffic remains debug-only diagnostics so the normal feed has no
+ * duplicate Say echoes or replay noise (ADR 0016).
  */
-const logInbound = (msg: WaMessage, allowed: boolean): void => {
+const logInbound = (msg: WaMessage, allowed: boolean, accepted: boolean): void => {
+  const log = getLogger("whatsapp");
+  if (accepted && msg.live && !msg.fromMe) {
+    log.info(
+      {
+        operatorEvent: "chat.received",
+        actor: msg.pushName?.trim() || msg.from,
+        text: textOf(msg) || `[${msg.kind}]`,
+        chatId: msg.chatId,
+        messageId: msg.id,
+      },
+      "Managed chat message received",
+    );
+    return;
+  }
   const tags = [
     msg.fromMe ? "self" : null,
     !msg.live ? "history" : null,
     !allowed ? "ignored" : null,
+    allowed && !accepted ? "duplicate" : null,
     msg.context?.quoted ? "quote" : null,
   ].filter(Boolean);
-  getLogger("whatsapp").debug(
+  log.debug(
     {
       chatId: msg.chatId,
       from: msg.pushName ?? msg.from,
@@ -111,9 +127,12 @@ export const whatsappEventSource = (
       const queue = yield* Queue.unbounded<IncomingMessage>();
       const unsub = session.onMessage((msg) => {
         const allowed = allow(msg.chatId, msg.isGroup);
-        logInbound(msg, allowed);
-        if (!allowed) return;
+        if (!allowed) {
+          logInbound(msg, false, false);
+          return;
+        }
         const incoming = durable === undefined ? toIncoming(msg) : durable.accepted(msg);
+        logInbound(msg, true, incoming !== undefined);
         if (incoming === undefined) return;
         // Unbounded offer never suspends; the unsafe API preserves callback arrival order.
         Queue.offerUnsafe(queue, incoming);

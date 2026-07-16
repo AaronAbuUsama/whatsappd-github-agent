@@ -69,6 +69,7 @@ export interface ManagedChatInbox {
   pendingArrival(chatId: string, messageId: string): IncomingMessage | undefined;
   pendingWindows(): readonly ConversationWindow[];
   window(windowId: string): ConversationWindow | undefined;
+  windowForDispatch(dispatchId: string): ConversationWindow | undefined;
   createWindow(draft: ConversationWindowDraft): ConversationWindow;
   admission(windowId: string): WindowAdmission | undefined;
   admissions(status?: WindowAdmission["status"]): readonly WindowAdmission[];
@@ -161,6 +162,8 @@ const ensureAdmissionSchema = (database: DatabaseSync): void => {
   database.exec(`
     CREATE INDEX IF NOT EXISTS managed_chat_admissions_status_idx
       ON managed_chat_admissions(status, updated_at_ms, window_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS managed_chat_admissions_dispatch_idx
+      ON managed_chat_admissions(dispatch_id) WHERE dispatch_id IS NOT NULL;
   `);
 };
 
@@ -353,6 +356,13 @@ export const createManagedChatInbox = (
           .prepare("SELECT 1 AS present FROM managed_chat_windows WHERE window_id = ?")
           .get(windowId);
         return exists === undefined ? undefined : readWindow(database, windowId);
+      }),
+    windowForDispatch: (dispatchId) =>
+      archive.transaction(({ database }) => {
+        const row = database
+          .prepare("SELECT window_id FROM managed_chat_admissions WHERE dispatch_id = ? AND status = 'done'")
+          .get(dispatchId) as { readonly window_id: string } | undefined;
+        return row === undefined ? undefined : readWindow(database, row.window_id);
       }),
     createWindow: (draft) => {
       if (draft.messages.length === 0) throw new Error("A Managed Chat Window must contain at least one arrival.");
