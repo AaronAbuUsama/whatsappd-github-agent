@@ -1,14 +1,10 @@
-import { flue } from "@flue/runtime/routing";
-import { Hono } from "hono";
+import type { Hono } from "hono";
 
 import "./braintrust.js";
+import { composeAmbience } from "./ambience/compose.js";
 import { dispatchAmbience } from "./ambience/dispatch.js";
-import {
-  configureIssueManagementRuntime,
-  createIssueManagementPolicy,
-} from "./capabilities/issue-management/runtime.js";
+import { createIssueManagementPolicy } from "./capabilities/issue-management/runtime.js";
 import { createIssueOperationStore } from "./capabilities/issue-management/operation-store.js";
-import { installGitHubIngressRuntime } from "./github/ingress-runtime.js";
 import { createOctokitIssueRepository } from "./host/github-issue-repository.js";
 import {
   getWhatsAppRuntimeStatus,
@@ -34,41 +30,41 @@ export const createAmbientAgentApp = async ({
   installAgentActivityReporter();
   const subscription = await connectPiChatGptSubscription({ authentication });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
-  configureIssueManagementRuntime({
-    repository: createOctokitIssueRepository(githubCredential.token),
+  const installationId = runtimeInstallationId(githubCredential.webhookSecret);
+  let whatsappControl: WhatsAppRuntimeControl | undefined;
+  const app = composeAmbience({
+    issues: createOctokitIssueRepository(githubCredential.token),
     operations: issueOperations,
     policy: createIssueManagementPolicy(
       configuration.github.defaultRepository,
       configuration.github.allowedRepositories,
     ),
-  });
-  installGitHubIngressRuntime(
-    {
-      databasePath: paths.applicationDatabase,
-      routes: new Map([[configuration.github.defaultRepository.toLowerCase(), configuration.managedChats[0]!]]),
+    ingress: {
+      settings: {
+        databasePath: paths.applicationDatabase,
+        routes: new Map([[configuration.github.defaultRepository.toLowerCase(), configuration.managedChats[0]!]]),
+      },
+      dispatch: async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
     },
-    async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
-    issueOperations,
-  );
-
-  const app = new Hono();
-  const installationId = runtimeInstallationId(githubCredential.webhookSecret);
-  let whatsappControl: WhatsAppRuntimeControl | undefined;
-  app.get("/health", (context) => {
-    const runtime = ambientRuntimeHealth(getWhatsAppRuntimeStatus());
-    return context.json({
-      ok: runtime.state === "healthy",
-      installationId,
-      ...subscription,
-      runtime: { state: runtime.state, whatsapp: { phase: runtime.whatsapp.phase } },
-    });
+    // The WhatsApp participation port is wired later by runWhatsAppSession, once the
+    // live socket exists.
+    health: () => {
+      const runtime = ambientRuntimeHealth(getWhatsAppRuntimeStatus());
+      return {
+        ok: runtime.state === "healthy",
+        installationId,
+        ...subscription,
+        runtime: { state: runtime.state, whatsapp: { phase: runtime.whatsapp.phase } },
+      };
+    },
+    routes: (routes) => {
+      installSmokeRoute(routes, {
+        webhookSecret: githubCredential.webhookSecret,
+        canaryConfigured: configuration.smoke !== undefined,
+        control: () => whatsappControl,
+      });
+    },
   });
-  installSmokeRoute(app, {
-    webhookSecret: githubCredential.webhookSecret,
-    canaryConfigured: configuration.smoke !== undefined,
-    control: () => whatsappControl,
-  });
-  app.route("/", flue());
 
   // Deferred until the CLI observes a successful HTTP bind, so an occupied port
   // fails startup before WhatsApp ever connects (#87). For the instant between the

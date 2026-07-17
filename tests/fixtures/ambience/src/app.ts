@@ -1,29 +1,25 @@
 import type { Context } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { observe, registerProvider } from "@flue/runtime";
-import { flue } from "@flue/runtime/routing";
 import { Duration, Effect, Layer, Queue } from "effect";
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import { join } from "node:path";
 import type { IncomingMessage as WhatsAppMessage } from "whatsappd";
 
 import "../../../../src/braintrust.js";
+import { composeAmbience } from "../../../../src/ambience/compose.js";
 import { makeAmbienceWindowDispatcher, dispatchAmbience } from "../../../../src/ambience/dispatch.js";
 import type {
   IssueMilestone,
   IssueRepositoryOptions,
 } from "../../../../src/capabilities/issue-management/issue-repository.js";
 import { createIssueOperationStore } from "../../../../src/capabilities/issue-management/operation-store.js";
-import {
-  configureIssueManagementRuntime,
-  createIssueManagementPolicy,
-} from "../../../../src/capabilities/issue-management/runtime.js";
-import { configureWhatsAppParticipationPort } from "../../../../src/capabilities/whatsapp-participation/whatsapp-port.js";
+import { createIssueManagementPolicy } from "../../../../src/capabilities/issue-management/runtime.js";
 import * as Coalescer from "../../../../src/coalescer/coalescer.js";
 import { configLayer } from "../../../../src/coalescer/config.js";
 import type { CoalescerEvent, IncomingMessage } from "../../../../src/coalescer/events.js";
 import { queueEventSource } from "../../../../src/coalescer/mocks.js";
-import { installGitHubIngressRuntime } from "../../../../src/github/ingress-runtime.js";
+import type { GitHubIngressStore } from "../../../../src/github/ingress-store.js";
 import { createFakeIssueRepository } from "../../../support/fake-issue-repository.js";
 import { createFakeWhatsAppHost } from "../../../support/fake-whatsapp-host.js";
 import { createConversationArchive } from "../../../../src/intake/conversation-archive.js";
@@ -239,26 +235,7 @@ const applicationDatabase = process.env.APPLICATION_DB_PATH ?? join(process.cwd(
 const archive = createConversationArchive(applicationDatabase);
 const issueOperations = createIssueOperationStore(applicationDatabase);
 const fakeIssues = createFakeIssueRepository();
-configureIssueManagementRuntime({
-  repository: fakeIssues,
-  operations: issueOperations,
-  policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
-});
-const githubIngressStore = installGitHubIngressRuntime(
-  {
-    databasePath: applicationDatabase,
-    routes: new Map([["acme/widgets", "github-ingress-29@g.us"]]),
-  },
-  async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
-  issueOperations,
-);
 const source = await Effect.runPromise(Queue.unbounded<CoalescerEvent>());
-configureWhatsAppParticipationPort({
-  say: fakeWhatsApp.say,
-  react: fakeWhatsApp.react,
-  readThread: (chatId, limit) => archive.readThread(chatId, limit),
-  search: (chatId, query, limit) => archive.search(chatId, query, limit),
-});
 const inbox = createManagedChatInbox(archive, { allowed: () => true });
 let failAfterFlueAcceptance = false;
 Effect.runFork(
@@ -287,8 +264,6 @@ Effect.runFork(
   ),
 );
 
-const app = new Hono();
-app.get("/health", (context) => context.json({ ok: true }));
 const conversationEvent = (input: IncomingMessage) => {
   const archived = {
     ...input,
@@ -297,6 +272,28 @@ const conversationEvent = (input: IncomingMessage) => {
   } as WhatsAppMessage;
   return conversationArrival(archived);
 };
+const app = composeAmbience({
+  issues: fakeIssues,
+  operations: issueOperations,
+  policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
+  ingress: {
+    settings: {
+      databasePath: applicationDatabase,
+      routes: new Map([["acme/widgets", "github-ingress-29@g.us"]]),
+    },
+    dispatch: async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
+  },
+  participation: {
+    say: fakeWhatsApp.say,
+    react: fakeWhatsApp.react,
+    readThread: (chatId, limit) => archive.readThread(chatId, limit),
+    search: (chatId, query, limit) => archive.search(chatId, query, limit),
+  },
+  routes: (app, { githubIngress }) => {
+    installTestRoutes(app, githubIngress);
+  },
+});
+function installTestRoutes(app: Hono, githubIngressStore: GitHubIngressStore): void {
 app.post("/test/archive", async (context) => {
   archive.append(conversationEvent(await context.req.json<IncomingMessage>()));
   return context.body(null, 204);
@@ -365,6 +362,6 @@ app.post("/test/github/timeout-next-create", (context) => {
   return context.body(null, 204);
 });
 app.get("/test/model/recovery-pending", (context) => context.json({ markers: [...heldRecoveryMarkers] }));
-app.route("/", flue());
+}
 
 export default app;
