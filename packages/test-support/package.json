@@ -4,5 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Ambience test support: fake hosts and repositories, the eval harness, judges, and eval suites.",
-  "exports": {}
+  "exports": {},
+  "dependencies": {
+    "@flue/sdk": "1.0.0-beta.9",
+    "braintrust": "3.17.0",
+    "effect": "4.0.0-beta.98",
+    "vitest-evals": "0.14.0"
+  }
 }

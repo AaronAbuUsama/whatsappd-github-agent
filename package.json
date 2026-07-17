@@ -69,11 +69,8 @@
   },
   "devDependencies": {
     "@ambient-agent/agents": "workspace:*",
-    "@ambient-agent/cli": "workspace:*",
     "@ambient-agent/engine": "workspace:*",
     "@ambient-agent/installation": "workspace:*",
-    "@ambient-agent/server": "workspace:*",
-    "@ambient-agent/test-support": "workspace:*",
     "@changesets/cli": "2.31.0",
     "@effect/vitest": "4.0.0-beta.98",
     "@flue/cli": "1.0.0-beta.9",

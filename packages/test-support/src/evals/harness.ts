@@ -14,13 +14,13 @@ export interface FlueAgentHarnessOptions {
   headers?: Record<string, string>;
 }
 
-export interface FixtureHistorySeed {
+interface FixtureHistorySeed {
   scope: "current" | "other";
   text: string;
   chatId?: string;
 }
 
-export interface FixtureIssueMilestone {
+interface FixtureIssueMilestone {
   number: number;
   title: string;
   state: "open" | "closed";

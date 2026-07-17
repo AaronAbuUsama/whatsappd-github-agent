@@ -68,21 +68,12 @@ importers:
       '@ambient-agent/agents':
         specifier: workspace:*
         version: link:packages/agents
-      '@ambient-agent/cli':
-        specifier: workspace:*
-        version: link:apps/cli
       '@ambient-agent/engine':
         specifier: workspace:*
         version: link:packages/engine
       '@ambient-agent/installation':
         specifier: workspace:*
         version: link:packages/installation
-      '@ambient-agent/server':
-        specifier: workspace:*
-        version: link:apps/server
-      '@ambient-agent/test-support':
-        specifier: workspace:*
-        version: link:packages/test-support
       '@changesets/cli':
         specifier: 2.31.0
         version: 2.31.0(@types/node@22.20.1)
@@ -120,7 +111,17 @@ importers:
         specifier: 0.14.0
         version: 0.14.0(tinyrainbow@3.1.0)(vitest@4.1.10)(zod@4.4.3)
 
-  apps/cli: {}
+  apps/cli:
+    dependencies:
+      '@clack/prompts':
+        specifier: 1.7.0
+        version: 1.7.0
+      '@commander-js/extra-typings':
+        specifier: 15.0.0
+        version: 15.0.0(commander@15.0.0)
+      '@octokit/rest':
+        specifier: ^22.0.0
+        version: 22.0.1
 
   apps/server:
     dependencies:
@@ -161,13 +162,86 @@ importers:
         specifier: ^0.2.1
         version: 0.2.1(sharp@0.34.5)
 
-  packages/agents: {}
+  packages/agents:
+    dependencies:
+      '@flue/runtime':
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      effect:
+        specifier: 4.0.0-beta.98
+        version: 4.0.0-beta.98
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
+      pino:
+        specifier: ^10.3.1
+        version: 10.3.1
+      valibot:
+        specifier: 1.4.2
+        version: 1.4.2(typescript@5.9.3)
 
-  packages/engine: {}
+  packages/engine:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.80.2
+        version: 0.80.2(@modelcontextprotocol/sdk@1.29.0)(ws@8.21.0)(zod@4.4.3)
+      '@flue/github':
+        specifier: 1.0.0-beta.1
+        version: 1.0.0-beta.1
+      '@flue/runtime':
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      braintrust:
+        specifier: 3.17.0
+        version: 3.17.0(@aws-sdk/credential-provider-web-identity@3.972.63)(zod@4.4.3)
+      effect:
+        specifier: 4.0.0-beta.98
+        version: 4.0.0-beta.98
+      pino:
+        specifier: ^10.3.1
+        version: 10.3.1
+      pino-roll:
+        specifier: ^4.0.0
+        version: 4.0.0
+      valibot:
+        specifier: 1.4.2
+        version: 1.4.2(typescript@5.9.3)
+      whatsappd:
+        specifier: ^0.2.1
+        version: 0.2.1(sharp@0.34.5)
 
-  packages/installation: {}
+  packages/installation:
+    dependencies:
+      '@flue/runtime':
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
+      '@octokit/rest':
+        specifier: ^22.0.0
+        version: 22.0.1
+      pino:
+        specifier: ^10.3.1
+        version: 10.3.1
+      valibot:
+        specifier: 1.4.2
+        version: 1.4.2(typescript@5.9.3)
+      whatsappd:
+        specifier: ^0.2.1
+        version: 0.2.1(sharp@0.34.5)
 
-  packages/test-support: {}
+  packages/test-support:
+    dependencies:
+      '@flue/sdk':
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9
+      braintrust:
+        specifier: 3.17.0
+        version: 3.17.0(@aws-sdk/credential-provider-web-identity@3.972.63)(zod@4.4.3)
+      effect:
+        specifier: 4.0.0-beta.98
+        version: 4.0.0-beta.98
+      vitest-evals:
+        specifier: 0.14.0
+        version: 0.14.0(tinyrainbow@3.1.0)(vitest@4.1.10)(zod@4.4.3)
 
 packages:
 

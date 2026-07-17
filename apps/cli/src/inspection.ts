@@ -26,7 +26,7 @@ import { verifyGitHubRepositoryAccess } from "./setup/github.ts";
 import type { CliDependencies, CliOutput } from "./program.ts";
 import { renderInspection, type InspectionReport, type WindowDeliveryCounts } from "./rendering.ts";
 
-export type InspectionUncertainty =
+type InspectionUncertainty =
   | { readonly mode: "status" }
   | {
       readonly mode: "doctor";

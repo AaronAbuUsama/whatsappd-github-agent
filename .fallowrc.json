@@ -1,12 +1,45 @@
 {
   "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
-  "entry": ["src/app.ts"],
+  "entry": [
+    "apps/server/src/app.ts",
+    "packages/test-support/src/evals/*.eval.ts",
+    "vitest.evals.config.ts",
+    "tests/fixtures/packed-oauth-fetch.cjs",
+    "apps/server/src/agents/**/*.ts",
+    "apps/server/src/channels/**/*.ts"
+  ],
   "framework": [
     {
       "name": "flue-agent-modules",
-      "enablers": ["@flue/runtime"],
-      "usedExports": [{ "pattern": "src/agents/**/*.ts", "exports": ["description"] }]
+      "enablers": [
+        "@flue/runtime"
+      ],
+      "toolingDependencies": [
+        "@earendil-works/pi-ai",
+        "@octokit/rest",
+        "braintrust",
+        "pino",
+        "pino-roll",
+        "valibot"
+      ],
+      "usedExports": [
+        {
+          "pattern": "apps/server/src/agents/**/*.ts",
+          "exports": [
+            "description",
+            "default"
+          ]
+        },
+        {
+          "pattern": "apps/server/src/db.ts",
+          "exports": [
+            "default"
+          ]
+        }
+      ]
     }
   ],
-  "ignoreDependencies": ["qrcode-terminal"]
+  "ignoreDependencies": [
+    "qrcode-terminal"
+  ]
 }

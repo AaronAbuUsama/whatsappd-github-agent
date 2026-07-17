@@ -92,8 +92,8 @@ export interface CliDependencies {
   readonly createNonce?: () => string;
 }
 
-export type { ImportRuntime, RuntimeLoggingOptions, StartRuntime } from "./lifecycle.ts";
-export type { InspectionReport, WindowDeliveryCounts } from "./rendering.ts";
+export type { ImportRuntime, StartRuntime } from "./lifecycle.ts";
+export type { WindowDeliveryCounts } from "./rendering.ts";
 
 const defaultOutput: CliOutput = {
   stdout: (text) => process.stdout.write(text),
@@ -195,6 +195,18 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     authenticationFor,
     operationSignal,
   });
+  const readyManagedPaths = async (verb: string): Promise<ManagedPaths> => {
+    const paths = managedPaths({ dataDirectory: program.opts().dataDir });
+    const inspection = await inspectManagedData({ dataDirectory: paths.root });
+    if (inspection.state !== "ready") {
+      throw new Error(
+        inspection.state === "absent"
+          ? "Ambient Agent is not configured; run ambient-agent init first."
+          : `Refusing to ${verb} ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
+      );
+    }
+    return paths;
+  };
 
   program
     .command("init")
@@ -248,16 +260,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .command("auth")
     .description("authenticate ChatGPT for an existing managed installation")
     .action(async () => {
-      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
-      const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state === "absent") {
-        throw new Error("Ambient Agent is not configured; run ambient-agent init first.");
-      }
-      if (inspection.state !== "ready") {
-        throw new Error(
-          `Refusing to authenticate against ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
-        );
-      }
+      const paths = await readyManagedPaths("authenticate against");
       // Fail before the device flow when the credential path can never persist a login.
       try {
         if (!(await lstat(paths.chatGptOAuthCredential)).isFile()) {
@@ -285,15 +288,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--port <port>", "foreground runtime HTTP port")
     .option("--github-token-file <path>", "replace the GitHub token from a private file")
     .action(async (options) => {
-      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
-      const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state !== "ready") {
-        throw new Error(
-          inspection.state === "absent"
-            ? "Ambient Agent is not configured; run ambient-agent init first."
-            : `Refusing to reconfigure ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
-        );
-      }
+      const paths = await readyManagedPaths("reconfigure");
       const currentConfig = await readManagedConfig(paths.config);
       const currentCredential = await readManagedGitHubCredential(paths.githubCredential);
       let selected = {
@@ -432,15 +427,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (component !== "whatsapp") {
         throw new Error(`Unknown repair component "${component}"; only whatsapp re-pairing is supported.`);
       }
-      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
-      const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state !== "ready") {
-        throw new Error(
-          inspection.state === "absent"
-            ? "Ambient Agent is not configured; run ambient-agent init first."
-            : `Refusing to repair components of ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
-        );
-      }
+      const paths = await readyManagedPaths("repair components of");
       if ((await inspectWhatsAppSession(paths)).state !== "re-pair-required") {
         throw new Error(
           "The managed WhatsApp store is already paired; nothing to repair. To pair a different account, unlink this device from the phone first (Linked devices), then run the repair again.",
@@ -512,15 +499,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       if (format !== undefined && format !== "pretty" && format !== "json") {
         throw new Error("The --log-format option must be pretty or json.");
       }
-      const paths = managedPaths({ dataDirectory: program.opts().dataDir });
-      const inspection = await inspectManagedData({ dataDirectory: paths.root });
-      if (inspection.state !== "ready") {
-        throw new Error(
-          inspection.state === "absent"
-            ? "Ambient Agent is not configured; run ambient-agent init first."
-            : `Refusing to start ${inspection.state} managed data at ${paths.root}; run ambient-agent doctor.`,
-        );
-      }
+      const paths = await readyManagedPaths("start");
       // Application schema migrations must run before diagnostics compare the
       // on-disk version with the current owned schema.
       migrateConversationArchiveSchema(paths.applicationDatabase);
