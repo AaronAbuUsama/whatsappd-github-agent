@@ -26,6 +26,7 @@ import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging
 import type { WhatsAppRuntimeStatus } from "../managed/runtime-health.js";
 import { errorMessage } from "../shared/errors.js";
 import { renderQr } from "../shared/qr.js";
+import { isGroupJid } from "../shared/whatsapp-jid.js";
 import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
 
 const isKnownTransportRejection = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
@@ -35,7 +36,6 @@ const deliveryFailure = (
   const deliveryError = errorMessage(cause);
   return { delivery: isKnownTransportRejection(deliveryError) ? "failed" : "unknown", deliveryError };
 };
-const isGroupJid = (chatId: string): boolean => chatId.endsWith("@g.us");
 const TYPING_LEAD_MS = 750;
 
 /** The sole real implementation behind Ambience's outbound participation tools. */

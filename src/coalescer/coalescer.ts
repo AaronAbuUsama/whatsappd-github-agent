@@ -89,31 +89,38 @@ const makeChatLoop = (
     // An event landed: buffer it, and either flush now (bot addressed) or keep
     // waiting. `burstStart` is the clock time of the burst's first event — the
     // cap is measured from it and carried unchanged through the whole burst.
+    // `messageCount` tracks buffered messages (excluding updates) incrementally,
+    // so capacity is an O(1) check instead of re-partitioning the whole buffer.
     const onEvent = (
       buffer: readonly CoalescerEvent[],
       burstStart: number,
+      messageCount: number,
       event: CoalescerEvent,
     ): Effect.Effect<never> => {
       const next = [...buffer, event];
-      return isConversationUpdate(event)
-        ? warm(next, burstStart)
-        : addressesBot(event, config.botIds)
-          ? fireAndReset(next, reasonOf(event, config.botIds))
-          : windowContents(next).messages.length >= capacity
+      if (isConversationUpdate(event)) return warm(next, burstStart, messageCount);
+      const messages = messageCount + 1;
+      return addressesBot(event, config.botIds)
+        ? fireAndReset(next, reasonOf(event, config.botIds))
+        : messages >= capacity
           ? fireAndReset(next, "capacity")
-          : warm(next, burstStart);
+          : warm(next, burstStart, messages);
     };
 
     // Cold: no buffered events. Block indefinitely for the burst's first event,
     // stamping `burstStart` from the clock the instant it arrives.
     const cold: Effect.Effect<never> = Queue.take(queue).pipe(
-      Effect.flatMap((event) => Clock.currentTimeMillis.pipe(Effect.flatMap((now) => onEvent([], now, event)))),
+      Effect.flatMap((event) => Clock.currentTimeMillis.pipe(Effect.flatMap((now) => onEvent([], now, 0, event)))),
     );
 
     // Warm: a burst is accumulating. Wait for the next event, but give up when the
     // chat goes quiet (`debounceWindow`) OR the cap elapses (`maxWait` since
     // `burstStart`), whichever comes first — then fire and start a fresh burst.
-    const warm = (buffer: readonly CoalescerEvent[], burstStart: number): Effect.Effect<never> =>
+    const warm = (
+      buffer: readonly CoalescerEvent[],
+      burstStart: number,
+      messageCount: number,
+    ): Effect.Effect<never> =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap((now) => {
           const capLeft = Math.max(0, burstStart + maxWaitMillis - now);
@@ -123,7 +130,7 @@ const makeChatLoop = (
             Effect.flatMap(
               Option.match({
                 onNone: () => fireAndReset(buffer, capLeft <= debounceMillis ? "maximum-wait" : "debounce"),
-                onSome: (event) => onEvent(buffer, burstStart, event),
+                onSome: (event) => onEvent(buffer, burstStart, messageCount, event),
               }),
             ),
           );

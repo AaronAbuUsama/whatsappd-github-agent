@@ -3,19 +3,27 @@ import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  coalescerEventId,
   type CoalescerEvent,
   type ConversationUpdate,
   type ConversationWindow,
   type ConversationWindowDraft,
   type FireReason,
   type IncomingMessage,
-  isConversationUpdate,
   windowContents,
 } from "../coalescer/events.js";
 import { Effect, Layer } from "effect";
 import { WindowStore, WindowStoreError } from "../coalescer/ports.js";
+import { isGroupJid } from "../shared/whatsapp-jid.js";
 import type { ConversationArchive } from "./conversation-archive.js";
-import type { ConversationArrival, ConversationArrivalPayload, ConversationEvent } from "./conversation-event.js";
+import type {
+  ConversationArrival,
+  ConversationArrivalPayload,
+  ConversationEdit,
+  ConversationEvent,
+  ConversationReaction,
+  ConversationRevocation,
+} from "./conversation-event.js";
 
 interface InboxEventRow {
   event_id: string;
@@ -92,9 +100,6 @@ export interface CreateManagedChatInboxOptions {
   readonly now?: () => number;
 }
 
-const eventIdOf = (event: CoalescerEvent): string =>
-  isConversationUpdate(event) ? event.id : `arrival:${event.chatId}:${event.id}`;
-
 const decodeIncoming = (row: InboxEventRow): IncomingMessage => {
   const payload = JSON.parse(row.payload_json) as ConversationArrivalPayload;
   const applicationCanary = payload.applicationAdmission === "smoke-canary";
@@ -113,17 +118,32 @@ const decodeIncoming = (row: InboxEventRow): IncomingMessage => {
   };
 };
 
-const decodeUpdate = (row: InboxEventRow): ConversationUpdate => ({
-  id: row.event_id,
-  kind: row.kind,
-  providerMessageId: row.provider_message_id,
-  chatId: row.chat_id,
-  ...(row.sender_id === null ? {} : { senderId: row.sender_id }),
-  ...(row.sender_name === null ? {} : { senderName: row.sender_name }),
-  direction: row.direction,
-  occurredAt: row.occurred_at_ms,
-  payload: JSON.parse(row.payload_json) as ConversationUpdate["payload"],
-}) as ConversationUpdate;
+const decodeUpdate = (row: InboxEventRow): ConversationUpdate => {
+  const base = {
+    id: row.event_id,
+    providerMessageId: row.provider_message_id,
+    chatId: row.chat_id,
+    ...(row.sender_id === null ? {} : { senderId: row.sender_id }),
+    ...(row.sender_name === null ? {} : { senderName: row.sender_name }),
+    direction: row.direction,
+    occurredAt: row.occurred_at_ms,
+  } as const;
+  switch (row.kind) {
+    case "edit":
+      return { ...base, kind: "edit", payload: JSON.parse(row.payload_json) as ConversationEdit["payload"] };
+    case "reaction":
+      return { ...base, kind: "reaction", payload: JSON.parse(row.payload_json) as ConversationReaction["payload"] };
+    case "revocation":
+      return {
+        ...base,
+        kind: "revocation",
+        payload: JSON.parse(row.payload_json) as ConversationRevocation["payload"],
+      };
+    case "arrival":
+    case "receipt":
+      throw new Error(`Managed Chat Inbox row ${row.event_id} has kind "${row.kind}", which is never windowed.`);
+  }
+};
 
 const decodeCoalescerEvent = (row: InboxEventRow): CoalescerEvent =>
   row.kind === "arrival" ? decodeIncoming(row) : decodeUpdate(row);
@@ -141,7 +161,7 @@ const acceptedUpdate = (
   event: ConversationEvent,
   allowed: CreateManagedChatInboxOptions["allowed"],
 ): event is ConversationUpdate =>
-  event.kind !== "arrival" && event.kind !== "receipt" && allowed(event.chatId, event.chatId.endsWith("@g.us"));
+  event.kind !== "arrival" && event.kind !== "receipt" && allowed(event.chatId, isGroupJid(event.chatId));
 
 const admissionTable = `
   CREATE TABLE managed_chat_admissions (
@@ -369,7 +389,7 @@ export const createManagedChatInbox = (
               JOIN conversation_events e ON e.event_id = i.event_id
              WHERE i.event_id = ? AND i.window_id IS NULL
           `)
-          .get(eventIdOf(event)) as unknown as InboxEventRow | undefined;
+          .get(coalescerEventId(event)) as unknown as InboxEventRow | undefined;
         return row === undefined ? undefined : decodeCoalescerEvent(row);
       }),
     pendingWindows: () =>
@@ -407,7 +427,7 @@ export const createManagedChatInbox = (
       if (events.some(({ chatId }) => chatId !== draft.chatId)) {
         throw new Error("A Managed Chat Window cannot mix chats.");
       }
-      const eventIds = events.map(eventIdOf);
+      const eventIds = events.map(coalescerEventId);
       return archive.transaction(({ database }) => {
         const selectAssignment = database.prepare(
           "SELECT event_id, window_id FROM managed_chat_inbox WHERE event_id = ?",
@@ -421,7 +441,7 @@ export const createManagedChatInbox = (
         const assigned = new Set(assignments.map((assignment) => assignment!.window_id).filter(Boolean));
         if (assigned.size === 1 && assignments.every((assignment) => assignment!.window_id !== null)) {
           const existing = readWindow(database, [...assigned][0]!);
-          const existingEventIds = [...existing.messages, ...existing.updates].map(eventIdOf);
+          const existingEventIds = [...existing.messages, ...existing.updates].map(coalescerEventId);
           const expected = new Set(eventIds);
           if (
             existingEventIds.length === eventIds.length &&

@@ -47,6 +47,10 @@ export type CoalescerEvent = IncomingMessage | ConversationUpdate;
 
 export const isConversationUpdate = (event: CoalescerEvent): event is ConversationUpdate => "kind" in event;
 
+/** The `conversation_events`/`managed_chat_inbox` identity of a Coalescer event. */
+export const coalescerEventId = (event: CoalescerEvent): string =>
+  isConversationUpdate(event) ? event.id : `arrival:${event.chatId}:${event.id}`;
+
 /** Why the Coalescer fired: an ambient burst settled, or the bot was addressed. */
 export type FireReason = "debounce" | "maximum-wait" | "capacity" | "mention" | "quote-reply";
 

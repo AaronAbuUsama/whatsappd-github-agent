@@ -11,12 +11,8 @@ import { Effect, Layer, Queue, Stream } from "effect";
 import { type IncomingMessage as WaMessage, type Update, type WhatsAppSession } from "whatsappd";
 import { conversationUpdate } from "../intake/conversation-event.ts";
 import { getLogger } from "../logging/logging.ts";
-import {
-  type CoalescerEvent,
-  type ConversationUpdate,
-  type IncomingMessage,
-  isConversationUpdate,
-} from "./events.ts";
+import { isGroupJid } from "../shared/whatsapp-jid.ts";
+import { coalescerEventId, type CoalescerEvent, type ConversationUpdate, type IncomingMessage } from "./events.ts";
 import { EventSource } from "./ports.ts";
 
 /** Plain-text body of an inbound message (media captions included; non-text → ""). */
@@ -121,9 +117,6 @@ const toUpdate = (update: Update): ConversationUpdate | undefined => {
   return event.kind === "receipt" ? undefined : event;
 };
 
-const eventId = (event: CoalescerEvent): string =>
-  isConversationUpdate(event) ? event.id : `arrival:${event.chatId}:${event.id}`;
-
 /**
  * EventSource over `session.onMessage` and `session.onUpdate`. Events are pushed
  * onto an unbounded queue (WhatsApp's inbound rate is low) and surfaced as a
@@ -154,17 +147,19 @@ export const whatsappEventSource = (
       });
       const unsubUpdate = session.onUpdate((raw) => {
         const update = toUpdate(raw);
-        if (update === undefined || !allow(update.chatId, update.chatId.endsWith("@g.us"))) return;
+        if (update === undefined || !allow(update.chatId, isGroupJid(update.chatId))) return;
         const accepted = durable === undefined ? update : durable.accepted(update);
         if (accepted !== undefined) Queue.offerUnsafe(queue, accepted);
       });
-      yield* Effect.addFinalizer(() => Effect.sync(() => {
-        unsubUpdate();
-        unsubMessage();
-      }));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unsubUpdate();
+          unsubMessage();
+        }),
+      );
       const replay = durable?.replay() ?? [];
-      const replayOverlap = new Set(replay.map(eventId));
-      const isNotReplayOverlap = (event: CoalescerEvent): boolean => !replayOverlap.delete(eventId(event));
+      const replayOverlap = new Set(replay.map(coalescerEventId));
+      const isNotReplayOverlap = (event: CoalescerEvent): boolean => !replayOverlap.delete(coalescerEventId(event));
       return {
         events: Stream.concat(
           Stream.fromIterable(replay),
