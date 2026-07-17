@@ -5,7 +5,7 @@ import {
   discoverOriginRepository,
   normalizeGitHubRepository,
   verifyGitHubRepositoryAccess,
-} from "../../src/setup/github.ts";
+} from "@ambient-agent/cli/setup/github.ts";
 
 describe("first-run GitHub discovery", () => {
   it.each([

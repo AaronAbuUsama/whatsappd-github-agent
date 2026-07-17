@@ -65,6 +65,9 @@ importers:
         specifier: ^0.2.1
         version: 0.2.1(sharp@0.34.5)
     devDependencies:
+      '@ambient-agent/cli':
+        specifier: workspace:*
+        version: link:apps/cli
       '@ambient-agent/core':
         specifier: workspace:*
         version: link:packages/core
@@ -110,6 +113,8 @@ importers:
       vitest-evals:
         specifier: 0.14.0
         version: 0.14.0(tinyrainbow@3.1.0)(vitest@4.1.10)(zod@4.4.3)
+
+  apps/cli: {}
 
   packages/core:
     dependencies:

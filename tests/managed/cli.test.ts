@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { runCli, type CliOutput } from "../../src/cli/program.ts";
+import { runCli, type CliOutput } from "@ambient-agent/cli/program.ts";
 import { inspectManagedData } from "@ambient-agent/core/managed/installation.ts";
 import { deferWhatsAppRuntimeStart, getManagedRuntimeDependencies } from "@ambient-agent/core/managed/runtime-dependencies.ts";
 import { managedPaths, type ManagedPaths } from "@ambient-agent/core/managed/paths.ts";

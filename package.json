@@ -68,6 +68,7 @@
     "whatsappd": "^0.2.1"
   },
   "devDependencies": {
+    "@ambient-agent/cli": "workspace:*",
     "@ambient-agent/core": "workspace:*",
     "@ambient-agent/server": "workspace:*",
     "@ambient-agent/test-support": "workspace:*",

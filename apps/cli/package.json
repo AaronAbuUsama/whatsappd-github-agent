@@ -1,0 +1,10 @@
+{
+  "name": "@ambient-agent/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ambient Agent CLI application: init/auth/config/repair/start/status/doctor/smoke and the first-run setup. Bundled by vp pack into the published ambient-agent bin.",
+  "exports": {
+    "./*": "./src/*"
+  }
+}

@@ -22,7 +22,7 @@ import {
   runChatGptReadinessCheck,
   type ChatGptReadinessReceipt,
 } from "@ambient-agent/core/model/pi-subscription.ts";
-import { verifyGitHubRepositoryAccess } from "../setup/github.js";
+import { verifyGitHubRepositoryAccess } from "./setup/github.js";
 import type { CliDependencies, CliOutput } from "./program.js";
 import { renderInspection, type InspectionReport, type WindowDeliveryCounts } from "./rendering.js";
 

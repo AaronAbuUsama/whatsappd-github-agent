@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { Command, CommanderError } from "@commander-js/extra-typings";
-import packageManifest from "../../package.json" with { type: "json" };
+import packageManifest from "../../../package.json" with { type: "json" };
 
 import { upstreamWhatsAppLogger } from "@ambient-agent/core/logging/logging.ts";
 import {
@@ -40,8 +40,8 @@ import {
   discoverOriginRepository,
   normalizeGitHubRepository,
   verifyGitHubRepositoryAccess,
-} from "../setup/github.js";
-import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
+} from "./setup/github.js";
+import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "./setup/first-run.js";
 import { createWhatsAppAccount } from "@ambient-agent/core/whatsapp/account.ts";
 import { createConversationArchive, migrateConversationArchiveSchema } from "@ambient-agent/core/intake/conversation-archive.ts";
 import { createDeviceCodeCallbacks, createWhatsAppCallbacks, defaultSetupPrompts, type SetupPrompts } from "./prompts.js";

@@ -79,7 +79,7 @@ describe("the post-Eve production cut", () => {
     expect(runtime).toContain("makeAmbienceWindowDispatcher");
 
     const files = (
-      await Promise.all(["src", "packages/core/src", "packages/server/src"].map(sourceFiles))
+      await Promise.all(["apps/cli/src", "packages/core/src", "packages/server/src"].map(sourceFiles))
     ).flat();
     const productionSource = await Promise.all(
       files.map(async (relativePath) => ({
@@ -97,11 +97,11 @@ describe("the post-Eve production cut", () => {
   it("keeps the workspace boundaries: core imports no sibling, cli and server meet only via the handshake", async () => {
     const boundaries: ReadonlyArray<readonly [string, RegExp]> = [
       // core is the foundation: it must never import the application, server, or test support
-      ["packages/core/src", /@ambient-agent\/(?:server|test-support)|from ["'][^"']*\/(?:cli|setup)\//],
+      ["packages/core/src", /@ambient-agent\/(?:cli|server|test-support)/],
       // the CLI application never imports the server package (globalThis handshake only)
-      ["src", /@ambient-agent\/(?:server|test-support)/],
+      ["apps/cli/src", /@ambient-agent\/(?:server|test-support)/],
       // the server never imports the CLI application or test support
-      ["packages/server/src", /@ambient-agent\/test-support|from ["'][^"']*\/(?:cli|setup)\//],
+      ["packages/server/src", /@ambient-agent\/(?:cli|test-support)/],
     ];
     for (const [directory, forbidden] of boundaries) {
       for (const relativePath of await sourceFiles(directory)) {

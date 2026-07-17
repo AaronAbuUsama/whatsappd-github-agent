@@ -1,7 +1,7 @@
 import * as prompts from "@clack/prompts";
 
 import type { DeviceCodeCallbacks } from "@ambient-agent/core/model/chatgpt-authentication.ts";
-import type { FirstRunPrompts, SetupReview } from "../setup/first-run.js";
+import type { FirstRunPrompts, SetupReview } from "./setup/first-run.js";
 import { renderQr } from "@ambient-agent/core/shared/qr.ts";
 import type { CliOutput } from "./program.js";
 

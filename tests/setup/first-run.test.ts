@@ -10,7 +10,7 @@ import {
   type FirstRunPrompts,
   type FirstRunServices,
   type SetupReview,
-} from "../../src/setup/first-run.ts";
+} from "@ambient-agent/cli/setup/first-run.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
