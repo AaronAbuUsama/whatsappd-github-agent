@@ -1,10 +1,10 @@
-import type { ConversationArchive } from "../../src/intake/conversation-archive.ts";
+import type { ConversationArchive } from "@ambient-agent/core/intake/conversation-archive.ts";
 import {
   createManagedChatInbox,
   type CreateManagedChatInboxOptions,
   type ManagedChatInbox,
   type WindowAdmission,
-} from "../../src/intake/managed-chat-inbox.ts";
+} from "@ambient-agent/core/intake/managed-chat-inbox.ts";
 
 export type TestManagedChatInbox = ManagedChatInbox & {
   admission(windowId: string): WindowAdmission | undefined;

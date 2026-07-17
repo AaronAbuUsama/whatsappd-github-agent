@@ -1,6 +1,6 @@
 import { defineAgent, type AgentRouteHandler } from "@flue/runtime";
 
-import { AMBIENCE_MODEL_SPECIFIER } from "../../../../../src/model/pi-subscription.js";
+import { AMBIENCE_MODEL_SPECIFIER } from "@ambient-agent/core/model/pi-subscription.ts";
 
 export const description = "Fixture-only LLM judge for the ratified Ambience participation rubric.";
 

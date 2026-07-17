@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { makeManagedChatGate } from "../../src/coalescer/chat-gate.ts";
+import { makeManagedChatGate } from "@ambient-agent/core/coalescer/chat-gate.ts";
 
 describe("typed managed chat gate", () => {
   it("admits only exact configured group and direct-chat JIDs", () => {

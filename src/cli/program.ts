@@ -4,37 +4,37 @@ import { resolve } from "node:path";
 import { Command, CommanderError } from "@commander-js/extra-typings";
 import packageManifest from "../../package.json" with { type: "json" };
 
-import { upstreamWhatsAppLogger } from "../logging/logging.js";
+import { upstreamWhatsAppLogger } from "@ambient-agent/core/logging/logging.ts";
 import {
   acquireSetupLock,
   inspectManagedData,
   promoteReplacementWhatsAppStore,
   releaseSetupLock,
-} from "../managed/installation.js";
-import { createManagedChatGptAuthentication } from "../managed/chatgpt-authentication.js";
+} from "@ambient-agent/core/managed/installation.ts";
+import { createManagedChatGptAuthentication } from "@ambient-agent/core/managed/chatgpt-authentication.ts";
 import {
   readManagedConfig,
   readManagedGitHubCredential,
   writeManagedConfiguration,
-} from "../managed/configuration.js";
-import { inspectManagedServices, inspectWhatsAppSession } from "../managed/diagnostics.js";
-import { migrateLegacyManagedData, type ManagedDataMigration } from "../managed/migration.js";
-import { managedPaths, type ManagedPaths } from "../managed/paths.js";
+} from "@ambient-agent/core/managed/configuration.ts";
+import { inspectManagedServices, inspectWhatsAppSession } from "@ambient-agent/core/managed/diagnostics.ts";
+import { migrateLegacyManagedData, type ManagedDataMigration } from "@ambient-agent/core/managed/migration.ts";
+import { managedPaths, type ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
 import {
   probeAmbientRuntimeHealth,
   runtimeInstallationId,
   type AmbientRuntimeHealth,
-} from "../managed/runtime-health.js";
+} from "@ambient-agent/core/managed/runtime-health.ts";
 import {
   type UncertainWorkController,
   type UncertainWorkRef,
   type UncertainWorkStatus,
-} from "../managed/uncertain-work.js";
+} from "@ambient-agent/core/managed/uncertain-work.ts";
 import {
   type ChatGptOAuthAdapter,
   type ChatGptAuthentication,
-} from "../model/chatgpt-authentication.js";
-import type { ChatGptReadinessReceipt } from "../model/pi-subscription.js";
+} from "@ambient-agent/core/model/chatgpt-authentication.ts";
+import type { ChatGptReadinessReceipt } from "@ambient-agent/core/model/pi-subscription.ts";
 import {
   discoverGitHubCredential,
   discoverOriginRepository,
@@ -42,8 +42,8 @@ import {
   verifyGitHubRepositoryAccess,
 } from "../setup/github.js";
 import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "../setup/first-run.js";
-import { createWhatsAppAccount } from "../whatsapp/account.js";
-import { createConversationArchive, migrateConversationArchiveSchema } from "../intake/conversation-archive.js";
+import { createWhatsAppAccount } from "@ambient-agent/core/whatsapp/account.ts";
+import { createConversationArchive, migrateConversationArchiveSchema } from "@ambient-agent/core/intake/conversation-archive.ts";
 import { createDeviceCodeCallbacks, createWhatsAppCallbacks, defaultSetupPrompts, type SetupPrompts } from "./prompts.js";
 import {
   parseRuntimePort,

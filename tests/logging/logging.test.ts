@@ -13,7 +13,7 @@ import {
   getLogger,
   upstreamWhatsAppLogger,
   type Logger,
-} from "../../src/logging/logging.ts";
+} from "@ambient-agent/core/logging/logging.ts";
 
 const LOGGING_ROOT = Symbol.for("ambient-agent.logging-root");
 const loggingGlobal = globalThis as typeof globalThis & { [LOGGING_ROOT]?: Logger };

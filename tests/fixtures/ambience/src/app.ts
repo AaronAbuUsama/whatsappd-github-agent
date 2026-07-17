@@ -6,28 +6,28 @@ import type { Hono } from "hono";
 import { join } from "node:path";
 import type { IncomingMessage as WhatsAppMessage } from "whatsappd";
 
-import "../../../../src/braintrust.js";
-import { composeAmbience } from "../../../../src/ambience/compose.js";
-import { makeAmbienceWindowDispatcher, dispatchAmbience } from "../../../../src/ambience/dispatch.js";
+import "@ambient-agent/core/braintrust.ts";
+import { composeAmbience } from "@ambient-agent/core/ambience/compose.ts";
+import { makeAmbienceWindowDispatcher, dispatchAmbience } from "@ambient-agent/core/ambience/dispatch.ts";
 import type {
   IssueMilestone,
   IssueRepositoryOptions,
-} from "../../../../src/capabilities/issue-management/issue-repository.js";
-import { createIssueOperationStore } from "../../../../src/capabilities/issue-management/operation-store.js";
-import { createIssueManagementPolicy } from "../../../../src/capabilities/issue-management/runtime.js";
-import * as Coalescer from "../../../../src/coalescer/coalescer.js";
-import { configLayer } from "../../../../src/coalescer/config.js";
-import type { CoalescerEvent, IncomingMessage } from "../../../../src/coalescer/events.js";
-import { queueEventSource } from "../../../../src/coalescer/mocks.js";
-import type { GitHubIngressStore } from "../../../../src/github/ingress-store.js";
-import { createFakeIssueRepository } from "../../../support/fake-issue-repository.js";
-import { createFakeWhatsAppHost } from "../../../support/fake-whatsapp-host.js";
-import { createConversationArchive } from "../../../../src/intake/conversation-archive.js";
-import { conversationArrival } from "../../../../src/intake/conversation-event.js";
-import { createManagedChatInbox, managedChatWindowStore } from "../../../../src/intake/managed-chat-inbox.js";
-import { createManagedChatGptAuthentication } from "../../../../src/managed/chatgpt-authentication.js";
-import { managedPaths } from "../../../../src/managed/paths.js";
-import { connectPiChatGptSubscription } from "../../../../src/model/pi-subscription.js";
+} from "@ambient-agent/core/capabilities/issue-management/issue-repository.ts";
+import { createIssueOperationStore } from "@ambient-agent/core/capabilities/issue-management/operation-store.ts";
+import { createIssueManagementPolicy } from "@ambient-agent/core/capabilities/issue-management/runtime.ts";
+import * as Coalescer from "@ambient-agent/core/coalescer/coalescer.ts";
+import { configLayer } from "@ambient-agent/core/coalescer/config.ts";
+import type { CoalescerEvent, IncomingMessage } from "@ambient-agent/core/coalescer/events.ts";
+import { queueEventSource } from "@ambient-agent/core/coalescer/mocks.ts";
+import type { GitHubIngressStore } from "@ambient-agent/core/github/ingress-store.ts";
+import { createFakeIssueRepository } from "@ambient-agent/test-support/fake-issue-repository.ts";
+import { createFakeWhatsAppHost } from "@ambient-agent/test-support/fake-whatsapp-host.ts";
+import { createConversationArchive } from "@ambient-agent/core/intake/conversation-archive.ts";
+import { conversationArrival } from "@ambient-agent/core/intake/conversation-event.ts";
+import { createManagedChatInbox, managedChatWindowStore } from "@ambient-agent/core/intake/managed-chat-inbox.ts";
+import { createManagedChatGptAuthentication } from "@ambient-agent/core/managed/chatgpt-authentication.ts";
+import { managedPaths } from "@ambient-agent/core/managed/paths.ts";
+import { connectPiChatGptSubscription } from "@ambient-agent/core/model/pi-subscription.ts";
 
 const liveModel = process.env.AMBIENCE_FIXTURE_LIVE_MODEL === "true";
 const provider = liveModel ? undefined : registerFauxProvider({ provider: "ambience-fixture" });

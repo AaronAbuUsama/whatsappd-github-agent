@@ -4,8 +4,8 @@ import { join } from "node:path";
 import type { InboundMessage, Update } from "whatsappd";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { createConversationArchive } from "../../src/intake/conversation-archive.ts";
-import { conversationArrival, conversationUpdate } from "../../src/intake/conversation-event.ts";
+import { createConversationArchive } from "@ambient-agent/core/intake/conversation-archive.ts";
+import { conversationArrival, conversationUpdate } from "@ambient-agent/core/intake/conversation-event.ts";
 
 const roots: string[] = [];
 

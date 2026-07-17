@@ -1,25 +1,25 @@
 import type { Hono } from "hono";
 
-import "./braintrust.js";
-import { composeAmbience } from "./ambience/compose.js";
-import { dispatchAmbience } from "./ambience/dispatch.js";
-import { createIssueManagementPolicy } from "./capabilities/issue-management/runtime.js";
-import { createIssueOperationStore } from "./capabilities/issue-management/operation-store.js";
-import { createOctokitIssueRepository } from "./host/github-issue-repository.js";
+import "@ambient-agent/core/braintrust.ts";
+import { composeAmbience } from "@ambient-agent/core/ambience/compose.ts";
+import { dispatchAmbience } from "@ambient-agent/core/ambience/dispatch.ts";
+import { createIssueManagementPolicy } from "@ambient-agent/core/capabilities/issue-management/runtime.ts";
+import { createIssueOperationStore } from "@ambient-agent/core/capabilities/issue-management/operation-store.ts";
+import { createOctokitIssueRepository } from "@ambient-agent/core/host/github-issue-repository.ts";
 import {
   getWhatsAppRuntimeStatus,
   startWhatsAppRuntime,
   type WhatsAppRuntimeControl,
 } from "./host/whatsapp-runtime.js";
 import { installSmokeRoute } from "./host/smoke-route.js";
-import { installAgentActivityReporter } from "./logging/agent-activity-reporter.js";
+import { installAgentActivityReporter } from "@ambient-agent/core/logging/agent-activity-reporter.ts";
 import {
   deferWhatsAppRuntimeStart,
   getManagedRuntimeDependencies,
   type ManagedRuntimeDependencies,
-} from "./managed/runtime-dependencies.js";
-import { ambientRuntimeHealth, runtimeInstallationId } from "./managed/runtime-health.js";
-import { connectPiChatGptSubscription } from "./model/pi-subscription.js";
+} from "@ambient-agent/core/managed/runtime-dependencies.ts";
+import { ambientRuntimeHealth, runtimeInstallationId } from "@ambient-agent/core/managed/runtime-health.ts";
+import { connectPiChatGptSubscription } from "@ambient-agent/core/model/pi-subscription.ts";
 
 export const createAmbientAgentApp = async ({
   authentication,

@@ -34,7 +34,7 @@
   "scripts": {
     "dev": "pnpm run build && pnpm start",
     "build": "pnpm run build:server && pnpm run build:cli",
-    "build:server": "flue build --target node",
+    "build:server": "flue build --target node --root packages/server --output dist",
     "build:cli": "vp pack",
     "changeset": "changeset",
     "prepack": "pnpm run build",
@@ -68,6 +68,9 @@
     "whatsappd": "^0.2.1"
   },
   "devDependencies": {
+    "@ambient-agent/core": "workspace:*",
+    "@ambient-agent/server": "workspace:*",
+    "@ambient-agent/test-support": "workspace:*",
     "@changesets/cli": "2.31.0",
     "@effect/vitest": "4.0.0-beta.98",
     "@flue/cli": "1.0.0-beta.9",

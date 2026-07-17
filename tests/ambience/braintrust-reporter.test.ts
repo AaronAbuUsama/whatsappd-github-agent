@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { recordRubricScore } from "../../src/evals/braintrust-reporter.ts";
+import { recordRubricScore } from "@ambient-agent/test-support/evals/braintrust-reporter.ts";
 
 const record = (metric: string, threshold: number, direction: "minimum" | "maximum" = "minimum") =>
   recordRubricScore({

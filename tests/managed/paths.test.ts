@@ -5,7 +5,7 @@ import {
   managedPaths,
   resolveLegacyManagedDataDirectory,
   resolveManagedDataDirectory,
-} from "../../src/managed/paths.ts";
+} from "@ambient-agent/core/managed/paths.ts";
 
 describe("managed data paths", () => {
   it("uses ~/.ambient-agent on macOS and Linux, ignoring XDG_DATA_HOME", () => {

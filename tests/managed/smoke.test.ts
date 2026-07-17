@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { smokeStations } from "../../src/cli/smoke.ts";
 import type { InspectionReport } from "../../src/cli/rendering.ts";
-import type { ManagedPaths } from "../../src/managed/paths.ts";
+import type { ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
 
 const paths = {
   root: "/missing",

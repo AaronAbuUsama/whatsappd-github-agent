@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { ensureManagedGitHubWebhookSecret, writeManagedConfiguration } from "../../src/managed/configuration.ts";
+import { ensureManagedGitHubWebhookSecret, writeManagedConfiguration } from "@ambient-agent/core/managed/configuration.ts";
 
 const roots: string[] = [];
 afterEach(async () => await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));

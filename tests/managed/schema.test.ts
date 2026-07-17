@@ -6,7 +6,7 @@ import {
   GitHubCredentialSchema,
   ManagedConfigSchema,
   createManagedConfig,
-} from "../../src/managed/schema.ts";
+} from "@ambient-agent/core/managed/schema.ts";
 
 describe("managed schemas", () => {
   it("accepts supported managed-chat JIDs and normalizes surrounding whitespace", () => {

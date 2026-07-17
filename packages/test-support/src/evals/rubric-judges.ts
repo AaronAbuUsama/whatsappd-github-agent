@@ -5,8 +5,8 @@ import { createJudge, createJudgeHarness, type JudgeResult } from "vitest-evals"
 import { recordRubricScore } from "./braintrust-reporter.ts";
 import type { FlueAgentEvalInput, FlueAgentEvalOutput } from "./harness.ts";
 
-const whatsappSkill = readFileSync(new URL("../capabilities/whatsapp-participation/SKILL.md", import.meta.url), "utf8");
-const issueSkill = readFileSync(new URL("../capabilities/issue-management/SKILL.md", import.meta.url), "utf8");
+const whatsappSkill = readFileSync(new URL("../../../core/src/capabilities/whatsapp-participation/SKILL.md", import.meta.url), "utf8");
+const issueSkill = readFileSync(new URL("../../../core/src/capabilities/issue-management/SKILL.md", import.meta.url), "utf8");
 const skillBundle = [whatsappSkill, issueSkill].join("\n\n---\n\n");
 
 const client = createFlueClient({

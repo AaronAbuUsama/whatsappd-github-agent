@@ -1,6 +1,6 @@
 import { createGitHubChannel } from "@flue/github";
 
-import { handleGitHubDelivery } from "../../../../../src/github/ingress-runtime.js";
+import { handleGitHubDelivery } from "@ambient-agent/core/github/ingress-runtime.ts";
 
 const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
 if (!webhookSecret) throw new Error("GITHUB_WEBHOOK_SECRET is required by the persisted-runtime fixture.");

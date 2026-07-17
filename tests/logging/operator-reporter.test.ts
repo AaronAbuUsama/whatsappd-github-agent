@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { renderOperatorRecord, type OperatorLogRecord } from "../../src/logging/operator-reporter.ts";
+import { renderOperatorRecord, type OperatorLogRecord } from "@ambient-agent/core/logging/operator-reporter.ts";
 
 const at = (hour: number, minute: number, second: number): number =>
   new Date(2026, 6, 16, hour, minute, second).getTime();

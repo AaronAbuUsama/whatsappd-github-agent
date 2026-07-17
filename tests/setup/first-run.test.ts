@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { inspectManagedData } from "../../src/managed/installation.ts";
-import type { ManagedPaths } from "../../src/managed/paths.ts";
+import { inspectManagedData } from "@ambient-agent/core/managed/installation.ts";
+import type { ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
 import {
   runFirstRunSetup,
   type FirstRunPrompts,

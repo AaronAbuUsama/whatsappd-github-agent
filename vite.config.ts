@@ -33,6 +33,7 @@ export default defineConfig(({ mode }) => ({
     printWidth: 120,
   },
   pack: {
+    noExternal: [/^@ambient-agent\//],
     entry: {
       main: "src/cli/main.ts",
     },

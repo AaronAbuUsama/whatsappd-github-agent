@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { installSmokeRoute } from "../../src/host/smoke-route.ts";
-import { WhatsAppSmokeCanaryError, type WhatsAppRuntimeControl } from "../../src/host/whatsapp-runtime.ts";
-import { runtimeSmokeAuthorization } from "../../src/managed/runtime-health.ts";
+import { installSmokeRoute } from "@ambient-agent/server/host/smoke-route.ts";
+import { WhatsAppSmokeCanaryError, type WhatsAppRuntimeControl } from "@ambient-agent/server/host/whatsapp-runtime.ts";
+import { runtimeSmokeAuthorization } from "@ambient-agent/core/managed/runtime-health.ts";
 
 const SECRET = "private-webhook-secret";
 const NONCE = "abc123";

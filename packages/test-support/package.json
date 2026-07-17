@@ -1,0 +1,10 @@
+{
+  "name": "@ambient-agent/test-support",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ambience test support: fake hosts and repositories, the eval harness, judges, and eval suites.",
+  "exports": {
+    "./*": "./src/*"
+  }
+}

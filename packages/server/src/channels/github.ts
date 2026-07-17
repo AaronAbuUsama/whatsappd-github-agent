@@ -1,7 +1,7 @@
 import { createGitHubChannel } from "@flue/github";
 
-import { handleGitHubDelivery } from "../github/ingress-runtime.js";
-import { getManagedRuntimeDependencies } from "../managed/runtime-dependencies.js";
+import { handleGitHubDelivery } from "@ambient-agent/core/github/ingress-runtime.ts";
+import { getManagedRuntimeDependencies } from "@ambient-agent/core/managed/runtime-dependencies.ts";
 
 const webhookSecret = getManagedRuntimeDependencies().githubCredential.webhookSecret;
 

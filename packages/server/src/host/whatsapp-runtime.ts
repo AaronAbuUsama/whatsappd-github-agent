@@ -1,8 +1,8 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
-import { makeAmbienceWindowDispatcher, type DispatchAmbience } from "../ambience/dispatch.js";
-import type { AmbienceDispatchEvent, AmbienceObserver } from "../ambience/observer.js";
+import { makeAmbienceWindowDispatcher, type DispatchAmbience } from "@ambient-agent/core/ambience/dispatch.ts";
+import type { AmbienceDispatchEvent, AmbienceObserver } from "@ambient-agent/core/ambience/observer.ts";
 import {
   configureWhatsAppParticipationPort,
   type WhatsAppHistoryPort,
@@ -10,24 +10,24 @@ import {
   type WhatsAppOutboundPort,
   type WhatsAppDeliveryResult,
   withTypingResult,
-} from "../capabilities/whatsapp-participation/whatsapp-port.js";
-import { makeManagedChatGate, type ChatGate } from "../coalescer/chat-gate.js";
-import * as Coalescer from "../coalescer/coalescer.js";
-import { configLayer, type CoalescerConfigValues } from "../coalescer/config.js";
-import { botIdsOf, whatsappEventSource } from "../coalescer/whatsapp.js";
-import { createConversationArchive } from "../intake/conversation-archive.js";
-import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "../intake/managed-chat-inbox.js";
+} from "@ambient-agent/core/capabilities/whatsapp-participation/whatsapp-port.ts";
+import { makeManagedChatGate, type ChatGate } from "@ambient-agent/core/coalescer/chat-gate.ts";
+import * as Coalescer from "@ambient-agent/core/coalescer/coalescer.ts";
+import { configLayer, type CoalescerConfigValues } from "@ambient-agent/core/coalescer/config.ts";
+import { botIdsOf, whatsappEventSource } from "@ambient-agent/core/coalescer/whatsapp.ts";
+import { createConversationArchive } from "@ambient-agent/core/intake/conversation-archive.ts";
+import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "@ambient-agent/core/intake/managed-chat-inbox.ts";
 import {
   configureAgentActivityRecovery,
   observeAgentActivity,
   reportAgentSpoke,
-} from "../logging/agent-activity-reporter.js";
-import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "../logging/logging.js";
-import type { WhatsAppRuntimeStatus } from "../managed/runtime-health.js";
-import { errorMessage } from "../shared/errors.js";
-import { renderQr } from "../shared/qr.js";
-import { isGroupJid } from "../shared/whatsapp-jid.js";
-import { createWhatsAppAccount, WhatsAppAccountError } from "../whatsapp/account.js";
+} from "@ambient-agent/core/logging/agent-activity-reporter.ts";
+import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "@ambient-agent/core/logging/logging.ts";
+import type { WhatsAppRuntimeStatus } from "@ambient-agent/core/managed/runtime-health.ts";
+import { errorMessage } from "@ambient-agent/core/shared/errors.ts";
+import { renderQr } from "@ambient-agent/core/shared/qr.ts";
+import { isGroupJid } from "@ambient-agent/core/shared/whatsapp-jid.ts";
+import { createWhatsAppAccount, WhatsAppAccountError } from "@ambient-agent/core/whatsapp/account.ts";
 
 const isKnownTransportRejection = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
 const deliveryFailure = (

@@ -6,7 +6,7 @@ import {
   runtimeInstallationId,
   runtimeSmokeAuthorization,
   runtimeSmokeAuthorizationMatches,
-} from "../../src/managed/runtime-health.ts";
+} from "@ambient-agent/core/managed/runtime-health.ts";
 
 describe("managed runtime health", () => {
   it.each([

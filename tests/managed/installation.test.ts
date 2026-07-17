@@ -8,10 +8,10 @@ import {
   inspectManagedData,
   installPreparedManagedData,
   promoteReplacementWhatsAppStore,
-} from "../../src/managed/installation.ts";
-import { managedPaths, type ManagedPaths } from "../../src/managed/paths.ts";
-import { createManagedChatGptCredentialStore } from "../../src/model/chatgpt-authentication.ts";
-import { installManagedData } from "../support/managed-installation.ts";
+} from "@ambient-agent/core/managed/installation.ts";
+import { managedPaths, type ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
+import { createManagedChatGptCredentialStore } from "@ambient-agent/core/model/chatgpt-authentication.ts";
+import { installManagedData } from "@ambient-agent/test-support/managed-installation.ts";
 
 const roots: string[] = [];
 afterEach(async () => {

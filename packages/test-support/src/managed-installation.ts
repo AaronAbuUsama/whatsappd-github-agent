@@ -1,5 +1,5 @@
-import { installPreparedManagedData, type InstallManagedDataResult } from "../../src/managed/installation.ts";
-import type { ManagedPathEnvironment, ManagedPaths } from "../../src/managed/paths.ts";
+import { installPreparedManagedData, type InstallManagedDataResult } from "@ambient-agent/core/managed/installation.ts";
+import type { ManagedPathEnvironment, ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
 
 export interface InstallManagedDataInput extends ManagedPathEnvironment {
   readonly managedChats: readonly string[];

@@ -1,13 +1,13 @@
-import type { InstallationInspection } from "../managed/installation.js";
-import type { ManagedCheck } from "../managed/diagnostics.js";
-import type { AmbientRuntimeHealth } from "../managed/runtime-health.js";
+import type { InstallationInspection } from "@ambient-agent/core/managed/installation.ts";
+import type { ManagedCheck } from "@ambient-agent/core/managed/diagnostics.ts";
+import type { AmbientRuntimeHealth } from "@ambient-agent/core/managed/runtime-health.ts";
 import type {
   UncertainActionResult,
   UncertainDoctorReport,
   UncertainWorkStatus,
-} from "../managed/uncertain-work.js";
-import type { ChatGptAuthenticationStatus } from "../model/chatgpt-authentication.js";
-import type { ChatGptReadinessReceipt } from "../model/pi-subscription.js";
+} from "@ambient-agent/core/managed/uncertain-work.ts";
+import type { ChatGptAuthenticationStatus } from "@ambient-agent/core/model/chatgpt-authentication.ts";
+import type { ChatGptReadinessReceipt } from "@ambient-agent/core/model/pi-subscription.ts";
 
 export interface WindowDeliveryCounts {
   readonly pending: number;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { braintrustTracingEnabled } from "../../src/braintrust.ts";
+import { braintrustTracingEnabled } from "@ambient-agent/core/braintrust.ts";
 
 describe("Braintrust production tracing configuration", () => {
   it("requires both an API key and explicit tracing opt-in", () => {

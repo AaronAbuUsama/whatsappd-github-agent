@@ -1,11 +1,11 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { configureLogging, type LogFormat } from "../logging/logging.js";
-import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubCredential } from "../managed/configuration.js";
-import { installManagedRuntimeDependencies, startDeferredWhatsAppRuntime } from "../managed/runtime-dependencies.js";
-import type { ManagedPaths } from "../managed/paths.js";
-import type { ChatGptAuthentication } from "../model/chatgpt-authentication.js";
+import { configureLogging, type LogFormat } from "@ambient-agent/core/logging/logging.ts";
+import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubCredential } from "@ambient-agent/core/managed/configuration.ts";
+import { installManagedRuntimeDependencies, startDeferredWhatsAppRuntime } from "@ambient-agent/core/managed/runtime-dependencies.ts";
+import type { ManagedPaths } from "@ambient-agent/core/managed/paths.ts";
+import type { ChatGptAuthentication } from "@ambient-agent/core/model/chatgpt-authentication.ts";
 
 export interface RuntimeLoggingOptions {
   readonly debug: boolean;

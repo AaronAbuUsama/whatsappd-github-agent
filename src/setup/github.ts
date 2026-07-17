@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 
 import { Octokit } from "@octokit/rest";
 
-import { parseGitHubRepository } from "../github/repository.js";
+import { parseGitHubRepository } from "@ambient-agent/core/github/repository.ts";
 
 export interface CommandResult {
   readonly stdout: string;
