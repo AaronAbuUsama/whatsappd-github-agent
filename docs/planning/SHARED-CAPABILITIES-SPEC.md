@@ -1,6 +1,8 @@
 # Spec: skills/capabilities become shared across agents
 
-**Status:** ratified direction (Aaron, 2026-07-17), not yet implemented.
+**Status:** Phase 1 IMPLEMENTED 2026-07-17 (commit 3f3fe42 on `feat/117-monorepo-split`,
+pushed): move + all reference sites + capabilities→agent import ban, full suite green
+(377 passed), boundary rule tripwire-verified. Phase 2 (agent-neutral wording) still open.
 **Supersedes:** the #131 nesting of capability bundles inside `ambience/` ("one folder per
 agent... layered domain skills" — that part of #131's recorded design is overturned; the rest
 of #131 stands). Also corrects the same-day "skills stay inside each agent" note in
