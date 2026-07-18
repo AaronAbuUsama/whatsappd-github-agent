@@ -42,7 +42,7 @@ const format = (messages: readonly ProjectedConversationMessage[]): string =>
   messages
     .map((message) => {
       const author =
-        message.direction === "outbound" ? "Ambience" : (message.senderName ?? message.senderId ?? "participant");
+        message.direction === "outbound" ? "me" : (message.senderName ?? message.senderId ?? "participant");
       return `${new Date(message.timestamp).toISOString()} ${author}: ${message.text}`;
     })
     .join("\n");
@@ -50,7 +50,7 @@ const format = (messages: readonly ProjectedConversationMessage[]): string =>
 export const createReactTool = (chatId: string) =>
   defineTool({
     name: "react",
-    description: "React to one message in the WhatsApp chat bound to this Ambience instance.",
+    description: "React to one message in the WhatsApp chat bound to this agent.",
     input: v.object({
       messageId: nonEmptyString,
       emoji: emojiString,
@@ -63,7 +63,7 @@ export const createSayTool = (chatId: string) =>
   defineTool({
     name: "say",
     description:
-      "Send one message to the WhatsApp chat bound to this Ambience instance, optionally replying to a triggering message.",
+      "Send one message to the WhatsApp chat bound to this agent, optionally replying to a triggering message.",
     input: v.object({
       text: v.pipe(v.string(), v.minLength(1), v.maxLength(4_096)),
       replyTo: v.optional(nonEmptyString),
@@ -75,7 +75,7 @@ export const createSayTool = (chatId: string) =>
 export const createReadWhatsAppThreadTool = (chatId: string) =>
   defineTool({
     name: "whatsapp_read_thread",
-    description: "Read recent messages from this Ambience instance's WhatsApp chat, oldest to newest.",
+    description: "Read recent messages from this agent's WhatsApp chat, oldest to newest.",
     input: v.object({
       limit: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(100))),
     }),
@@ -89,7 +89,7 @@ export const createReadWhatsAppThreadTool = (chatId: string) =>
 export const createSearchWhatsAppHistoryTool = (chatId: string) =>
   defineTool({
     name: "whatsapp_search",
-    description: "Search message text in this Ambience instance's WhatsApp chat only.",
+    description: "Search message text in this agent's WhatsApp chat only.",
     input: v.object({ query: nonEmptyString }),
     output: historyOutputSchema,
     run: ({ input }) => {

@@ -39,7 +39,7 @@ export interface WhatsAppParticipationPort extends WhatsAppOutboundPort, WhatsAp
 
 const portSlot = createFlueGlobal<WhatsAppParticipationPort>(
   "whatsapp-participation-port",
-  "The WhatsApp Participation port is not configured for Ambience.",
+  "The WhatsApp Participation port is not configured.",
 );
 
 export const configureWhatsAppParticipationPort = (port: WhatsAppParticipationPort): void => portSlot.set(port);
