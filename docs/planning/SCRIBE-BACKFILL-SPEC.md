@@ -159,13 +159,18 @@ mechanism.
 
 ### 4.1 One reconciliation seam
 
-First-run and Settings/configuration do not directly own workflow behavior. After a
-managed-chat set is promoted, and again when the runtime boots, one reconciliation
-function compares managed chats with durable Scribe state:
+First-run and Settings/configuration do not directly own workflow behavior. One
+reconciliation function compares the next managed-chat set with durable Scribe state:
 
 ```ts
 reconcileScribeBackfills({ managedChats, state, invoke });
 ```
+
+Configuration promotion and Scribe reconciliation are one ordered operation. Commit
+all removals to `disabled` before the changed managed-chat set becomes visible to
+intake; commit additions to `catching_up` before making them visible. On boot, reconcile
+the loaded set before starting intake or admitting replacement runs. This ordering
+makes the durable `mode` row the membership latch used by the final handoff transaction.
 
 For each managed chat:
 
@@ -176,8 +181,9 @@ For each managed chat:
 - `failed`: remain failed until an explicit retry;
 - `disabled`: transition back to `catching_up` and resume from its cursor.
 
-For each state row whose chat is no longer managed, transition to `disabled` at the
-next window boundary. Do not delete its graph or cursor.
+For each state row whose chat is no longer managed, transition any current mode to
+`disabled` in the reconciliation transaction. The running workflow also checks between
+windows and exits when it observes that state. Do not delete its graph or cursor.
 
 ### 4.2 Admission is detached
 
@@ -428,6 +434,9 @@ UPDATE scribe_backfills
  WHERE chat_id = :chat_id
    AND mode = 'catching_up';
 
+-- Require exactly one changed row. If mode is now 'disabled', return the disabled
+-- workflow outcome; never report a successful live handoff.
+
 COMMIT;
 ```
 
@@ -439,6 +448,12 @@ archive append commits first
 
 live transition commits first
   => the later append observes live mode and ordinary Scribe receives the input
+
+removal commits first
+  => the conditional live update changes no row and the workflow exits disabled
+
+live transition commits first, then removal
+  => removal overwrites live with disabled before the new managed set is published
 ```
 
 In `live` mode, the retained `after_sequence` is the immutable handoff cutoff used by
@@ -475,9 +490,12 @@ old Flue run record.
 
 ### Managed-chat removal
 
-Check the managed-chat gate between windows. If the chat was removed, stop before the
-next prompt and mark the row `disabled`. Do not delete historical graph facts or reset
-the cursor. Re-adding the chat resumes catch-up.
+Removal reconciliation changes the row from any mode to `disabled` before the removed
+set is published to intake. Check that durable mode between windows and stop before the
+next prompt. The final handoff's conditional update provides the same guard if removal
+races the tail-empty transition. Do not delete historical graph facts or reset the
+cursor. Re-adding the chat changes `disabled` to `catching_up` and resumes from the
+stored cursor.
 
 ## 11. Observability contract
 
@@ -612,6 +630,7 @@ The implementation session should work in this dependency order:
    - one active run per chat;
    - WhatsApp-only, event-level live-Scribe cutoff gate;
    - one regression test for a Window that straddles the handoff cutoff;
+   - one regression test for managed-chat removal racing final handoff;
    - disabled/failed/retry behavior.
 
 5. **Developer proof surface**
@@ -648,6 +667,8 @@ The implementation is complete when all of the following are proven:
 - Three failures produce durable `failed` state without stopping the Speaker or losing
   later archive events.
 - Removing a managed chat stops at the next window boundary and marks it disabled.
+- Removal racing the tail-empty handoff cannot leave the chat `live`; re-adding it
+  resumes from the stored cursor.
 - Run-stream consumers can observe started, per-window, retry, failure, and live events
   without receiving message content.
 - The development CLI can admit, inspect, and explicitly retry the same workflow path.
