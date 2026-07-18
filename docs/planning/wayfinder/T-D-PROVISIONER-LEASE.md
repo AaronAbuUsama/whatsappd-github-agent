@@ -73,7 +73,7 @@ The API composes the router once at `apps/api/src/index.ts:29-68`, and the
 request context authenticates through Better Auth at
 `packages/api/src/context.ts:8-16`. Polar checkout/portal are already mounted in
 `packages/auth/src/index.ts:32-50`, but the `webhooks()` plugin and
-`onSubscriptionActive` callback are not. The current DB has only Better Auth
+subscription lifecycle callbacks are not. The current DB has only Better Auth
 tables (`packages/db/src/schema/auth.ts:4-105`).
 
 The ratified invariant is in `docs/planning/SAAS-MVP-PLAN.md:76-80`; the
@@ -109,7 +109,12 @@ provisioner/schema seam is at `:156-161`. T-B fixes the physical topology:
 -import { polar, checkout, portal } from "@polar-sh/better-auth";
 +import { polar, checkout, portal, webhooks } from "@polar-sh/better-auth";
 +webhooks({ secret: env.POLAR_WEBHOOK_SECRET,
-+  onSubscriptionActive: ({ data }) => requestTenantReconcile(data) })
++  onSubscriptionCreated: syncSubscription,
++  onSubscriptionUpdated: syncSubscription,
++  onSubscriptionActive: syncSubscription,
++  onSubscriptionCanceled: syncSubscription,
++  onSubscriptionRevoked: syncSubscription,
++  onSubscriptionUncanceled: syncSubscription })
 
  apps/api/src/index.ts
 +const db = await openControlDb();
@@ -139,7 +144,21 @@ const provision = protectedProcedure
   .input(z.object({ tenantId: z.string().min(1) }))
   .handler(({ input, context }) => requestTenantReconcile(input.tenantId, context.session.user.id));
 
-onSubscriptionActive: ({ data }) => requestTenantReconcileByPolarCustomer(data.customer.externalId);
+const syncSubscription = ({ data }: SubscriptionPayload) =>
+  upsertSubscriptionIntentAndReconcile({
+    polarSubscriptionId: data.id,
+    userId: data.customer.externalId,
+    entitled: data.status === "active",
+  });
+
+webhooks({
+  onSubscriptionCreated: syncSubscription,
+  onSubscriptionUpdated: syncSubscription,
+  onSubscriptionActive: syncSubscription,
+  onSubscriptionCanceled: syncSubscription,
+  onSubscriptionRevoked: syncSubscription,
+  onSubscriptionUncanceled: syncSubscription,
+});
 ```
 
 ```ts
@@ -444,9 +463,15 @@ bind for the same ID is idempotent.
 
 ## Idempotent reconcile
 
-The Polar callback first upserts subscription/tenant intent by
-`polar_subscription_id`; duplicate webhook deliveries therefore coalesce. It
-then calls the same reconcile service as the protected oRPC mutation.
+Every Polar subscription callback first upserts subscription/tenant intent by
+`polar_subscription_id`; duplicate `updated` plus granular webhook deliveries
+therefore coalesce. Created, updated, active, canceled, revoked, and uncanceled
+all call the same reducer and then the same reconcile service as the protected
+oRPC mutation. Entitlement is derived from the payload's current status, not the
+event name: an end-of-period cancellation remains entitled while Polar reports
+it active, then the later revoked/updated payload flips `desired_state` to
+`stopped`. `past_due` arrives through `onSubscriptionUpdated` and is likewise
+reduced from the current status.
 
 For one acquired lease:
 
@@ -628,4 +653,8 @@ and the one logged-in-instance proof above.
 - [Turso PRAGMA reference](https://docs.turso.tech/sql-reference/pragmas#foreign-keys):
   foreign-key enforcement is off by default and must be enabled explicitly.
 - [Polar Better Auth adapter](https://polar.sh/docs/integrate/sdk/adapters/better-auth):
-  signed `/api/auth/polar/webhooks` handler and `onSubscriptionActive` callback.
+  signed `/api/auth/polar/webhooks` handler and created/updated/active/canceled/
+  revoked/uncanceled callbacks.
+- [Polar subscription event sequence](https://polar.sh/docs/integrate/webhooks/events#subscriptions):
+  `subscription.updated` is the catch-all lifecycle event; end-of-period
+  cancellation remains active until the later revoked event.

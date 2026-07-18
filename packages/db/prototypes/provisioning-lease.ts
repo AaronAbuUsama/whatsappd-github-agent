@@ -5,8 +5,6 @@ import { createClient, type Client } from "@libsql/client";
 const nowMs = "cast(unixepoch('subsecond') * 1000 as integer)";
 
 const schema = `
-PRAGMA foreign_keys = ON;
-
 -- The real control DB already has this Better Auth table. The minimal copy keeps
 -- this prototype self-contained while preserving the production foreign key.
 CREATE TABLE user (
@@ -230,13 +228,14 @@ async function selfCheck() {
   const key = "tenant-db-tenant-a";
 
   try {
-    await db.executeMultiple(schema);
+    await db.execute("PRAGMA foreign_keys = ON");
     const foreignKeys = await db.execute("PRAGMA foreign_keys");
     assert.equal(
       Number(foreignKeys.rows[0]?.foreign_keys),
       1,
       "control DB startup must enable and verify foreign-key enforcement",
     );
+    await db.executeMultiple(schema);
     await db.execute({ sql: "INSERT INTO user (id) VALUES (?1)", args: ["user-a"] });
     await db.execute({
       sql: `INSERT INTO tenant (
