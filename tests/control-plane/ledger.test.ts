@@ -312,6 +312,11 @@ describe("control-plane ledger migration", () => {
       return result.rows[0]?.readiness;
     };
 
+    expect(await readiness()).toBe("degraded");
+    await client.execute({
+      sql: "UPDATE tenant SET desired_state = 'running' WHERE id = ?1",
+      args: [seeded.tenantId],
+    });
     expect(await readiness()).toBe("healthy");
     await expect(
       client.execute({
@@ -349,6 +354,16 @@ describe("control-plane ledger migration", () => {
     expect(await readiness()).toBe("degraded");
     await client.execute({
       sql: "UPDATE agent_instance SET applied_config_version = 2 WHERE tenant_id = ?1",
+      args: [seeded.tenantId],
+    });
+    expect(await readiness()).toBe("healthy");
+    await client.execute({
+      sql: "UPDATE tenant SET desired_state = 'deleted' WHERE id = ?1",
+      args: [seeded.tenantId],
+    });
+    expect(await readiness()).toBe("degraded");
+    await client.execute({
+      sql: "UPDATE tenant SET desired_state = 'running' WHERE id = ?1",
       args: [seeded.tenantId],
     });
     expect(await readiness()).toBe("healthy");
