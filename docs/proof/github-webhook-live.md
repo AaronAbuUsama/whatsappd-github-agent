@@ -91,46 +91,50 @@ Cloudflare record, restores that file, reloads Caddy, and removes the dedicated
 
 No locally signed or synthetic payload qualifies for this section.
 
+These receipts were refreshed after rebasing onto `origin/main` commit
+`dcf1f4c`. The deployed package was built from PR head `e0167d0` and has SHA-256
+`81627dd8dfb763aaf65cceeb2a2201c516136a656c9522da664a4eeb3545cdda`.
+
 ### `issues.opened` -> broadcast Speaker dispatch
 
 A real public proof issue was opened and then closed after capture:
-[issue #219](https://github.com/AaronAbuUsama/ambient-agent/issues/219).
+[issue #222](https://github.com/AaronAbuUsama/ambient-agent/issues/222).
 GitHub recorded the following App delivery:
 
 ```json
 {
-  "deliveryId": "3831983788892626944",
-  "guid": "38ee792a-82e7-11f1-959e-7ce606dfe5da",
+  "deliveryId": "3831986450289655808",
+  "guid": "1bccbf48-82ea-11f1-94b8-f920b145402d",
   "event": "issues",
   "action": "opened",
-  "deliveredAt": "2026-07-18T20:28:24.082Z",
+  "deliveredAt": "2026-07-18T20:49:03.415Z",
   "status": "OK",
   "statusCode": 200,
   "redelivery": false,
   "repository": "AaronAbuUsama/ambient-agent",
-  "subjectNumber": 219
+  "subjectNumber": 222
 }
 ```
 
 The same provider GUID settled as `done` in
-`github_ingress_deliveries` at `2026-07-18T20:28:24.031Z`, with no error. The
+`github_ingress_deliveries` at `2026-07-18T20:49:03.368Z`, with no error. The
 redacted runtime receipt reported `broadcastChats: 1`, ambience `ambience`, and
-dispatch ID `e097f4af-cfd7-4d9b-9c1a-595d83cc4c1d` while Speaker was online.
+dispatch ID `52146d1c-4644-4207-aa96-fe38430015f8` while Speaker was online.
 The Managed Chat identifier is deliberately omitted.
 
 ### `pull_request_review.submitted` -> normalized continuation ingress
 
 The Ambient Reviewer GitHub App submitted a real formal COMMENT review on
-[PR #220](https://github.com/AaronAbuUsama/ambient-agent/pull/220#pullrequestreview-4729260550).
+[PR #220](https://github.com/AaronAbuUsama/ambient-agent/pull/220#pullrequestreview-4729280118).
 GitHub recorded the following Planner App delivery:
 
 ```json
 {
-  "deliveryId": "3831984735175843840",
-  "guid": "3f781e76-82e8-11f1-8c7d-ccb0b3399168",
+  "deliveryId": "3831986545793957888",
+  "guid": "360fb52c-82ea-11f1-9008-3099e10c1fdb",
   "event": "pull_request_review",
   "action": "submitted",
-  "deliveredAt": "2026-07-18T20:35:44.777Z",
+  "deliveredAt": "2026-07-18T20:49:47.922Z",
   "status": "OK",
   "statusCode": 200,
   "redelivery": false,
@@ -140,9 +144,9 @@ GitHub recorded the following Planner App delivery:
 ```
 
 The same provider GUID settled as `done` in
-`github_ingress_deliveries` at `2026-07-18T20:35:44.729Z`, with no error and
-dispatch ID `65b2912c-bd26-4900-a61c-5c5b1f42c1a7`. The corresponding durable
-Speaker submission (sequence 74) settled without error after its input was
+`github_ingress_deliveries` at `2026-07-18T20:49:47.875Z`, with no error and
+dispatch ID `263e5144-79de-461f-bcbb-d3bebcff10a1`. The corresponding durable
+Speaker submission (sequence 82) settled without error after its input was
 applied. Redacted SQL predicates confirmed that its payload contains all four
 continuation-ingress identities without printing the payload:
 
