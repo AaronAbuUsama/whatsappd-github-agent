@@ -123,26 +123,40 @@ describe("T-C durable delivery contract", () => {
     ).toEqual({ action: "not-claimed", reason: "not-due" });
   });
 
-  it("acknowledges only a terminal tenant-ledger result for the same delivery GUID", () => {
-    expect(isDurableTenantAcknowledgement("delivery-guid-1", { status: "done", deliveryId: "delivery-guid-1" })).toBe(
-      true,
-    );
+  it("acknowledges only a terminal tenant-ledger result for the same App/GUID pair", () => {
     expect(
-      isDurableTenantAcknowledgement("delivery-guid-1", {
+      isDurableTenantAcknowledgement(delivery(), {
+        githubAppId: "coder-app",
+        status: "done",
+        deliveryId: "delivery-guid-1",
+      }),
+    ).toBe(true);
+    expect(
+      isDurableTenantAcknowledgement(delivery(), {
+        githubAppId: "coder-app",
         status: "duplicate",
         record: { deliveryId: "delivery-guid-1", status: "done" },
       }),
     ).toBe(true);
     expect(
-      isDurableTenantAcknowledgement("delivery-guid-1", {
+      isDurableTenantAcknowledgement(delivery(), {
+        githubAppId: "coder-app",
         status: "duplicate",
         record: { deliveryId: "delivery-guid-1", status: "received" },
       }),
     ).toBe(false);
     expect(
-      isDurableTenantAcknowledgement("delivery-guid-1", {
+      isDurableTenantAcknowledgement(delivery(), {
+        githubAppId: "coder-app",
         status: "done",
         deliveryId: "another-guid",
+      }),
+    ).toBe(false);
+    expect(
+      isDurableTenantAcknowledgement(delivery(), {
+        githubAppId: "reviewer-app",
+        status: "done",
+        deliveryId: "delivery-guid-1",
       }),
     ).toBe(false);
   });
@@ -153,6 +167,7 @@ describe("T-C durable delivery contract", () => {
       retried,
       "claim-a",
       {
+        githubAppId: "coder-app",
         status: "duplicate",
         record: { deliveryId: "delivery-guid-1", status: "done" },
       },

@@ -34,7 +34,7 @@ export interface OutboxDeliveryRecord extends VerifiedGitHubDelivery {
 
 export type TenantIngressRecordStatus = "received" | "unsupported" | "uncorrelated" | "done" | "failed";
 
-export type TenantIngressResult =
+export type TenantIngressResult = { readonly githubAppId: string } & (
   | { readonly status: "deferred"; readonly deliveryId: string }
   | { readonly status: "unsupported"; readonly deliveryId: string }
   | { readonly status: "uncorrelated"; readonly deliveryId: string }
@@ -46,7 +46,8 @@ export type TenantIngressResult =
   | {
       readonly status: "duplicate";
       readonly record: { readonly deliveryId: string; readonly status: TenantIngressRecordStatus };
-    };
+    }
+);
 
 export type AcceptResult =
   | { readonly action: "inserted"; readonly record: OutboxDeliveryRecord }
@@ -150,16 +151,21 @@ const requireClaim = (record: OutboxDeliveryRecord, claimId: string): void => {
 const resultDeliveryId = (result: TenantIngressResult): string =>
   result.status === "failed" || result.status === "duplicate" ? result.record.deliveryId : result.deliveryId;
 
+const resultDeliveryIdentity = (result: TenantIngressResult): string =>
+  deliveryOutboxIdentity({ githubAppId: result.githubAppId, deliveryId: resultDeliveryId(result) });
+
 /**
  * A 2xx response is an acknowledgement only when the result proves that the
  * tenant ledger is terminal. A concurrent duplicate still marked `received`
  * must remain retryable.
  */
 export const isDurableTenantAcknowledgement = (
-  expectedDeliveryId: string,
+  expected: Pick<VerifiedGitHubDelivery, "githubAppId" | "deliveryId">,
   result: TenantIngressResult,
 ): boolean => {
-  if (resultDeliveryId(result) !== expectedDeliveryId || result.status === "deferred") return false;
+  if (resultDeliveryIdentity(result) !== deliveryOutboxIdentity(expected) || result.status === "deferred") {
+    return false;
+  }
   if (result.status === "duplicate") return result.record.status !== "received";
   return true;
 };
@@ -171,8 +177,10 @@ export const acknowledgeDelivery = (
   acknowledgedAtMs: number,
 ): OutboxDeliveryRecord => {
   requireClaim(record, claimId);
-  if (!isDurableTenantAcknowledgement(record.deliveryId, result)) {
-    throw new DeliveryClaimError(`Tenant did not durably acknowledge GitHub delivery ${record.deliveryId}`);
+  if (!isDurableTenantAcknowledgement(record, result)) {
+    throw new DeliveryClaimError(
+      `Tenant did not durably acknowledge GitHub App delivery ${deliveryOutboxIdentity(record)}`,
+    );
   }
   return {
     ...record,
