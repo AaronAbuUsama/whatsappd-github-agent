@@ -115,6 +115,18 @@ describe("managed schemas", () => {
           ...config.model,
           profiles: {
             ...config.model.profiles,
+            verifier: { id: "gpt-5.6-sol", thinkingLevel: "max" },
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        model: {
+          ...config.model,
+          profiles: {
+            ...config.model.profiles,
             planner: { id: "anthropic/claude", thinkingLevel: "high" },
           },
         },

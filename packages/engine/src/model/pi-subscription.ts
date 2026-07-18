@@ -15,7 +15,7 @@ const PROVIDER_ID = "openai-codex";
 
 export const LUNA_MODEL_ID = "gpt-5.6-luna";
 export const AGENT_MODEL_ROLES = ["speaker", "scribe", "planner", "coder", "verifier"] as const;
-export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 export type AgentModelRole = (typeof AGENT_MODEL_ROLES)[number];
 export type ModelThinkingLevel = (typeof MODEL_THINKING_LEVELS)[number];

@@ -1,8 +1,0 @@
-diff --git a/dist/conversation-projections-XMug3C6A.mjs b/dist/conversation-projections-XMug3C6A.mjs
-index d05220033fe9d56662329e478c7ebc7db283f3ba..ed7106c9336419d59b003535fa2d1777a8529bb9 100644
---- a/dist/conversation-projections-XMug3C6A.mjs
-+++ b/dist/conversation-projections-XMug3C6A.mjs
-@@ -89 +89,2 @@ const VALID_THINKING_LEVELS = {
--	xhigh: true
-+	xhigh: true,
-+	max: true

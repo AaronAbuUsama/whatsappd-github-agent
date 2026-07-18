@@ -1,5 +1,4 @@
 import type { ProviderStreams } from "@earendil-works/pi-ai";
-import { defineAgentProfile } from "@flue/runtime";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -269,7 +268,7 @@ describe("connectPiChatGptSubscription", () => {
     configureAgentModelProfiles({
       ...DEFAULT_AGENT_MODEL_PROFILES,
       speaker: { id: "gpt-5.6-terra", thinkingLevel: "medium" },
-      verifier: { id: "gpt-5.6-luna", thinkingLevel: "max" },
+      verifier: { id: "gpt-5.6-luna", thinkingLevel: "off" },
     });
 
     expect(resolveAgentModelProfile("speaker")).toEqual({
@@ -290,11 +289,8 @@ describe("connectPiChatGptSubscription", () => {
     });
     expect(resolveAgentModelProfile("verifier")).toEqual({
       model: "openai-codex/gpt-5.6-luna",
-      thinkingLevel: "max",
+      thinkingLevel: "off",
     });
-    expect(() =>
-      defineAgentProfile({ name: "verifier", ...resolveAgentModelProfile("verifier") }),
-    ).not.toThrow();
   });
 
   it("types transport and credential failures without exposing provider details", async () => {
