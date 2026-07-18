@@ -171,7 +171,7 @@ CREATE TABLE `github_repository` (
 	CONSTRAINT "github_repository_default_check" CHECK("github_repository"."is_default" = 0 or "github_repository"."selected" = 1)
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `github_repository_one_default_per_tenant` ON `github_repository` (`tenant_id`) WHERE "github_repository"."is_default" = 1;--> statement-breakpoint
+CREATE UNIQUE INDEX `github_repository_one_default_per_role` ON `github_repository` (`tenant_id`,`installation_role`) WHERE "github_repository"."is_default" = 1;--> statement-breakpoint
 CREATE INDEX `github_repository_selection_idx` ON `github_repository` (`tenant_id`,`selected`);--> statement-breakpoint
 CREATE TABLE `managed_chat_selection` (
 	`tenant_id` text PRIMARY KEY NOT NULL,
@@ -300,17 +300,18 @@ CREATE VIEW `tenant_readiness` AS
           select 1 from tenant_managed_chat
           where tenant_managed_chat.tenant_id = tenant.id
         )
-        and exists (
-          select 1
+        and (
+          select count(distinct github_repository.installation_role)
           from github_installation
           join github_repository
             on github_repository.tenant_id = github_installation.tenant_id
             and github_repository.installation_role = github_installation.role
           where github_installation.tenant_id = tenant.id
             and github_installation.status = 'installed'
+            and github_installation.role in ('coder', 'reviewer', 'planner')
             and github_repository.selected = 1
             and github_repository.is_default = 1
-        )
+        ) = 3
         and delivery_route.status = 'ready' then 'healthy'
       when tenant.status = 'active' then 'degraded'
       else 'onboarding'

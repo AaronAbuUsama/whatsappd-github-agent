@@ -335,8 +335,8 @@ export const githubRepository = sqliteTable(
       columns: [table.tenantId, table.installationRole],
       foreignColumns: [githubInstallation.tenantId, githubInstallation.role],
     }).onDelete("cascade"),
-    uniqueIndex("github_repository_one_default_per_tenant")
-      .on(table.tenantId)
+    uniqueIndex("github_repository_one_default_per_role")
+      .on(table.tenantId, table.installationRole)
       .where(sql`${table.isDefault} = 1`),
     index("github_repository_selection_idx").on(table.tenantId, table.selected),
     check("github_repository_default_check", sql`${table.isDefault} = 0 or ${table.selected} = 1`),
@@ -428,17 +428,18 @@ export const tenantReadiness = sqliteView("tenant_readiness", {
           select 1 from tenant_managed_chat
           where tenant_managed_chat.tenant_id = tenant.id
         )
-        and exists (
-          select 1
+        and (
+          select count(distinct github_repository.installation_role)
           from github_installation
           join github_repository
             on github_repository.tenant_id = github_installation.tenant_id
             and github_repository.installation_role = github_installation.role
           where github_installation.tenant_id = tenant.id
             and github_installation.status = 'installed'
+            and github_installation.role in ('coder', 'reviewer', 'planner')
             and github_repository.selected = 1
             and github_repository.is_default = 1
-        )
+        ) = 3
         and delivery_route.status = 'ready' then 'healthy'
       when tenant.status = 'active' then 'degraded'
       else 'onboarding'

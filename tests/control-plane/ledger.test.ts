@@ -99,12 +99,15 @@ async function seedReadyCapabilities(client: Client, tenantId: string, suffix: s
       args: [tenantId, role, installationId + offset, `org-${suffix}`],
     });
   }
-  await client.execute({
-    sql: `INSERT INTO github_repository (
-      tenant_id, installation_role, repository_id, owner, name, selected, is_default
-    ) VALUES (?1, 'planner', ?2, ?3, ?4, 1, 1)`,
-    args: [tenantId, Number(suffix.replaceAll(/\D/g, "")) + 2_000, `org-${suffix}`, `repo-${suffix}`],
-  });
+  const repositoryId = Number(suffix.replaceAll(/\D/g, "")) + 2_000;
+  for (const role of ["coder", "reviewer", "planner"]) {
+    await client.execute({
+      sql: `INSERT INTO github_repository (
+        tenant_id, installation_role, repository_id, owner, name, selected, is_default
+      ) VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)`,
+      args: [tenantId, role, repositoryId, `org-${suffix}`, `repo-${suffix}`],
+    });
+  }
   await client.execute({
     sql: "INSERT INTO delivery_route (tenant_id, status, observed_at_ms) VALUES (?1, 'ready', 1)",
     args: [tenantId],
@@ -309,6 +312,18 @@ describe("control-plane ledger migration", () => {
       return result.rows[0]?.readiness;
     };
 
+    expect(await readiness()).toBe("healthy");
+    await client.execute({
+      sql: "DELETE FROM github_repository WHERE tenant_id = ?1 AND installation_role = 'coder'",
+      args: [seeded.tenantId],
+    });
+    expect(await readiness()).toBe("degraded");
+    await client.execute({
+      sql: `INSERT INTO github_repository (
+        tenant_id, installation_role, repository_id, owner, name, selected, is_default
+      ) VALUES (?1, 'coder', 2007, 'org-7', 'repo-7', 1, 1)`,
+      args: [seeded.tenantId],
+    });
     expect(await readiness()).toBe("healthy");
     await client.execute({
       sql: "UPDATE subscription_entitlement SET status = 'trialing' WHERE id = ?1",
