@@ -7,6 +7,7 @@ import { WindowDispatchError, WindowDispatcher } from "@ambient-agent/engine/coa
 import { admitWindow, type DispatchRetryPolicy } from "@ambient-agent/engine/intake/admission-relay.ts";
 import type { ManagedChatInbox } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { speakerActivity } from "./activity-reporter.ts";
+import { scribeCoalescer } from "../scribe/coalescer.ts";
 import { whatsappWindowInput, type SpeakerInput } from "@ambient-agent/engine/inputs.ts";
 
 export interface SpeakerDispatchRequest {
@@ -19,6 +20,7 @@ export type DispatchSpeaker = (request: SpeakerDispatchRequest) => Promise<Dispa
 export const dispatchSpeaker = async ({ id, input }: SpeakerDispatchRequest): Promise<DispatchReceipt> => {
   const receipt = await dispatch(speaker, { id, input });
   speakerActivity.accepted(receipt, input);
+  scribeCoalescer.offer({ id, input }); // Scribe — debounced + detached; failures never touch the Speaker (#155)
   return receipt;
 };
 
