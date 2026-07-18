@@ -1,6 +1,6 @@
-# apps/server — the Speaker server
+# apps/runtime — the Speaker server
 
-The Flue build root: the deployable that hosts Speaker. `vp build --root apps/server`
+The Flue build root: the deployable that hosts Speaker. `vp build --root apps/runtime`
 bundles the internal `@ambient-agent/*` packages into the published artifact and
 externalizes the dependencies declared in this `package.json` — which is why that
 dependency list includes packages this app never imports directly (they are the

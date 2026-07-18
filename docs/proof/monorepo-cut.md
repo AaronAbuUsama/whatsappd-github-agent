@@ -15,7 +15,7 @@ install on the rig with every smoke station passing, and the full eval battery a
 ```text
 apps/
 ├── cli/            the operator application (setup/ folded in)
-└── server/         the Flue application (build root: flue build --root apps/server)
+└── server/         the Flue application (build root: flue build --root apps/runtime)
 packages/
 ├── engine/         agent-agnostic conversation machinery: coalescer (WindowDispatcher port),
 │                   intake, GitHub ingress + operation store, the agent input contracts,
@@ -31,21 +31,21 @@ packages/
 ```
 
 The arrows, enforced by `tests/ambience/hard-cut.test.ts`: engine imports nothing internal;
-agents → engine; installation → agents + engine; apps/server → all three; **apps/cli → installation +
+agents → engine; installation → agents + engine; apps/runtime → all three; **apps/cli → installation +
 engine, never agents** (the operator surface and the thinking surface meet only at the running
 server). Wildcard `./*` exports are gone and asserted gone — each package exports an explicit
 measured surface (engine 23, agents 8, installation 12 subpaths); root tests use relative white-box
 paths so the public surfaces stay honest.
 
 Composition: `composeAmbience(adapters)` (T6 O1) is the one composition root, consumed by
-`apps/server/src/app.ts` and the eval fixture; the coalescer stack deliberately stays outside it
+`apps/runtime/src/app.ts` and the eval fixture; the coalescer stack deliberately stays outside it
 (production: `runWhatsAppSession`; fixture: its Effect fork with test seams). Identity stays in
 the agent's `instructions:` — Flue skills are progressively disclosed per the Agent Skills spec,
 so standing identity is precisely the frame a skill can't carry (recorded on #131); all behavior
 policy lives in the two skill bundles.
 
 **Bundling mechanism** (the load-bearing discovery): `flue build` externalizes exactly the
-dependencies declared in its `--root` manifest. `apps/server/package.json` therefore declares the
+dependencies declared in its `--root` manifest. `apps/runtime/package.json` therefore declares the
 real npm runtime dependencies but deliberately **no** internal `@ambient-agent/*` packages, so
 engine/agents/installation bundle into the published `dist/server.mjs` while npm dependencies stay
 external — the tarball remains self-contained with an unchanged layout. The CLI bundle pins the
@@ -55,7 +55,7 @@ same property with `pack.noExternal: [/^@ambient-agent\//]`.
 
 All green locally at the PR tip:
 
-- `pnpm build` — flue server build (agent + channel discovered from `apps/server`) + vp pack CLI
+- `pnpm build` — flue server build (agent + channel discovered from `apps/runtime`) + vp pack CLI
 - `pnpm exec vp lint .` — one pre-existing warning (`no-useless-catch`), no new findings
 - `pnpm exec tsc --noEmit` — clean
 - `pnpm test` — 377 passed, 3 skipped (39 files), including `tests/packaging/packed-cli.test.ts`

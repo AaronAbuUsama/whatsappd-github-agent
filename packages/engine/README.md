@@ -29,7 +29,7 @@ graph LR
   agents["@ambient-agent/agents"] --> engine
   installation["@ambient-agent/installation"] --> engine
   cli["apps/cli"] --> engine
-  server["apps/server"] --> engine
+  server["apps/runtime"] --> engine
   engine --> nothing["(nothing internal)"]
 ```
 

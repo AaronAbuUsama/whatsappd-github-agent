@@ -32,7 +32,7 @@ export interface SpeakerIngressAdapters {
  * WhatsApp participation port later inside `runWhatsAppSession`; the test fixture
  * passes fakes and wires its participation port here. The coalescer stack is
  * deliberately NOT part of this surface: production runs it in `runWhatsAppSession`
- * (apps/server/src/host/whatsapp-runtime.ts) and the fixture keeps its own Effect fork with test
+ * (apps/runtime/src/host/whatsapp-runtime.ts) and the fixture keeps its own Effect fork with test
  * seams (injected failure, test debounce). O2 — folding the coalescer stack into this
  * composition — is explicitly deferred to the monorepo cut follow-up.
  */

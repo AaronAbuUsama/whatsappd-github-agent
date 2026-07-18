@@ -22,7 +22,7 @@ import {
   getWhatsAppRuntimeStatus,
   runWhatsAppSession,
   startWhatsAppRuntime,
-} from "../../apps/server/src/host/whatsapp-runtime.ts";
+} from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
