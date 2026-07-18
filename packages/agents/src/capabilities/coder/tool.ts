@@ -5,7 +5,7 @@ import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repositor
 
 import type { CoderGitHub } from "./github.ts";
 import { commitChanges, ensureBranch, upsertPullRequest } from "./github.ts";
-import { diffSnapshots, isEmptyDiff, type OpenPrRecord, type WorkspaceSnapshot } from "./workspace.ts";
+import { diffSnapshots, ensureClosesIssue, isEmptyDiff, type OpenPrRecord, type WorkspaceSnapshot } from "./workspace.ts";
 
 const nonEmpty = v.pipe(v.string(), v.trim(), v.minLength(1));
 
@@ -80,14 +80,19 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
         deletions: diff.deleted,
         read: ctx.readFile,
       });
+      // Handler plumbing (never templating): guarantee the load-bearing `Closes #N` so a
+      // merged PR auto-closes its issue and the ingress backstop correlates the webhook.
+      const body = ensureClosesIssue(input.body, ctx.issue);
       const pr = await upsertPullRequest(ctx.github, ctx.repo, {
         branch: ctx.branch,
         base: ctx.base,
         title: input.title,
-        body: input.body,
+        body,
         draft: input.draft,
       });
-      ctx.record.pr = { url: pr.url, number: pr.number, created: pr.created, draft: input.draft };
-      return { opened: true, url: pr.url, number: pr.number, draft: input.draft };
+      // Report the PR's ACTUAL draft state (fresh → input.draft; reused → the existing PR's
+      // real isDraft), never a blind stamp of input.draft — an honest state beats a lie.
+      ctx.record.pr = { url: pr.url, number: pr.number, created: pr.created, draft: pr.draft };
+      return { opened: true, url: pr.url, number: pr.number, draft: pr.draft };
     },
   });

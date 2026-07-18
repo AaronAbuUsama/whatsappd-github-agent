@@ -50,6 +50,23 @@ export const diffSnapshots = (before: WorkspaceSnapshot, after: WorkspaceSnapsho
 export const isEmptyDiff = (diff: WorkspaceDiff): boolean => diff.changed.length === 0 && diff.deleted.length === 0;
 
 /**
+ * Deterministic handler plumbing (#172): guarantee the PR body carries a `Closes #N`. This
+ * is load-bearing, not templating — a merged PR auto-closes its issue AND the ingress
+ * backstop (engine/github/ingress.ts `linkedIssueNumbers`) parses it to correlate the
+ * Coder's own `pull_request.opened` webhook to the issue. #172 deleted the body TEMPLATE,
+ * not this one line. Idempotent: if the model's body already closes #N with any GitHub
+ * closing keyword (close(s|d)/fix(es|ed)/resolve(s|d), optional `owner/repo` prefix),
+ * append nothing. Mirrors the ingress regex so what we write is exactly what it reads.
+ */
+export const ensureClosesIssue = (body: string, issue: number): string => {
+  const closesN = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\\s*|\\s+)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${issue}\\b`,
+    "i",
+  );
+  return closesN.test(body) ? body : `${body}\n\nCloses #${issue}`;
+};
+
+/**
  * What the `open_pull_request` handler records when it opens (or reuses) the PR, so the
  * conductor's light after-check can tell the model finished from the model giving up
  * without a second GitHub round-trip. `draft` is the model's own green/red judgment.

@@ -23,9 +23,12 @@ export type CoderJobInput = v.InferOutput<typeof coderJobInputSchema>;
 
 /**
  * The Coder-specific payload nested inside the `specialist.result` envelope (§8). The
- * transport `status:"ok"|"interrupted"` is the delegation bridge's, NOT here: a
- * business failure (red-after-N) returns as a terminal `result` with
- * `outcome:"blocked"`, never by throwing. `summary` is one sentence the Speaker relays.
+ * transport `status:"ok"|"interrupted"` is the delegation bridge's, NOT here: a business
+ * failure returns as a terminal `result`, never by throwing. `coderOutcome` (the light
+ * after-check) only ever produces `opened-pr` (fresh PR), `updated-pr` (relaunch reused
+ * the open PR), or `blocked` (no PR opened — no committable change or the model gave up);
+ * `no-op`/`failed` are kept in the picklist as headroom for #173's verifier but are
+ * currently unreachable. `summary` is one sentence the Speaker relays.
  */
 export const coderResultSchema = v.object({
   outcome: v.picklist(["opened-pr", "updated-pr", "no-op", "blocked", "failed"]),

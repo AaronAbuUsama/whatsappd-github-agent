@@ -107,6 +107,9 @@ const run = async ({
   try {
     // The model's shell tools inherit TMPDIR from the sandbox env (bound at composition);
     // just make sure the workspace-local dir it points at exists before the model runs tests.
+    // ponytail: this .tmp accumulates across runs — kept at the workspaces root (not under
+    // repoDir) deliberately so the finally-block rm(repoDir) can't destroy a concurrent run's
+    // scratch. Ceiling: unbounded growth. Upgrade path: a periodic sweep of stale entries.
     await harness.fs.mkdir(tmpDir, { recursive: true });
     await harness.fs.rm(repoDir, { recursive: true, force: true });
     await harness.fs.mkdir(repoDir, { recursive: true });

@@ -4,6 +4,7 @@ import {
   coderOutcome,
   coderTmpDir,
   diffSnapshots,
+  ensureClosesIssue,
   gitignoreMatcher,
   isEmptyDiff,
   parseHashListing,
@@ -78,6 +79,28 @@ describe("coderOutcome — the conductor's light after-check (#172)", () => {
     expect(result.outcome).toBe("blocked");
     expect(result.prUrl).toBeUndefined();
     expect(result.branch).toBe(branch);
+  });
+});
+
+describe("ensureClosesIssue — the load-bearing `Closes #N` (#172, Finding 1)", () => {
+  it("appends `Closes #N` when the model's body has no closing keyword for the issue", () => {
+    expect(ensureClosesIssue("A rich narrative.", 172)).toBe("A rich narrative.\n\nCloses #172");
+  });
+
+  it("leaves the body untouched when it already closes the issue (any keyword, case-insensitive)", () => {
+    for (const kw of ["Closes #172", "closed #172", "Fixes #172", "fix #172", "Resolves #172", "resolved #172"]) {
+      const body = `Done. ${kw} for good.`;
+      expect(ensureClosesIssue(body, 172)).toBe(body);
+    }
+  });
+
+  it("still appends when the body closes a DIFFERENT issue (must close its own)", () => {
+    expect(ensureClosesIssue("Closes #99.", 172)).toBe("Closes #99.\n\nCloses #172");
+  });
+
+  it("honors an owner/repo-qualified closing keyword", () => {
+    const body = "Closes acme/widgets#172.";
+    expect(ensureClosesIssue(body, 172)).toBe(body);
   });
 });
 
