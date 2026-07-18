@@ -477,8 +477,10 @@ describe("persisted Speaker admission", () => {
     expect(await githubIngressRecords()).not.toContainEqual(expect.objectContaining({ deliveryId }));
   });
 
-  it("observes an unconfigured repository without guessing an Speaker destination", async () => {
-    const deliveryId = "29-uncorrelated-repository";
+  it("broadcasts an event from any repository to every managed thread (each Speaker judges)", async () => {
+    const chatId = "github-ingress-29@g.us";
+    const deliveryId = "29-broadcast-any-repository";
+    await resetWhatsApp();
     const response = await githubDelivery({
       deliveryId,
       body: githubIssueOpenedPayload("unconfigured"),
@@ -486,17 +488,21 @@ describe("persisted Speaker admission", () => {
 
     const responseBody = await response.text();
     expect(response.status, responseBody).toBe(200);
+    // No repo→chat routing anymore: the event reaches the managed thread and the Speaker,
+    // not a routing table, decides relevance (#144).
     expect(JSON.parse(responseBody)).toMatchObject({
-      status: "uncorrelated",
+      status: "done",
       deliveryId,
       repository: "acme/unconfigured",
+      chatId,
     });
-    expect(await historyText("github-ingress-29@g.us")).not.toContain(deliveryId);
+    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "broadcast delivery settlement");
     expect(await githubIngressRecords()).toContainEqual(
       expect.objectContaining({
         deliveryId,
         repository: "acme/unconfigured",
-        status: "uncorrelated",
+        chatId,
+        status: "done",
       }),
     );
   });

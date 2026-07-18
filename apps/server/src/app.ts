@@ -42,7 +42,10 @@ export const createAmbientAgentApp = async ({
     ingress: {
       settings: {
         databasePath: paths.applicationDatabase,
-        routes: new Map([[configuration.github.defaultRepository.toLowerCase(), configuration.managedChats[0]!]]),
+        // Broadcast: a supported GitHub event fans out to every managed thread's Speaker,
+        // each judging relevance itself (#144). The repo→chat mapping now survives only for
+        // specialist-return (resolveSpecialistReturnChat), not inbound routing.
+        managedChats: configuration.managedChats,
       },
       dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
     },

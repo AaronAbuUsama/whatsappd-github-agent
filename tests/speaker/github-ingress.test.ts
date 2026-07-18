@@ -61,6 +61,78 @@ const pullRequestOpenedDelivery = (
     },
   }) as GitHubWebhookDelivery;
 describe("GitHub ingress delivery ledger", () => {
+  it("broadcasts a supported event to every managed thread exactly once", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    const dispatched: { readonly chatId: string; readonly input: GitHubIngressInput }[] = [];
+    try {
+      const managedChats = ["thread-a@g.us", "thread-b@g.us", "thread-c@g.us"];
+      const ingress = createGitHubIngress({
+        store,
+        managedChats,
+        dispatch: async (chatId, input) => {
+          dispatched.push({ chatId, input });
+          return { dispatchId: `dispatch-${chatId}`, acceptedAt: "2026-07-18T00:00:01.000Z" };
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+
+      await expect(ingress(issueOpenedDelivery("broadcast-29"))).resolves.toMatchObject({
+        status: "done",
+        repository: "acme/widgets",
+      });
+      // Every managed thread's Speaker received the event once, unfiltered by repo.
+      expect(dispatched.map((entry) => entry.chatId)).toEqual(managedChats);
+      for (const entry of dispatched) {
+        expect(entry.input).toMatchObject({ type: "github.issue.opened", chatId: entry.chatId });
+      }
+      expect(store.get("broadcast-29")).toMatchObject({ status: "done" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("broadcasts even when the event's repository is not the managed default (each Speaker judges)", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    const dispatched: string[] = [];
+    try {
+      const managedChats = ["thread-a@g.us", "thread-b@g.us"];
+      const unmanagedRepoDelivery = {
+        name: "issues",
+        deliveryId: "stray-repo",
+        payload: {
+          action: "opened",
+          repository: {
+            id: 202,
+            name: "unrelated",
+            html_url: "https://github.com/other/unrelated",
+            owner: { login: "other" },
+          },
+          issue: {
+            number: 7,
+            html_url: "https://github.com/other/unrelated/issues/7",
+            title: "Stray",
+            state: "open",
+          },
+          sender: { login: "octocat", id: 1, type: "User" },
+        },
+      } as GitHubWebhookDelivery;
+      const ingress = createGitHubIngress({
+        store,
+        managedChats,
+        dispatch: async (chatId) => {
+          dispatched.push(chatId);
+          return { dispatchId: `dispatch-${chatId}`, acceptedAt: "2026-07-18T00:00:01.000Z" };
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+
+      await expect(ingress(unmanagedRepoDelivery)).resolves.toMatchObject({ status: "done" });
+      expect(dispatched).toEqual(managedChats);
+    } finally {
+      store.close();
+    }
+  });
+
   it("routes a PR link event only when it closes an issue captured by Speaker", async () => {
     const store = createGitHubIngressStore(":memory:");
     const operations = createIssueOperationStore(":memory:");
@@ -76,7 +148,7 @@ describe("GitHub ingress delivery ledger", () => {
       const ingress = createGitHubIngress({
         store,
         operations,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async (_chatId, input) => {
           dispatched.push(input);
           return { dispatchId: "dispatch-pr-42", acceptedAt: "2026-07-16T00:00:02.000Z" };
@@ -136,7 +208,7 @@ describe("GitHub ingress delivery ledger", () => {
       const ingress = createGitHubIngress({
         store,
         operations,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async (_chatId, input) => {
           dispatched.push(input);
           return { dispatchId: "dispatch-pr-42", acceptedAt: "2026-07-16T00:00:03.000Z" };
@@ -177,7 +249,7 @@ describe("GitHub ingress delivery ledger", () => {
       const ingress = createGitHubIngress({
         store,
         operations,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async (_chatId, input) => {
           dispatched.push(input);
           return { dispatchId: "dispatch-pr-42", acceptedAt: "2026-07-16T00:00:03.000Z" };
@@ -221,7 +293,7 @@ describe("GitHub ingress delivery ledger", () => {
       const ingress = createGitHubIngress({
         store,
         operations,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async (_chatId, input) => {
           dispatched.push(input);
           return { dispatchId: "dispatch-draft-42", acceptedAt: "2026-07-16T00:00:02.000Z" };
@@ -253,7 +325,7 @@ describe("GitHub ingress delivery ledger", () => {
       const ingress = createGitHubIngress({
         store,
         operations,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async () => {
           throw new Error("unrelated PR must not dispatch");
         },
@@ -320,7 +392,7 @@ describe("GitHub ingress delivery ledger", () => {
       let admissions = 0;
       const ingress = createGitHubIngress({
         store,
-        routes: new Map([["acme/widgets", "chat-29@g.us"]]),
+        managedChats: ["chat-29@g.us"],
         dispatch: async () => {
           admissions += 1;
           return { dispatchId: "dispatch-redelivered", acceptedAt: "2026-07-13T00:00:01.000Z" };
@@ -347,7 +419,7 @@ describe("GitHub ingress delivery ledger", () => {
       let admissions = 0;
       const ingress = createGitHubIngress({
         store,
-        routes: new Map([["acme/widgets", "chat-56@g.us"]]),
+        managedChats: ["chat-56@g.us"],
         dispatch: async () => {
           admissions += 1;
           if (admissions < 3) throw new Error("transient Flue failure");
@@ -374,7 +446,7 @@ describe("GitHub ingress delivery ledger", () => {
       let admissions = 0;
       const ingress = createGitHubIngress({
         store,
-        routes: new Map([["acme/widgets", "chat-56@g.us"]]),
+        managedChats: ["chat-56@g.us"],
         dispatch: async () => {
           admissions += 1;
           throw new Error("Flue response was lost");
@@ -388,11 +460,13 @@ describe("GitHub ingress delivery ledger", () => {
         record: { status: "failed", error: "Flue response was lost" },
       });
       expect(admissions).toBe(2);
+      // A broadcast has no single target, so a failed delivery records the repository but no
+      // one chat id; redelivery re-broadcasts to all managed threads (duplicate wakes tolerated).
       expect(store.get("failed-56")).toMatchObject({
         status: "failed",
         repository: "acme/widgets",
-        chatId: "chat-56@g.us",
       });
+      expect(store.get("failed-56")?.chatId).toBeUndefined();
       await expect(ingress(issueOpenedDelivery("failed-56"))).resolves.toMatchObject({ status: "duplicate" });
       expect(admissions).toBe(2);
     } finally {
@@ -410,7 +484,7 @@ describe("GitHub ingress delivery ledger", () => {
       let admissions = 0;
       const ingress = createGitHubIngress({
         store,
-        routes: new Map([["acme/widgets", "chat-56@g.us"]]),
+        managedChats: ["chat-56@g.us"],
         dispatch: async () => {
           admissions += 1;
           await gate;

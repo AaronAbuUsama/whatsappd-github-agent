@@ -279,7 +279,7 @@ const app = composeSpeaker({
   ingress: {
     settings: {
       databasePath: applicationDatabase,
-      routes: new Map([["acme/widgets", "github-ingress-29@g.us"]]),
+      managedChats: ["github-ingress-29@g.us"],
     },
     dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
   },
