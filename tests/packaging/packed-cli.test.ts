@@ -128,12 +128,12 @@ const waitForCanonicalAgentText = async (databasePath: string, chatId: string, e
     const deadline = Date.now() + 15_000;
     let observed = "";
     while (Date.now() < deadline) {
-      const page = await conversationStreamStore.read(`agents/ambience/${chatId}`, { offset: "-1", limit: 1_000 });
+      const page = await conversationStreamStore.read(`agents/speaker/${chatId}`, { offset: "-1", limit: 1_000 });
       observed = page.batches.flatMap(({ records }) => records.map((record) => JSON.stringify(record))).join("\n");
       if (observed.includes(expected)) return observed;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error(`Canonical Ambience history did not contain ${expected}. Observed:\n${observed}`);
+    throw new Error(`Canonical Speaker history did not contain ${expected}. Observed:\n${observed}`);
   } finally {
     await adapter.close?.();
   }
@@ -286,7 +286,7 @@ describe("packed ambient-agent executable", () => {
       ).toEqual([]);
       upgraded.close();
       // Runtime diagnostics live on stderr (ADR 0016); stdout stays free for command responses.
-      expect(runtime.stderr()).toContain("Ambience WhatsApp online");
+      expect(runtime.stderr()).toContain("Speaker WhatsApp online");
       expect(runtime.stderr()).not.toContain("packed-github-secret");
     } finally {
       await runtime.stop();
@@ -392,7 +392,7 @@ describe("packed ambient-agent executable", () => {
       expect(failure.code).toBe(1);
       expect(failure.stderr).toContain(`Port ${port} is already in use`);
       expect(failure.stderr).toContain("ambient-agent config --port");
-      expect(failure.stdout + failure.stderr).not.toContain("Ambience WhatsApp online");
+      expect(failure.stdout + failure.stderr).not.toContain("Speaker WhatsApp online");
     } finally {
       await new Promise((resolve) => blocker.close(resolve));
     }

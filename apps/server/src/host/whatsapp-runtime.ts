@@ -1,8 +1,8 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
-import { makeAmbienceWindowDispatcher, type DispatchAmbience } from "@ambient-agent/agents/ambience/dispatch.ts";
-import type { AmbienceDispatchEvent, AmbienceObserver } from "@ambient-agent/agents/ambience/observer.ts";
+import { makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import type { SpeakerDispatchEvent, SpeakerObserver } from "@ambient-agent/agents/speaker/observer.ts";
 import {
   configureWhatsAppParticipationPort,
   type WhatsAppHistoryPort,
@@ -17,7 +17,7 @@ import { configLayer, type CoalescerConfigValues } from "@ambient-agent/engine/c
 import { botIdsOf, whatsappEventSource } from "@ambient-agent/engine/coalescer/whatsapp.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
 import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
-import { ambienceActivity } from "@ambient-agent/agents/ambience/activity-reporter.ts";
+import { speakerActivity } from "@ambient-agent/agents/speaker/activity-reporter.ts";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "@ambient-agent/engine/logging/logging.ts";
 import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-health.ts";
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
@@ -34,7 +34,7 @@ const deliveryFailure = (
 };
 const TYPING_LEAD_MS = 750;
 
-/** The sole real implementation behind Ambience's outbound participation tools. */
+/** The sole real implementation behind Speaker's outbound participation tools. */
 export const createWhatsAppHost = (
   session: WhatsAppSession,
   lookupMessage: (chatId: string, messageId: string) => MessageRef | undefined,
@@ -64,10 +64,10 @@ export const createWhatsAppHost = (
       try {
         const message = await session.send(chatId, { text }, quote === undefined ? undefined : { quote });
         delivery = { delivery: "sent", messageId: message.id };
-        if (!ambienceActivity.spokeForChat(chatId, text, message.id)) {
+        if (!speakerActivity.spokeForChat(chatId, text, message.id)) {
           log.info(
             { operatorEvent: "agent.say", text, chatId, messageId: message.id },
-            "Ambience said a WhatsApp message",
+            "Speaker said a WhatsApp message",
           );
         }
       } catch (cause) {
@@ -97,7 +97,7 @@ export const createWhatsAppHost = (
       const message = await session.send(chatId, { react: { to: target, emoji } });
       getLogger("whatsapp").info(
         { operatorEvent: "agent.react", emoji, chatId, targetMessageId: messageId },
-        "Ambience reacted to a WhatsApp message",
+        "Speaker reacted to a WhatsApp message",
       );
       return { delivery: "sent", messageId: message.id };
     } catch (cause) {
@@ -115,12 +115,12 @@ export interface WhatsAppSessionRuntimeOptions {
   readonly gate: ChatGate;
   readonly history: WhatsAppHistoryPort & WhatsAppMessageLookupPort;
   readonly inbox: ManagedChatInbox;
-  readonly dispatch?: DispatchAmbience;
+  readonly dispatch?: DispatchSpeaker;
   readonly coalescer?: Partial<CoalescerConfigValues>;
   readonly botLid?: string;
 }
 
-/** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Ambience dispatch. */
+/** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Speaker dispatch. */
 export const runWhatsAppSession = (
   session: WhatsAppSession,
   options: WhatsAppSessionRuntimeOptions,
@@ -150,7 +150,7 @@ export const runWhatsAppSession = (
           replay: () => options.inbox.unwindowed(),
           accepted: (event) => options.inbox.pending(event),
         }),
-        makeAmbienceWindowDispatcher(options.inbox, options.dispatch),
+        makeSpeakerWindowDispatcher(options.inbox, options.dispatch),
         managedChatWindowStore(options.inbox),
         configLayer({ ...options.coalescer, botIds }),
       ),
@@ -200,9 +200,9 @@ export interface WhatsAppRuntimeOptions {
   /** Test seams only: a fake session and a captured exit instead of process.exit. */
   readonly sessionFactory?: () => WhatsAppSession;
   readonly exit?: (code: number) => void;
-  readonly dispatch?: DispatchAmbience;
+  readonly dispatch?: DispatchSpeaker;
   readonly coalescer?: Partial<CoalescerConfigValues>;
-  readonly observeActivity?: (observer: AmbienceObserver) => () => void;
+  readonly observeActivity?: (observer: SpeakerObserver) => () => void;
 }
 
 export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
@@ -210,7 +210,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
-  ambienceActivity.recoverWith((dispatchId) => {
+  speakerActivity.recoverWith((dispatchId) => {
     const window = inbox.windowForDispatch(dispatchId);
     return window === undefined
       ? undefined
@@ -256,7 +256,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
           botIds,
           chatTarget: gate.describe(),
         },
-        "Ambience WhatsApp online",
+        "Speaker WhatsApp online",
       ),
     );
     yield* runWhatsAppSession(session, {
@@ -306,10 +306,10 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       activeCanary = { chatId, text };
       let dispatchId: string | undefined;
       let providerMessageId: string | undefined;
-      const observedDispatches: AmbienceDispatchEvent[] = [];
+      const observedDispatches: SpeakerDispatchEvent[] = [];
       const observedTerminal = new Map<string, "silent" | Error>();
       let finishLifecycle: ((result: "silent" | Error) => void) | undefined;
-      const correlateDispatch = (event: AmbienceDispatchEvent): void => {
+      const correlateDispatch = (event: SpeakerDispatchEvent): void => {
         if (providerMessageId === undefined || dispatchId !== undefined) return;
         const window = inbox.window(event.windowId);
         if (window?.messages.some((message) => message.id === providerMessageId)) {
@@ -332,7 +332,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
             observedTerminal.set(candidateDispatchId, result);
             if (candidateDispatchId === dispatchId) finish(result);
           };
-          unsubscribe = (options.observeActivity ?? ambienceActivity.subscribe)({
+          unsubscribe = (options.observeActivity ?? speakerActivity.subscribe)({
             windowDispatched: (event) => {
               observedDispatches.push(event);
               correlateDispatch(event);

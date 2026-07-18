@@ -20,7 +20,7 @@ smoke`. Bundled by `vp pack` into the published `ambient-agent` bin.
 
 Imports `@ambient-agent/installation` (heaviest) and `@ambient-agent/engine`.
 **Never** imports `@ambient-agent/agents` — the CLI operates the installation; it does
-not think (enforced by `tests/ambience/hard-cut.test.ts`).
+not think (enforced by `tests/speaker/hard-cut.test.ts`).
 
 ## Tested by
 

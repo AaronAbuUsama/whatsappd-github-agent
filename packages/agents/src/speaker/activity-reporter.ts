@@ -1,7 +1,7 @@
 import { observe } from "@flue/runtime";
 import type { Logger } from "pino";
 
-import type { AmbienceObserver, AmbienceSpokeEvent } from "./observer.ts";
+import type { SpeakerObserver, SpeakerSpokeEvent } from "./observer.ts";
 import { createDispatchCorrelator } from "@ambient-agent/engine/dispatch/dispatch-correlator.ts";
 import { getLogger } from "@ambient-agent/engine/logging/logging.ts";
 
@@ -26,15 +26,15 @@ export type AgentDispatchResolver = (dispatchId: string) => AgentDispatchContext
 type ActivityLogger = Pick<Logger, "info" | "error">;
 
 /**
- * Ambience's vocabulary over the engine's DispatchCorrelator: turns correlated
- * lifecycle events into AmbienceObserver notifications and operator log lines.
+ * Speaker's vocabulary over the engine's DispatchCorrelator: turns correlated
+ * lifecycle events into SpeakerObserver notifications and operator log lines.
  * Correlation, buffering, and restart recovery live in the engine.
  */
 export const createAgentActivityReporter = (logger?: ActivityLogger, initialResolver?: AgentDispatchResolver) => {
   const spoken = new Set<string>();
-  const subscribers = new Set<AmbienceObserver>();
+  const subscribers = new Set<SpeakerObserver>();
   const activityLog = (): ActivityLogger => logger ?? getLogger("agent");
-  const notify = <Method extends keyof AmbienceObserver>(method: Method, event: Parameters<AmbienceObserver[Method]>[0]) => {
+  const notify = <Method extends keyof SpeakerObserver>(method: Method, event: Parameters<SpeakerObserver[Method]>[0]) => {
     for (const subscriber of subscribers) {
       try {
         (subscriber[method] as (value: typeof event) => void)(event);
@@ -44,29 +44,29 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
     }
   };
 
-  const observer: AmbienceObserver = {
+  const observer: SpeakerObserver = {
     windowDispatched(event): void {
-      activityLog().info({ operatorEvent: "agent.processing", ...event }, "Ambience processing a WhatsApp Window");
+      activityLog().info({ operatorEvent: "agent.processing", ...event }, "Speaker processing a WhatsApp Window");
       notify("windowDispatched", event);
     },
     spoke(event): void {
       spoken.add(event.dispatchId);
       // ponytail: insertion-order trim replaces the old eviction hook; raise if >200 concurrent dispatches ever speak.
       while (spoken.size > 200) spoken.delete(spoken.values().next().value as string);
-      activityLog().info({ operatorEvent: "agent.say", ...event }, "Ambience said a WhatsApp message");
+      activityLog().info({ operatorEvent: "agent.say", ...event }, "Speaker said a WhatsApp message");
       notify("spoke", event);
     },
     settledSilent(event): void {
       activityLog().info(
         { operatorEvent: "agent.settled_silent", ...event },
-        "Ambience settled without saying a WhatsApp message",
+        "Speaker settled without saying a WhatsApp message",
       );
       notify("settledSilent", event);
     },
     settledFailed(event): void {
       activityLog().error(
         { operatorEvent: "agent.failed", detail: event.error, ...event },
-        "Ambience processing failed",
+        "Speaker processing failed",
       );
       notify("settledFailed", event);
     },
@@ -92,12 +92,12 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
         if (event.finalText !== undefined) {
           activityLog().info(
             { operatorEvent: "agent.final", text: event.finalText, ...operationCorrelation },
-            "Ambience produced its private final output",
+            "Speaker produced its private final output",
           );
         }
         activityLog().info(
           { operatorEvent: "agent.completed", durationMs: event.durationMs, ...operationCorrelation },
-          "Ambience processing completed",
+          "Speaker processing completed",
         );
         if (!spoken.has(dispatchId)) observer.settledSilent(correlation);
         spoken.delete(dispatchId);
@@ -112,7 +112,7 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
 
   return {
     ...observer,
-    subscribe(subscriber: AmbienceObserver): () => void {
+    subscribe(subscriber: SpeakerObserver): () => void {
       subscribers.add(subscriber);
       return () => subscribers.delete(subscriber);
     },
@@ -129,7 +129,7 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
     spokeForChat(chatId: string, text: string, messageId?: string): boolean {
       const dispatchId = correlator.activeDispatchFor(chatId);
       if (dispatchId === undefined) return false;
-      const event: AmbienceSpokeEvent = { chatId, dispatchId, text, ...(messageId === undefined ? {} : { messageId }) };
+      const event: SpeakerSpokeEvent = { chatId, dispatchId, text, ...(messageId === undefined ? {} : { messageId }) };
       observer.spoke(event);
       return true;
     },
@@ -141,5 +141,5 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
  * it into Flue's observation stream — every code path that can dispatch imports
  * it (via dispatch.ts), so there is no install step to forget.
  */
-export const ambienceActivity = createAgentActivityReporter();
-observe(ambienceActivity.observed);
+export const speakerActivity = createAgentActivityReporter();
+observe(speakerActivity.observed);

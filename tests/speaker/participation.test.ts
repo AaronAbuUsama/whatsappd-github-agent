@@ -3,7 +3,7 @@ import { join } from "node:path";
 import * as v from "valibot";
 import { describe, expect, it } from "vite-plus/test";
 
-import ambience from "../../packages/agents/src/ambience/agent.ts";
+import speaker from "../../packages/agents/src/speaker/agent.ts";
 import {
   configureIssueManagementRuntime,
   createIssueManagementPolicy,
@@ -16,13 +16,13 @@ const root = process.cwd();
 const read = async (path: string) => await readFile(join(root, path), "utf8");
 
 describe("WhatsApp Participation capability", () => {
-  it("registers the packaged capability on each Ambience instance", async () => {
+  it("registers the packaged capability on each Speaker instance", async () => {
     configureIssueManagementRuntime({
       repository: createFakeIssueRepository(),
       operations: createIssueOperationStore(":memory:"),
       policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
     });
-    const config = await ambience.initialize({ id: "participation-test@g.us", env: {} });
+    const config = await speaker.initialize({ id: "participation-test@g.us", env: {} });
 
     expect(config.skills).toEqual(
       expect.arrayContaining([
@@ -36,7 +36,7 @@ describe("WhatsApp Participation capability", () => {
 
   it("registers a versioned packaged skill instead of embedding participation policy in standing instructions", async () => {
     const [agent, skill] = await Promise.all([
-      read("packages/agents/src/ambience/agent.ts"),
+      read("packages/agents/src/speaker/agent.ts"),
       read("packages/agents/src/capabilities/whatsapp-participation/SKILL.md"),
     ]);
 

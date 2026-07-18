@@ -5,11 +5,11 @@
   "type": "module",
   "description": "Everything that thinks: one folder per agent. Each agent owns its identity skill, layered domain skills (mind: SKILL.md bundles; machine: tools; ports at the seam), composition, and dispatch.",
   "exports": {
-    "./ambience/activity-reporter.ts": "./src/ambience/activity-reporter.ts",
-    "./ambience/agent.ts": "./src/ambience/agent.ts",
-    "./ambience/compose.ts": "./src/ambience/compose.ts",
-    "./ambience/dispatch.ts": "./src/ambience/dispatch.ts",
-    "./ambience/observer.ts": "./src/ambience/observer.ts",
+    "./speaker/activity-reporter.ts": "./src/speaker/activity-reporter.ts",
+    "./speaker/agent.ts": "./src/speaker/agent.ts",
+    "./speaker/compose.ts": "./src/speaker/compose.ts",
+    "./speaker/dispatch.ts": "./src/speaker/dispatch.ts",
+    "./speaker/observer.ts": "./src/speaker/observer.ts",
     "./capabilities/issue-management/issue-repository.ts": "./src/capabilities/issue-management/issue-repository.ts",
     "./capabilities/issue-management/runtime.ts": "./src/capabilities/issue-management/runtime.ts",
     "./capabilities/whatsapp-participation/whatsapp-port.ts": "./src/capabilities/whatsapp-participation/whatsapp-port.ts"

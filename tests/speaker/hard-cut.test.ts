@@ -38,7 +38,7 @@ describe("the post-Eve production cut", () => {
     expect(packageJson.scripts["build:cli"]).toBe("vp pack");
     expect(packageJson.scripts.build).toBe("pnpm run build:server && pnpm run build:cli");
     expect(packageJson.scripts.start).toBe("node dist/cli/main.js start");
-    expect(Object.keys(packageJson.scripts)).not.toContain("ambience:build");
+    expect(Object.keys(packageJson.scripts)).not.toContain("speaker:build");
     expect(Object.values(packageJson.scripts).join("\n")).not.toMatch(
       /(?:eve|src\/index\.ts|coalescer\/(?:doorway|live|repl|voice|worker)|spike-(?:loopback|resume))/,
     );
@@ -74,9 +74,9 @@ describe("the post-Eve production cut", () => {
     );
   });
 
-  it("keeps the canonical Coalescer-to-Ambience dispatch free of API-key fallback", async () => {
+  it("keeps the canonical Coalescer-to-Speaker dispatch free of API-key fallback", async () => {
     const runtime = await readFile(path.join(root, "apps/server/src/host/whatsapp-runtime.ts"), "utf8");
-    expect(runtime).toContain("makeAmbienceWindowDispatcher");
+    expect(runtime).toContain("makeSpeakerWindowDispatcher");
 
     const files = (
       await Promise.all(["apps/cli/src", "apps/server/src", "packages/engine/src", "packages/agents/src", "packages/installation/src"].map(sourceFiles))
@@ -113,8 +113,8 @@ describe("the post-Eve production cut", () => {
     // Capabilities are shared across agents: they may never import from an agent folder.
     for (const relativePath of await sourceFiles("packages/agents/src/capabilities")) {
       const source = await readFile(path.join(root, relativePath), "utf8");
-      expect(source, relativePath).not.toMatch(/from ["']\.\.\/(?:\.\.\/)?ambience\//);
-      expect(source, relativePath).not.toMatch(/@ambient-agent\/agents\/ambience\//);
+      expect(source, relativePath).not.toMatch(/from ["']\.\.\/(?:\.\.\/)?speaker\//);
+      expect(source, relativePath).not.toMatch(/@ambient-agent\/agents\/speaker\//);
     }
     // Wildcard exports are shallow: every package must publish an explicit surface.
     for (const pkg of ["engine", "agents", "installation"]) {

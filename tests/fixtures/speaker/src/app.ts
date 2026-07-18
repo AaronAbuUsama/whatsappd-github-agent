@@ -7,8 +7,8 @@ import { join } from "node:path";
 import type { IncomingMessage as WhatsAppMessage } from "whatsappd";
 
 import "../../../../packages/engine/src/braintrust.ts";
-import { composeAmbience } from "../../../../packages/agents/src/ambience/compose.ts";
-import { makeAmbienceWindowDispatcher, dispatchAmbience } from "../../../../packages/agents/src/ambience/dispatch.ts";
+import { composeSpeaker } from "../../../../packages/agents/src/speaker/compose.ts";
+import { makeSpeakerWindowDispatcher, dispatchSpeaker } from "../../../../packages/agents/src/speaker/dispatch.ts";
 import type {
   IssueMilestone,
   IssueRepositoryOptions,
@@ -29,11 +29,11 @@ import { createManagedChatGptAuthentication } from "../../../../packages/install
 import { managedPaths } from "../../../../packages/installation/src/paths.ts";
 import { connectPiChatGptSubscription } from "../../../../packages/engine/src/model/pi-subscription.ts";
 
-const liveModel = process.env.AMBIENCE_FIXTURE_LIVE_MODEL === "true";
-const provider = liveModel ? undefined : registerFauxProvider({ provider: "ambience-fixture" });
+const liveModel = process.env.SPEAKER_FIXTURE_LIVE_MODEL === "true";
+const provider = liveModel ? undefined : registerFauxProvider({ provider: "speaker-fixture" });
 const heldRecoveryMarkers = new Set<string>();
 const settledDispatches = new Map<string, { outcome: "completed" | "failed"; result?: unknown; error?: unknown }>();
-const holdAgentRecovery = process.env.AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY === "true";
+const holdAgentRecovery = process.env.SPEAKER_FIXTURE_HOLD_AGENT_RECOVERY === "true";
 observe((event) => {
   if (event.type !== "operation" || event.operationKind !== "prompt" || event.dispatchId === undefined) return;
   settledDispatches.set(event.dispatchId, {
@@ -100,7 +100,7 @@ const respond = async (context: Context) => {
     if (serialized.includes("say") && transcript.includes("github_create_issue")) {
       return fauxAssistantMessage("Private Issue Management receipt retained without an extra mutation.");
     }
-    return fauxAssistantMessage("Private speech outcome retained for the next Ambience turn.");
+    return fauxAssistantMessage("Private speech outcome retained for the next Speaker turn.");
   }
   if (serialized.includes("CREATE_COMPLETE_ISSUE")) {
     return fauxAssistantMessage(
@@ -215,8 +215,8 @@ const respond = async (context: Context) => {
   return fauxAssistantMessage("Private ambient context retained without speaking.");
 };
 if (provider === undefined) {
-  const dataDirectory = process.env.AMBIENCE_FIXTURE_DATA_DIR;
-  if (!dataDirectory) throw new Error("AMBIENCE_FIXTURE_DATA_DIR is required for a live-model fixture.");
+  const dataDirectory = process.env.SPEAKER_FIXTURE_DATA_DIR;
+  if (!dataDirectory) throw new Error("SPEAKER_FIXTURE_DATA_DIR is required for a live-model fixture.");
   await connectPiChatGptSubscription({
     authentication: createManagedChatGptAuthentication(managedPaths({ dataDirectory })),
   });
@@ -244,10 +244,10 @@ Effect.runFork(
       Effect.provide(
         Layer.mergeAll(
           queueEventSource(source),
-          makeAmbienceWindowDispatcher(
+          makeSpeakerWindowDispatcher(
             inbox,
             async (request) => {
-              const receipt = await dispatchAmbience(request);
+              const receipt = await dispatchSpeaker(request);
               if (failAfterFlueAcceptance) {
                 failAfterFlueAcceptance = false;
                 throw new Error("injected failure after Flue acceptance");
@@ -272,7 +272,7 @@ const conversationEvent = (input: IncomingMessage) => {
   } as WhatsAppMessage;
   return conversationArrival(archived);
 };
-const app = composeAmbience({
+const app = composeSpeaker({
   issues: fakeIssues,
   operations: issueOperations,
   policy: createIssueManagementPolicy("acme/widgets", ["acme/widgets"]),
@@ -281,7 +281,7 @@ const app = composeAmbience({
       databasePath: applicationDatabase,
       routes: new Map([["acme/widgets", "github-ingress-29@g.us"]]),
     },
-    dispatch: async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
+    dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
   },
   participation: {
     say: fakeWhatsApp.say,

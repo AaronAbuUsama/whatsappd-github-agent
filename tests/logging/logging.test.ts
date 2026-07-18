@@ -153,12 +153,12 @@ describe("Effect logger bridge", () => {
   it("maps levels, keeps annotations, renders the cause, and drops fiber ids", async () => {
     const sink = capture();
     const logger = createRootLogger({ format: "json", consoleStream: sink.stream });
-    const program = Effect.logError("Ambience dispatch failed", Cause.fail(new Error("window w-1 rejected"))).pipe(
+    const program = Effect.logError("Speaker dispatch failed", Cause.fail(new Error("window w-1 rejected"))).pipe(
       Effect.annotateLogs({ windowId: "w-1", chatId: "chat@g.us" }),
     );
     await Effect.runPromise(program.pipe(Effect.provide(effectLoggerLayer(logger))));
     const record = JSON.parse(sink.lines()[0]!) as Record<string, unknown>;
-    expect(record.msg).toBe("Ambience dispatch failed");
+    expect(record.msg).toBe("Speaker dispatch failed");
     expect(record.windowId).toBe("w-1");
     expect(record.chatId).toBe("chat@g.us");
     expect(String(record.cause)).toContain("window w-1 rejected");

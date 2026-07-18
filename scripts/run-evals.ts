@@ -13,7 +13,7 @@ if (requested !== "both" && requested !== "deterministic" && requested !== "live
 
 const families: EvalFamily[] = requested === "both" ? ["deterministic", "live"] : [requested];
 const repository = resolve(import.meta.dirname, "..");
-const fixtureRoot = join(repository, "tests/fixtures/ambience");
+const fixtureRoot = join(repository, "tests/fixtures/speaker");
 const flue = join(repository, "node_modules/.bin/flue");
 const vitest = join(repository, "node_modules/.bin/vitest");
 const baselineRun = new Date().toISOString().replaceAll(/[:.]/g, "-");
@@ -34,11 +34,11 @@ const availablePort = async (): Promise<number> =>
   });
 
 const port =
-  process.env.AMBIENCE_EVAL_PORT === undefined
+  process.env.SPEAKER_EVAL_PORT === undefined
     ? await availablePort()
-    : Number.parseInt(process.env.AMBIENCE_EVAL_PORT, 10);
+    : Number.parseInt(process.env.SPEAKER_EVAL_PORT, 10);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-  throw new Error("AMBIENCE_EVAL_PORT must be an integer from 1 to 65535.");
+  throw new Error("SPEAKER_EVAL_PORT must be an integer from 1 to 65535.");
 }
 const baseUrl = `http://127.0.0.1:${port}`;
 
@@ -110,9 +110,9 @@ const stopFixture = async (child: ChildProcess): Promise<void> => {
 
 const runFamily = async (family: EvalFamily): Promise<void> => {
   const live = family === "live";
-  if (live && !process.env.AMBIENCE_FIXTURE_DATA_DIR) {
+  if (live && !process.env.SPEAKER_FIXTURE_DATA_DIR) {
     throw new Error(
-      "AMBIENCE_FIXTURE_DATA_DIR is required for live judged evals; point it at an initialized non-production data directory.",
+      "SPEAKER_FIXTURE_DATA_DIR is required for live judged evals; point it at an initialized non-production data directory.",
     );
   }
 
@@ -120,8 +120,8 @@ const runFamily = async (family: EvalFamily): Promise<void> => {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     APPLICATION_DB_PATH: join(workingDirectory, "application.sqlite"),
-    AMBIENCE_EVAL_LIVE_MODEL: live ? "true" : "false",
-    AMBIENCE_FIXTURE_LIVE_MODEL: live ? "true" : "false",
+    SPEAKER_EVAL_LIVE_MODEL: live ? "true" : "false",
+    SPEAKER_FIXTURE_LIVE_MODEL: live ? "true" : "false",
     BRAINTRUST_EXPERIMENT_NAME: experimentName,
     ...(process.env.BRAINTRUST_API_KEY === undefined ? {} : { BRAINTRUST_TRACING: "1" }),
     FLUE_BASE_URL: baseUrl,

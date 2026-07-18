@@ -1,8 +1,8 @@
 import type { Hono } from "hono";
 
 import "@ambient-agent/engine/braintrust.ts";
-import { composeAmbience } from "@ambient-agent/agents/ambience/compose.ts";
-import { dispatchAmbience } from "@ambient-agent/agents/ambience/dispatch.ts";
+import { composeSpeaker } from "@ambient-agent/agents/speaker/compose.ts";
+import { dispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
 import { createIssueManagementPolicy } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
@@ -30,7 +30,7 @@ export const createAmbientAgentApp = async ({
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
   const installationId = runtimeInstallationId(githubCredential.webhookSecret);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
-  const app = composeAmbience({
+  const app = composeSpeaker({
     issues: createOctokitIssueRepository(githubCredential.token),
     operations: issueOperations,
     policy: createIssueManagementPolicy(
@@ -42,7 +42,7 @@ export const createAmbientAgentApp = async ({
         databasePath: paths.applicationDatabase,
         routes: new Map([[configuration.github.defaultRepository.toLowerCase(), configuration.managedChats[0]!]]),
       },
-      dispatch: async (chatId, input) => await dispatchAmbience({ id: chatId, input }),
+      dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
     },
     // The WhatsApp participation port is wired later by runWhatsAppSession, once the
     // live socket exists.

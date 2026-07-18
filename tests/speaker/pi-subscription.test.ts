@@ -2,8 +2,8 @@ import type { ProviderStreams } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
-  AMBIENCE_MODEL_ID,
-  AMBIENCE_MODEL_SPECIFIER,
+  SPEAKER_MODEL_ID,
+  SPEAKER_MODEL_SPECIFIER,
   ChatGptReadinessError,
   connectPiChatGptSubscription,
   prepareLunaResponsesLiteRequest,
@@ -101,19 +101,19 @@ describe("connectPiChatGptSubscription", () => {
 
     expect(receipt).toEqual({
       authentication: "chatgpt-oauth",
-      model: AMBIENCE_MODEL_SPECIFIER,
+      model: SPEAKER_MODEL_SPECIFIER,
       provider: "openai-codex",
     });
     expect(receipt).not.toHaveProperty("apiKey");
 
     const registration = registerApiProvider.mock.calls[0]?.[0];
-    expect(registration?.api).toBe("ambience-openai-codex-responses");
+    expect(registration?.api).toBe("speaker-openai-codex-responses");
 
     registration.streamSimple(
       {
-        id: AMBIENCE_MODEL_ID,
-        name: AMBIENCE_MODEL_ID,
-        api: "ambience-openai-codex-responses",
+        id: SPEAKER_MODEL_ID,
+        name: SPEAKER_MODEL_ID,
+        api: "speaker-openai-codex-responses",
         provider: "openai-codex",
         baseUrl: "https://chatgpt.com/backend-api",
         reasoning: false,
@@ -129,7 +129,7 @@ describe("connectPiChatGptSubscription", () => {
     expect(codexApi.streamSimple).toHaveBeenCalledWith(
       expect.objectContaining({
         api: "openai-codex-responses",
-        id: AMBIENCE_MODEL_ID,
+        id: SPEAKER_MODEL_ID,
         provider: "openai-codex",
         reasoning: true,
       }),
@@ -139,7 +139,7 @@ describe("connectPiChatGptSubscription", () => {
     expect(registerProvider).toHaveBeenCalledWith(
       "openai-codex",
       expect.objectContaining({
-        api: "ambience-openai-codex-responses",
+        api: "speaker-openai-codex-responses",
         apiKey: "header.payload.signature",
         baseUrl: "https://chatgpt.com/backend-api",
       }),
@@ -150,7 +150,7 @@ describe("connectPiChatGptSubscription", () => {
     const prepared = prepareLunaResponsesLiteRequest(
       new Headers({ authorization: "Bearer subscription-token", originator: "pi" }),
       {
-        model: AMBIENCE_MODEL_ID,
+        model: SPEAKER_MODEL_ID,
         instructions: "Keep ordinary prose private.",
         input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
         tools: [],
@@ -164,7 +164,7 @@ describe("connectPiChatGptSubscription", () => {
     expect(prepared.headers.get("version")).toBe("0.144.1");
     expect(prepared.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
     expect(prepared.body).toMatchObject({
-      model: AMBIENCE_MODEL_ID,
+      model: SPEAKER_MODEL_ID,
       input: [
         { type: "additional_tools", role: "developer", tools: [] },
         {
@@ -191,7 +191,7 @@ describe("connectPiChatGptSubscription", () => {
     const request = vi.fn(async () => undefined);
 
     await expect(runChatGptReadinessCheck(managedAuthentication, { request })).resolves.toEqual({
-      model: AMBIENCE_MODEL_SPECIFIER,
+      model: SPEAKER_MODEL_SPECIFIER,
       request: "complete",
     });
     expect(managedAuthentication.authorization).toHaveBeenCalledTimes(1);

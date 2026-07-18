@@ -1,8 +1,8 @@
 /**
  * The chat gate — which chats the bot is allowed to engage — shared by every
  * production whatsappd runtime so the fail-closed policy lives in one place: an
- * unset target silences Ambience rather than dispatching every chat on the account.
- * Ambience may engage on relevance (not just mentions), so this gate is a real
+ * unset target silences Speaker rather than dispatching every chat on the account.
+ * Speaker may engage on relevance (not just mentions), so this gate is a real
  * access-control decision applied before any message reaches the Coalescer.
  */
 

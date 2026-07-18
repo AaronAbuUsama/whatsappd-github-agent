@@ -63,14 +63,14 @@ describe("operator reporter", () => {
         time: at(14, 1, 36),
         level: 50,
         subsystem: "intake",
-        msg: "Ambience admission failed; the chat is fail-stopped",
+        msg: "Speaker admission failed; the chat is fail-stopped",
         err: { message: "WindowDispatchError", cause: { message: "socket closed" } },
         windowId: "31b52c63-59f1-4fca-9fad-8def717c33ee",
       },
       { colorize: false },
     );
 
-    expect(line).toBe("2:01:36 PM  × [AGENT] Ambience admission failed; the chat is fail-stopped: WindowDispatchError");
+    expect(line).toBe("2:01:36 PM  × [AGENT] Speaker admission failed; the chat is fail-stopped: WindowDispatchError");
     expect(line).not.toMatch(/[{}]/);
     expect(line.split("\n")).toHaveLength(1);
   });

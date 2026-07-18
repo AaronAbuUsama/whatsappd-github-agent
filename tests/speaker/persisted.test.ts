@@ -13,8 +13,8 @@ import type { FakeIssueRepositoryEvent } from "../../packages/test-support/src/f
 import type { FakeWhatsAppEvent } from "../../packages/test-support/src/fake-whatsapp-host.ts";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const fixtureRoot = join(repoRoot, "tests/fixtures/ambience");
-const tempRoot = mkdtempSync(join(tmpdir(), "ambience-flue-"));
+const fixtureRoot = join(repoRoot, "tests/fixtures/speaker");
+const tempRoot = mkdtempSync(join(tmpdir(), "speaker-flue-"));
 const buildRoot = mkdtempSync(join(fixtureRoot, ".test-build-"));
 const outputRoot = join(buildRoot, "dist");
 const databasePath = join(tempRoot, "flue.sqlite");
@@ -120,7 +120,7 @@ async function waitForServer(url: string, process: ChildProcessWithoutNullStream
 }
 
 async function prompt(chatId: string, message: string) {
-  const response = await fetch(`${origin}/agents/ambience/${chatId}?wait=result`, {
+  const response = await fetch(`${origin}/agents/speaker/${chatId}?wait=result`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ message }),
@@ -129,7 +129,7 @@ async function prompt(chatId: string, message: string) {
 }
 
 async function admitPrompt(chatId: string, message: string): Promise<void> {
-  const response = await fetch(`${origin}/agents/ambience/${chatId}`, {
+  const response = await fetch(`${origin}/agents/speaker/${chatId}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ message }),
@@ -141,7 +141,7 @@ async function admitPrompt(chatId: string, message: string): Promise<void> {
 }
 
 async function historyText(chatId: string): Promise<string> {
-  const response = await fetch(`${origin}/agents/ambience/${chatId}?view=history`);
+  const response = await fetch(`${origin}/agents/speaker/${chatId}?view=history`);
   if (!response.ok) return "";
   const history = (await response.json()) as {
     messages: Array<{ role: string; parts: Array<{ type: string; text?: string }> }>;
@@ -343,7 +343,7 @@ afterAll(async () => {
   rmSync(tempRoot, { recursive: true, force: true });
 });
 
-describe("persisted Ambience admission", () => {
+describe("persisted Speaker admission", () => {
   it("verifies, normalizes, deduplicates, and routes GitHub ingress without implying speech", async () => {
     const chatId = "github-ingress-29@g.us";
     const deliveryId = "29-valid-signed-delivery";
@@ -477,7 +477,7 @@ describe("persisted Ambience admission", () => {
     expect(await githubIngressRecords()).not.toContainEqual(expect.objectContaining({ deliveryId }));
   });
 
-  it("observes an unconfigured repository without guessing an Ambience destination", async () => {
+  it("observes an unconfigured repository without guessing an Speaker destination", async () => {
     const deliveryId = "29-uncorrelated-repository";
     const response = await githubDelivery({
       deliveryId,
@@ -524,7 +524,7 @@ describe("persisted Ambience admission", () => {
     await prompt(chatId, "first coalesced input");
     await prompt(chatId, "second coalesced input");
 
-    const response = await fetch(`${origin}/agents/ambience/${chatId}?view=history`);
+    const response = await fetch(`${origin}/agents/speaker/${chatId}?view=history`);
     expect(response.status).toBe(200);
     const history = (await response.json()) as {
       messages: Array<{ role: string; parts: Array<{ type: string; text?: string }> }>;
@@ -583,7 +583,7 @@ describe("persisted Ambience admission", () => {
       { kind: "typing", chatId, on: false },
     ]);
     const history = await historyText(chatId);
-    expect(history).toContain("Private speech outcome retained for the next Ambience turn.");
+    expect(history).toContain("Private speech outcome retained for the next Speaker turn.");
     expect(JSON.stringify(events)).not.toContain("Private speech outcome");
   });
 
@@ -688,7 +688,7 @@ describe("persisted Ambience admission", () => {
     expect(b).not.toContain("A_SECOND");
   });
 
-  it("creates one complete issue through the packaged Ambience route with a durable Operation Identity", async () => {
+  it("creates one complete issue through the packaged Speaker route with a durable Operation Identity", async () => {
     const chatId = "github-create-30@g.us";
     await resetGitHub();
 
@@ -777,7 +777,7 @@ describe("restart and at-least-once boundaries", () => {
 
     await coalescerMessage(chatId, marker, { mentions: ["bot@s.whatsapp.net"] });
     // The first dispatch reached Flue before the injected failure; the bounded
-    // retry dispatches once more, so the same Window wakes Ambience twice —
+    // retry dispatches once more, so the same Window wakes Speaker twice —
     // the ADR 0014 duplicate wake — and then settles as done.
     await waitFor(
       async () => (await admissionRecords(chatId)).some(({ status }) => status === "done"),
@@ -840,12 +840,12 @@ describe("restart and at-least-once boundaries", () => {
     const chatId = "restart-agent-32@g.us";
     const marker = "accepted-input-32";
     await stopServer();
-    await startServer({ AMBIENCE_FIXTURE_HOLD_AGENT_RECOVERY: "true" });
+    await startServer({ SPEAKER_FIXTURE_HOLD_AGENT_RECOVERY: "true" });
 
     await admitPrompt(chatId, `HOLD_AGENT_FOR_RESTART:${marker}`);
     await waitFor(
       async () => (await pendingRecoveryMarkers()).includes(marker),
-      "the accepted Ambience input to enter its provider call",
+      "the accepted Speaker input to enter its provider call",
     );
     expect(await historyText(chatId)).not.toContain(`Recovered canonical context for ${marker}.`);
 
@@ -859,7 +859,7 @@ describe("restart and at-least-once boundaries", () => {
     try {
       await waitFor(
         async () => (await historyText(chatId)).includes(`Recovered canonical context for ${marker}.`),
-        "Flue to recover the interrupted Ambience submission",
+        "Flue to recover the interrupted Speaker submission",
       );
     } catch (error) {
       throw new Error(

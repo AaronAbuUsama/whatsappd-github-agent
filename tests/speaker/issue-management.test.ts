@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vite-plus/test";
 import * as v from "valibot";
 
-import ambience from "../../packages/agents/src/ambience/agent.ts";
+import speaker from "../../packages/agents/src/speaker/agent.ts";
 import {
   configureIssueManagementRuntime,
   createIssueManagementPolicy,
@@ -947,7 +947,7 @@ describe("production Issue Management tools", () => {
 
   it("registers only bounded direct issue tools without model-controlled Operation Identity or administration", async () => {
     configured();
-    const config = await ambience.initialize({ id: CHAT, env: {} });
+    const config = await speaker.initialize({ id: CHAT, env: {} });
     expect(config.skills?.map((skill) => skill.name)).toEqual(["whatsapp-participation", "issue-management"]);
     await expect(
       readFile(join(process.cwd(), "packages/agents/src/capabilities/issue-management/SKILL.md"), "utf8"),
@@ -1017,8 +1017,8 @@ describe("production Issue Management tools", () => {
       "src/host/fake-github-proof-host.ts",
       "src/tools/workflows/start-github-proof.ts",
       "src/workflows/github-proof.ts",
-      "tests/fixtures/ambience/src/workflows/github-proof.ts",
-      "tests/ambience/github-proof.test.ts",
+      "tests/fixtures/speaker/src/workflows/github-proof.ts",
+      "tests/speaker/github-proof.test.ts",
     ]) {
       await expect(stat(join(process.cwd(), obsolete))).rejects.toMatchObject({ code: "ENOENT" });
     }

@@ -122,7 +122,7 @@ export const githubPullRequestOpenedInputSchema = v.object({
 
 export type GitHubPullRequestOpenedInput = v.InferOutput<typeof githubPullRequestOpenedInputSchema>;
 export type GitHubIngressInput = GitHubIssueOpenedInput | GitHubPullRequestOpenedInput;
-export type AmbienceInput = WhatsAppWindowInput | GitHubIngressInput;
+export type SpeakerInput = WhatsAppWindowInput | GitHubIngressInput;
 
 export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowInput =>
   v.parse(whatsappWindowInputSchema, {

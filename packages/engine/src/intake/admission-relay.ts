@@ -37,7 +37,7 @@ export const admitWindow = async (
           attempt,
           reason: errorMessage(cause),
         },
-        "Retrying Ambience dispatch",
+        "Retrying Speaker dispatch",
       );
     });
   } catch (cause) {

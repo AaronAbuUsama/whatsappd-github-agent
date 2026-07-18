@@ -19,7 +19,7 @@ export class WindowDispatchError extends Data.TaggedError("WindowDispatchError")
 export class WindowDispatcher extends Context.Service<
   WindowDispatcher,
   {
-    /** Dispatch one accepted buffered window to the continuing Ambience instance. */
+    /** Dispatch one accepted buffered window to the continuing Speaker instance. */
     readonly dispatch: (window: ConversationWindow) => Effect.Effect<void, WindowDispatchError>;
   }
 >()("WindowDispatcher") {}

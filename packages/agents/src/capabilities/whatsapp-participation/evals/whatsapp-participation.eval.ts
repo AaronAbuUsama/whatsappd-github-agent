@@ -4,11 +4,11 @@ import { describeEval, toolCalls } from "vitest-evals";
 import { createFlueAgentHarness } from "../../../../../test-support/src/evals/harness.ts";
 import { windowMessage } from "../../../../evals/shared.ts";
 
-const harness = createFlueAgentHarness({ agentName: "ambience" });
+const harness = createFlueAgentHarness({ agentName: "speaker" });
 
 describeEval(
   "WhatsApp Participation deterministic contract",
-  { harness, skipIf: () => process.env.AMBIENCE_EVAL_LIVE_MODEL === "true" },
+  { harness, skipIf: () => process.env.SPEAKER_EVAL_LIVE_MODEL === "true" },
   (it) => {
     it("keeps casual group conversation private", async ({ run }) => {
       const result = await run({
@@ -22,7 +22,7 @@ describeEval(
 
     it("uses exactly one Say for a useful direct request", async ({ run }) => {
       const result = await run({
-        message: windowMessage("Ambience, please tell the group that the release call starts at 16:00 UTC."),
+        message: windowMessage("Speaker, please tell the group that the release call starts at 16:00 UTC."),
         fixture: { resetWhatsApp: true },
       });
 

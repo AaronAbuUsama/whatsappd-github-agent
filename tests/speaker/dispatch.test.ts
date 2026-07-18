@@ -6,7 +6,7 @@ import * as Coalescer from "../../packages/engine/src/coalescer/coalescer.ts";
 import { configLayer } from "../../packages/engine/src/coalescer/config.ts";
 import type { IncomingMessage } from "../../packages/engine/src/coalescer/events.ts";
 import { inMemoryWindowStore, queueEventSource } from "../../packages/test-support/src/coalescer-mocks.ts";
-import { makeAmbienceWindowDispatcher, type AmbienceDispatchRequest } from "../../packages/agents/src/ambience/dispatch.ts";
+import { makeSpeakerWindowDispatcher, type SpeakerDispatchRequest } from "../../packages/agents/src/speaker/dispatch.ts";
 import { createReactTool, createSayTool } from "../../packages/agents/src/capabilities/whatsapp-participation/tools.ts";
 import {
   configureWhatsAppParticipationPort,
@@ -48,7 +48,7 @@ const awaitRef = <A>(ref: Ref.Ref<A>, predicate: (value: A) => boolean) =>
     }),
   );
 
-describe("production Coalescer-to-Ambience dispatch", () => {
+describe("production Coalescer-to-Speaker dispatch", () => {
   it("dispatches one complete coalesced window to the continuing instance identified by chatId", async () => {
     const admissions = new Map<string, WindowAdmission>();
     const inbox = {
@@ -63,8 +63,8 @@ describe("production Coalescer-to-Ambience dispatch", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const source = yield* Queue.unbounded<IncomingMessage>();
-          const dispatches = yield* Ref.make<readonly AmbienceDispatchRequest[]>([]);
-          const dispatch = async (request: AmbienceDispatchRequest) => {
+          const dispatches = yield* Ref.make<readonly SpeakerDispatchRequest[]>([]);
+          const dispatch = async (request: SpeakerDispatchRequest) => {
             await Effect.runPromise(Ref.update(dispatches, (current) => [...current, request]));
             return { dispatchId: "dispatch-27", acceptedAt: "2026-07-13T00:00:00.000Z" };
           };
@@ -75,7 +75,7 @@ describe("production Coalescer-to-Ambience dispatch", () => {
                 Layer.mergeAll(
                   queueEventSource(source),
                   inMemoryWindowStore(),
-                  makeAmbienceWindowDispatcher(inbox, dispatch),
+                  makeSpeakerWindowDispatcher(inbox, dispatch),
                   configLayer({ botIds: [BOT], debounceWindow: Duration.millis(25) }),
                 ),
               ),

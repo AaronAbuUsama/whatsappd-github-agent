@@ -22,7 +22,7 @@ const parseJudgeOutput = (text: string): unknown => {
 };
 
 export const rubricJudgeHarness = createJudgeHarness({
-  name: "ambience-participation-rubric-judge",
+  name: "speaker-participation-rubric-judge",
   run: async ({ system, prompt }, { signal }) => {
     const result = await client.agents.prompt("rubric-judge", `judge-${crypto.randomUUID()}`, {
       message: [system, prompt].filter((value) => value !== undefined && value.trim() !== "").join("\n\n"),
@@ -58,9 +58,9 @@ const createAxisJudge = (definition: AxisDefinition) =>
     judgeHarness: rubricJudgeHarness,
     assess: async (context): Promise<JudgeResult> => {
       if (context.runJudge === undefined) throw new Error(`${definition.name} requires the rubric judge harness.`);
-      if (context.run.usage.provider === "ambience-fixture") {
+      if (context.run.usage.provider === "speaker-fixture") {
         throw new Error(
-          `${definition.name} received the faux responder. Start the fixture with AMBIENCE_FIXTURE_LIVE_MODEL=true.`,
+          `${definition.name} received the faux responder. Start the fixture with SPEAKER_FIXTURE_LIVE_MODEL=true.`,
         );
       }
       const judgeInput =

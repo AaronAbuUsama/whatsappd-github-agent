@@ -55,7 +55,7 @@ export const coalescerEventId = (event: CoalescerEvent): string =>
 export type FireReason = "debounce" | "maximum-wait" | "capacity" | "mention" | "quote-reply";
 
 /**
- * The window dispatched to Ambience on each flush: messages and updates buffered
+ * The window dispatched to Speaker on each flush: messages and updates buffered
  * since the last dispatch, plus why it fired. This is the Coalescer's entire output.
  */
 export interface ConversationWindow {

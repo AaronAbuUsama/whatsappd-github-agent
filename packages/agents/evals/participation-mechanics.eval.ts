@@ -6,11 +6,11 @@ import { createFlueAgentHarness } from "../../test-support/src/evals/harness.ts"
 import { expectNoExternalEffects } from "./shared.ts";
 import { hardSilenceCriterion, participationSkillBundle } from "./rubric-judges.ts";
 
-const harness = createFlueAgentHarness({ agentName: "ambience" });
+const harness = createFlueAgentHarness({ agentName: "speaker" });
 
 describeEval(
   "Participation mechanics through coalesced Windows",
-  { harness, skipIf: () => process.env.AMBIENCE_EVAL_LIVE_MODEL === "true" },
+  { harness, skipIf: () => process.env.SPEAKER_EVAL_LIVE_MODEL === "true" },
   (it) => {
     it("stays silent on casual chatter", async ({ run }) => {
       const result = await run({
@@ -43,7 +43,7 @@ describeEval(
 
     it("uses exactly one Say when explicitly addressed", async ({ run }) => {
       const result = await run({
-        window: { texts: ["Ambience, SPEAK_ONCE"] },
+        window: { texts: ["Speaker, SPEAK_ONCE"] },
         fixture: { resetGitHub: true, resetWhatsApp: true },
       });
 
@@ -66,7 +66,7 @@ describeEval(
         threshold: 1,
         score: 1,
         criteria: "Explicitly addressed with nothing to offer → always respond, brief + honest.",
-        input: { texts: ["Ambience, SPEAK_ONCE"] },
+        input: { texts: ["Speaker, SPEAK_ONCE"] },
         output: result.output,
         rationale: "Exactly one Say and one outbound send were recorded.",
         skillBundle: participationSkillBundle,

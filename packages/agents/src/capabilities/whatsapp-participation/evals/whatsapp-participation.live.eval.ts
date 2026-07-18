@@ -5,8 +5,8 @@ import { finishBraintrustReport, recordRubricScore } from "../../../../../test-s
 import { createFlueAgentHarness } from "../../../../../test-support/src/evals/harness.ts";
 import { participationAxes, participationSkillBundle, rubricJudgeHarness } from "../../../../evals/rubric-judges.ts";
 
-const harness = createFlueAgentHarness({ agentName: "ambience" });
-const liveOnly = () => process.env.AMBIENCE_EVAL_LIVE_MODEL !== "true";
+const harness = createFlueAgentHarness({ agentName: "speaker" });
+const liveOnly = () => process.env.SPEAKER_EVAL_LIVE_MODEL !== "true";
 
 describeEval(
   "Axis 1 address forms — live judged",
@@ -69,7 +69,7 @@ describeEval(
   (it) => {
     it("answers an explicit address briefly and honestly when the fact is unavailable", async ({ run }) => {
       await run({
-        window: { texts: ["Ambience, what was the name of my childhood cat?"] },
+        window: { texts: ["Speaker, what was the name of my childhood cat?"] },
         fixture: { resetGitHub: true, resetWhatsApp: true },
       });
     });
@@ -91,7 +91,7 @@ describeEval(
         window: {
           texts: [
             "Beautiful sunset today.",
-            { text: "Ambience, what room is the release call in?", from: "bob@s.whatsapp.net", pushName: "Bob" },
+            { text: "Speaker, what room is the release call in?", from: "bob@s.whatsapp.net", pushName: "Bob" },
             {
               text: "Please file this bug: after restart a queued scheduler job disappears instead of running. I can reproduce it by queueing a job, stopping the process, and starting it again; the queued job should run.",
               from: "carol@s.whatsapp.net",

@@ -4,11 +4,11 @@ import { describeEval, toolCalls } from "vitest-evals";
 import { createFlueAgentHarness } from "../../../../../test-support/src/evals/harness.ts";
 import { githubEventKinds, windowMessage } from "../../../../evals/shared.ts";
 
-const harness = createFlueAgentHarness({ agentName: "ambience" });
+const harness = createFlueAgentHarness({ agentName: "speaker" });
 
 describeEval(
   "Issue Management deterministic contract",
-  { harness, skipIf: () => process.env.AMBIENCE_EVAL_LIVE_MODEL === "true" },
+  { harness, skipIf: () => process.env.SPEAKER_EVAL_LIVE_MODEL === "true" },
   (it) => {
     it("creates one complete report after duplicate search", async ({ run }) => {
       const result = await run({

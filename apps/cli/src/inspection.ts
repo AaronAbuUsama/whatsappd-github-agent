@@ -17,7 +17,7 @@ import {
 } from "@ambient-agent/installation/uncertain-work.ts";
 import type { ChatGptAuthentication, ChatGptAuthenticationStatus } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import {
-  AMBIENCE_MODEL_SPECIFIER,
+  SPEAKER_MODEL_SPECIFIER,
   ChatGptReadinessError,
   runChatGptReadinessCheck,
   type ChatGptReadinessReceipt,
@@ -183,7 +183,7 @@ export const createInspectionReporter = ({
                 "The ChatGPT live readiness request failed; retry when the service is reachable.",
                 { cause },
               );
-        liveCheck = { model: AMBIENCE_MODEL_SPECIFIER, request: "failed", reason: failure.code };
+        liveCheck = { model: SPEAKER_MODEL_SPECIFIER, request: "failed", reason: failure.code };
         if (failure.code === "credential-rejected") {
           authenticationStatus = { state: "unusable", message: failure.message };
         }

@@ -15,13 +15,13 @@ import type { GitHubIngressStore } from "@ambient-agent/engine/github/ingress-st
 import type { GitHubIngressSettings } from "@ambient-agent/engine/github/ingress.ts";
 import type { GitHubIngressInput } from "@ambient-agent/engine/inputs.ts";
 
-export interface AmbienceIngressAdapters {
+export interface SpeakerIngressAdapters {
   readonly settings: GitHubIngressSettings;
   readonly dispatch: (chatId: string, input: GitHubIngressInput) => Promise<DispatchReceipt>;
 }
 
 /**
- * Adapters for the one Ambience composition root (T6, O1 ratified).
+ * Adapters for the one Speaker composition root (T6, O1 ratified).
  *
  * Production passes real adapters (Octokit repository, SQLite stores) and wires its
  * WhatsApp participation port later inside `runWhatsAppSession`; the test fixture
@@ -31,11 +31,11 @@ export interface AmbienceIngressAdapters {
  * seams (injected failure, test debounce). O2 — folding the coalescer stack into this
  * composition — is explicitly deferred to the monorepo cut follow-up.
  */
-export interface AmbienceAdapters {
+export interface SpeakerAdapters {
   readonly issues: IssueRepository;
   readonly operations: IssueOperationStore;
   readonly policy: IssueManagementPolicy;
-  readonly ingress: AmbienceIngressAdapters;
+  readonly ingress: SpeakerIngressAdapters;
   readonly participation?: WhatsAppParticipationPort;
   /** Payload for GET /health; defaults to a static `{ ok: true }`. */
   readonly health?: () => Record<string, unknown>;
@@ -43,7 +43,7 @@ export interface AmbienceAdapters {
   readonly routes?: (app: Hono, context: { readonly githubIngress: GitHubIngressStore }) => void;
 }
 
-export const composeAmbience = (adapters: AmbienceAdapters): Hono => {
+export const composeSpeaker = (adapters: SpeakerAdapters): Hono => {
   configureIssueManagementRuntime({
     repository: adapters.issues,
     operations: adapters.operations,

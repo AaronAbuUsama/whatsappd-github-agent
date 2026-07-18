@@ -120,7 +120,7 @@ const toUpdate = (update: Update): ConversationUpdate | undefined => {
 /**
  * EventSource over `session.onMessage` and `session.onUpdate`. Events are pushed
  * onto an unbounded queue (WhatsApp's inbound rate is low) and surfaced as a
- * Stream; `allow` gates which chats reach the loop before Ambience dispatch.
+ * Stream; `allow` gates which chats reach the loop before Speaker dispatch.
  * Both listeners are removed on scope close.
  */
 export const whatsappEventSource = (

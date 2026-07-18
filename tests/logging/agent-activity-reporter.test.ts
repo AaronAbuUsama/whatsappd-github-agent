@@ -1,7 +1,7 @@
 import type { FlueObservation } from "@flue/runtime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createAgentActivityReporter } from "../../packages/agents/src/ambience/activity-reporter.ts";
+import { createAgentActivityReporter } from "../../packages/agents/src/speaker/activity-reporter.ts";
 
 interface Entry {
   readonly level: "info" | "error";

@@ -39,7 +39,7 @@ const fixture = () => {
     live: true,
     isGroup: true,
     kind: "text",
-    text: "wake Ambience at least once",
+    text: "wake Speaker at least once",
     reply: async () => ({ id: "reply", chatId: CHAT, fromMe: true }),
   } as IncomingMessage;
   inbox.recorder.append(conversationArrival(arrival));

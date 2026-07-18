@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Ambience server application: the Flue build root (app, db, agent discovery, GitHub channel, WhatsApp runtime host). Internal @ambient-agent/* packages are deliberately NOT declared here: flue build externalizes declared dependencies, and they must bundle into the published server artifact.",
+  "description": "Speaker server application: the Flue build root (app, db, agent discovery, GitHub channel, WhatsApp runtime host). Internal @ambient-agent/* packages are deliberately NOT declared here: flue build externalizes declared dependencies, and they must bundle into the published server artifact.",
   "dependencies": {
     "@earendil-works/pi-ai": "0.80.2",
     "@flue/github": "1.0.0-beta.1",

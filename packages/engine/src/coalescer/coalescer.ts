@@ -36,7 +36,7 @@ type WindowDispatcherService = {
 const continueAfterDispatchError =
   (window: ConversationWindow) =>
   (cause: unknown): Effect.Effect<void> =>
-    Effect.logError(`Ambience dispatch failed for ${window.chatId}; the batch settled and the chat continues`).pipe(
+    Effect.logError(`Speaker dispatch failed for ${window.chatId}; the batch settled and the chat continues`).pipe(
       Effect.annotateLogs({ cause: String(cause), windowId: window.id }),
     );
 
@@ -75,7 +75,7 @@ const makeChatLoop = (
   const capacity = Math.max(1, config.maxWindowMessages);
 
   return (chatId: string, queue: Queue.Dequeue<CoalescerEvent>): Effect.Effect<never> => {
-    // Dispatch the buffered window to Ambience, then go cold for the next burst.
+    // Dispatch the buffered window to Speaker, then go cold for the next burst.
     const fireAndReset = (events: readonly CoalescerEvent[], reason: FireReason): Effect.Effect<never> => {
       const draft: ConversationWindowDraft = { chatId, ...windowContents(events), reason };
       return store.create(draft).pipe(
@@ -144,7 +144,7 @@ const makeChatLoop = (
 /**
  * Run the Coalescer: drain the inbound stream, route each message to its chat's
  * actor (lazily creating the queue + fiber on first sight of a `chatId`), and
- * let each actor's debounce loop decide when to dispatch a window to Ambience.
+ * let each actor's debounce loop decide when to dispatch a window to Speaker.
  *
  * Blocks until the source stream ends, so callers fork it. Chat-actor fibers are
  * `forkScoped` — they live until the enclosing `Scope` closes, giving clean

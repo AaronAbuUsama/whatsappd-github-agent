@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Ambience test support: fake hosts and repositories, the eval harness, judges, and eval suites.",
+  "description": "Speaker test support: fake hosts and repositories, the eval harness, judges, and eval suites.",
   "exports": {},
   "dependencies": {
     "@flue/sdk": "1.0.0-beta.9",

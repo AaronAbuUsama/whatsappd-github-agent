@@ -1,30 +1,30 @@
 import { dispatch, type DispatchReceipt } from "@flue/runtime";
 import { Effect, Layer } from "effect";
 
-import ambience from "./agent.ts";
+import speaker from "./agent.ts";
 import type { ConversationWindow } from "@ambient-agent/engine/coalescer/events.ts";
 import { WindowDispatchError, WindowDispatcher } from "@ambient-agent/engine/coalescer/ports.ts";
 import { admitWindow, type DispatchRetryPolicy } from "@ambient-agent/engine/intake/admission-relay.ts";
 import type { ManagedChatInbox } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
-import { ambienceActivity } from "./activity-reporter.ts";
-import { whatsappWindowInput, type AmbienceInput } from "@ambient-agent/engine/inputs.ts";
+import { speakerActivity } from "./activity-reporter.ts";
+import { whatsappWindowInput, type SpeakerInput } from "@ambient-agent/engine/inputs.ts";
 
-export interface AmbienceDispatchRequest {
+export interface SpeakerDispatchRequest {
   readonly id: string;
-  readonly input: AmbienceInput;
+  readonly input: SpeakerInput;
 }
 
-export type DispatchAmbience = (request: AmbienceDispatchRequest) => Promise<DispatchReceipt>;
+export type DispatchSpeaker = (request: SpeakerDispatchRequest) => Promise<DispatchReceipt>;
 
-export const dispatchAmbience = async ({ id, input }: AmbienceDispatchRequest): Promise<DispatchReceipt> => {
-  const receipt = await dispatch(ambience, { id, input });
-  ambienceActivity.accepted(receipt, input);
+export const dispatchSpeaker = async ({ id, input }: SpeakerDispatchRequest): Promise<DispatchReceipt> => {
+  const receipt = await dispatch(speaker, { id, input });
+  speakerActivity.accepted(receipt, input);
   return receipt;
 };
 
-export const makeAmbienceWindowDispatcher = (
+export const makeSpeakerWindowDispatcher = (
   inbox: ManagedChatInbox,
-  dispatchWindow: DispatchAmbience = dispatchAmbience,
+  dispatchWindow: DispatchSpeaker = dispatchSpeaker,
   retry?: DispatchRetryPolicy,
 ): Layer.Layer<WindowDispatcher, never> =>
   Layer.succeed(WindowDispatcher, {

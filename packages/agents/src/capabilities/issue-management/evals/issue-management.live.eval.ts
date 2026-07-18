@@ -5,8 +5,8 @@ import { finishBraintrustReport } from "../../../../../test-support/src/evals/br
 import { createFlueAgentHarness } from "../../../../../test-support/src/evals/harness.ts";
 import { participationAxes, rubricJudgeHarness } from "../../../../evals/rubric-judges.ts";
 
-const harness = createFlueAgentHarness({ agentName: "ambience" });
-const liveOnly = () => process.env.AMBIENCE_EVAL_LIVE_MODEL !== "true";
+const harness = createFlueAgentHarness({ agentName: "speaker" });
+const liveOnly = () => process.env.SPEAKER_EVAL_LIVE_MODEL !== "true";
 
 describeEval(
   "Axis 3 issue capture conversation — live judged",

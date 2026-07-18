@@ -14,7 +14,7 @@ import type {
 } from "whatsappd";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { AmbienceDispatchRequest } from "../../packages/agents/src/ambience/dispatch.ts";
+import type { SpeakerDispatchRequest } from "../../packages/agents/src/speaker/dispatch.ts";
 import { makeManagedChatGate } from "../../packages/engine/src/coalescer/chat-gate.ts";
 import { windowContents } from "../../packages/engine/src/coalescer/events.ts";
 import {
@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 const temporaryArchive = () => {
-  const directory = mkdtempSync(join(tmpdir(), "ambience-whatsapp-"));
+  const directory = mkdtempSync(join(tmpdir(), "speaker-whatsapp-"));
   dirs.push(directory);
   const applicationDatabase = join(directory, "application.sqlite");
   return {
@@ -146,7 +146,7 @@ const location = (): WhatsAppMessage =>
     lng: -0.2,
   }) as unknown as WhatsAppMessage;
 
-describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
+describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
   it("admits only the provider-acknowledged SMOKE canary while retaining the outbound conversation fact", async () => {
     const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
@@ -162,7 +162,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       sessionFactory: () => fake.session,
     });
     await account.authenticate({});
-    const dispatches: AmbienceDispatchRequest[] = [];
+    const dispatches: SpeakerDispatchRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(
@@ -234,7 +234,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     archive.close();
   });
 
-  it("uses one managed session for gated ingress, history, Ambience dispatch, and explicit say", async () => {
+  it("uses one managed session for gated ingress, history, Speaker dispatch, and explicit say", async () => {
     const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
     const gate = makeManagedChatGate([CHAT]);
@@ -248,7 +248,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       sessionFactory: () => fake.session,
     });
     await account.authenticate({});
-    const dispatches: AmbienceDispatchRequest[] = [];
+    const dispatches: SpeakerDispatchRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(
@@ -413,7 +413,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     archive.close();
   });
 
-  it("opens a reaction-only Window and carries it into Ambience while excluding receipts", async () => {
+  it("opens a reaction-only Window and carries it into Speaker while excluding receipts", async () => {
     const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
     const gate = makeManagedChatGate([CHAT]);
@@ -427,7 +427,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       sessionFactory: () => fake.session,
     });
     await account.authenticate({});
-    const dispatches: AmbienceDispatchRequest[] = [];
+    const dispatches: SpeakerDispatchRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(
@@ -543,7 +543,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     await restartedAccount.authenticate({});
     expect(reopenedInbox.unwindowed().map(({ id }) => id)).toEqual(["before-coalescer-31"]);
 
-    const dispatches: AmbienceDispatchRequest[] = [];
+    const dispatches: SpeakerDispatchRequest[] = [];
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -608,7 +608,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
     const reopenedArchive = createConversationArchive(applicationDatabase);
     const reopened = createManagedChatInbox(reopenedArchive, { allowed: gate.allowed });
     const fake = fakeSession();
-    const dispatches: AmbienceDispatchRequest[] = [];
+    const dispatches: SpeakerDispatchRequest[] = [];
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -661,7 +661,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       sessionFactory: () => fake.session,
     });
     await account.authenticate({});
-    const firstDispatches: AmbienceDispatchRequest[] = [];
+    const firstDispatches: SpeakerDispatchRequest[] = [];
 
     await Effect.runPromise(
       Effect.scoped(
@@ -703,7 +703,7 @@ describe("paired whatsappd -> Coalescer -> Ambience seam", () => {
       sessionFactory: () => restartedFake.session,
     });
     await restartedAccount.authenticate({});
-    const replayDispatches: AmbienceDispatchRequest[] = [];
+    const replayDispatches: SpeakerDispatchRequest[] = [];
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -740,7 +740,7 @@ describe("foreground runtime terminal logged_out", () => {
     const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
     archive.close();
     const fake = fakeSession();
-    let observer: import("../../packages/agents/src/ambience/observer.ts").AmbienceObserver | undefined;
+    let observer: import("../../packages/agents/src/speaker/observer.ts").SpeakerObserver | undefined;
     let canaryDispatches = 0;
     const runtime = startWhatsAppRuntime({
       storeDirectory,
