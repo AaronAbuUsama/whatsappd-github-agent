@@ -16,14 +16,22 @@ import * as Coalescer from "@ambient-agent/engine/coalescer/coalescer.ts";
 import { configLayer, type CoalescerConfigValues } from "@ambient-agent/engine/coalescer/config.ts";
 import { botIdsOf, whatsappEventSource } from "@ambient-agent/engine/coalescer/whatsapp.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
-import { createManagedChatInbox, managedChatWindowStore, type ManagedChatInbox } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
+import {
+  createManagedChatInbox,
+  managedChatWindowStore,
+  type ManagedChatInbox,
+} from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { speakerActivity } from "@ambient-agent/agents/speaker/activity-reporter.ts";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "@ambient-agent/engine/logging/logging.ts";
 import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-health.ts";
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import { isGroupJid } from "@ambient-agent/engine/shared/whatsapp-jid.ts";
-import { createWhatsAppAccount, WhatsAppAccountError } from "@ambient-agent/installation/whatsapp-account.ts";
+import {
+  createWhatsAppAccount,
+  WhatsAppAccountError,
+  type ChatCandidate,
+} from "@ambient-agent/installation/whatsapp-account.ts";
 
 const isKnownTransportRejection = (message: string): boolean => /^not online \(phase: [^)]+\)$/.test(message);
 const deliveryFailure = (
@@ -175,6 +183,7 @@ export const getWhatsAppRuntimeStatus = (): WhatsAppRuntimeStatus => structuredC
 
 export interface WhatsAppRuntimeControl {
   readonly stop: () => Promise<void>;
+  readonly synchronizedChats: () => Promise<readonly ChatCandidate[]>;
   readonly smokeCanary: (
     nonce: string,
     timeoutMillis: number,
@@ -245,6 +254,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     yield* Effect.promise(() =>
       account.authenticate({
         onPairing: (pairing) => {
+          setRuntimeStatus({ phase: "pairing", chatTarget: gate.describe(), pairing });
           if (pairing.qr !== undefined) {
             renderQr(pairing.qr);
           } else if (pairing.code !== undefined) {
@@ -275,7 +285,9 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       botLid: options.botLid,
       ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
       ...(options.coalescer === undefined ? {} : { coalescer: options.coalescer }),
-      ...(options.afterParticipationReady === undefined ? {} : { afterParticipationReady: options.afterParticipationReady }),
+      ...(options.afterParticipationReady === undefined
+        ? {}
+        : { afterParticipationReady: options.afterParticipationReady }),
     });
   });
 
@@ -301,6 +313,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     }
   });
   return {
+    synchronizedChats: async () => await account.synchronizedChats(),
     smokeCanary: async (nonce, timeoutMillis) => {
       const chatId = options.canaryChat;
       if (chatId === undefined) {

@@ -20,12 +20,14 @@ import {
   type WhatsAppRuntimeControl,
 } from "./host/whatsapp-runtime.ts";
 import { installSmokeRoute } from "./host/smoke-route.ts";
+import { installBridgeRoute } from "./host/bridge-route.ts";
 import {
   deferWhatsAppRuntimeStart,
   getManagedRuntimeDependencies,
   type ManagedRuntimeDependencies,
 } from "@ambient-agent/installation/runtime-dependencies.ts";
-import { ambientRuntimeHealth, runtimeInstallationId } from "@ambient-agent/installation/runtime-health.ts";
+import { bridgeHealth } from "@ambient-agent/installation/bridge-contract.ts";
+import { runtimeInstallationId } from "@ambient-agent/installation/runtime-health.ts";
 import { connectPiChatGptSubscription } from "@ambient-agent/engine/model/pi-subscription.ts";
 
 /**
@@ -57,7 +59,7 @@ export const createAmbientAgentApp = async ({
 }: ManagedRuntimeDependencies): Promise<Hono> => {
   const subscription = await connectPiChatGptSubscription({ authentication });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
-  const installationId = runtimeInstallationId(githubCredential.webhookSecret);
+  const runtimeId = runtimeInstallationId(githubCredential.webhookSecret);
   // The Coder Specialist (#158) runs under its own App identity in a config-bound full
   // sandbox — `local()` on the single-owner VPS (host-trusted), a remote container in
   // SaaS. The coder App may not be provisioned yet; if its credential is absent, the
@@ -92,18 +94,20 @@ export const createAmbientAgentApp = async ({
     // The WhatsApp participation port is wired later by runWhatsAppSession, once the
     // live socket exists.
     health: () => {
-      const runtime = ambientRuntimeHealth(getWhatsAppRuntimeStatus());
       return {
-        ok: runtime.state === "healthy",
-        installationId,
         ...subscription,
-        runtime: { state: runtime.state, whatsapp: { phase: runtime.whatsapp.phase } },
+        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus()),
       };
     },
     routes: (routes) => {
       installSmokeRoute(routes, {
         webhookSecret: githubCredential.webhookSecret,
         canaryConfigured: configuration.smoke !== undefined,
+        control: () => whatsappControl,
+      });
+      installBridgeRoute(routes, {
+        webhookSecret: githubCredential.webhookSecret,
+        status: getWhatsAppRuntimeStatus,
         control: () => whatsappControl,
       });
     },

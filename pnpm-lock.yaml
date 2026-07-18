@@ -176,6 +176,9 @@ importers:
       '@ambient-agent/env':
         specifier: workspace:*
         version: link:../../packages/env
+      '@ambient-agent/installation':
+        specifier: workspace:*
+        version: link:../../packages/installation
       '@hono/node-server':
         specifier: ^2.0.8
         version: 2.0.8(hono@4.12.30)
