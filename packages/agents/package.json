@@ -10,6 +10,7 @@
     "./speaker/compose.ts": "./src/speaker/compose.ts",
     "./speaker/dispatch.ts": "./src/speaker/dispatch.ts",
     "./speaker/observer.ts": "./src/speaker/observer.ts",
+ "./scribe/agent.ts": "./src/scribe/agent.ts",
     "./capabilities/issue-management/issue-repository.ts": "./src/capabilities/issue-management/issue-repository.ts",
     "./capabilities/issue-management/runtime.ts": "./src/capabilities/issue-management/runtime.ts",
     "./capabilities/whatsapp-participation/whatsapp-port.ts": "./src/capabilities/whatsapp-participation/whatsapp-port.ts"
