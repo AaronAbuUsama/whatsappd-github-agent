@@ -1,6 +1,12 @@
 import * as prompts from "@clack/prompts";
 
 import type { DeviceCodeCallbacks } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
+import { githubAppSetupChecklist } from "@ambient-agent/installation/github-app-setup.ts";
+import {
+  GITHUB_APP_REFERENCES,
+  type GitHubAppReference,
+  type GitHubAppTriple,
+} from "@ambient-agent/installation/schema.ts";
 import type { FirstRunPrompts, SetupReview } from "./setup/first-run.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import type { CliOutput } from "./program.ts";
@@ -25,6 +31,23 @@ const promptValue = async <Value>(prompt: Promise<Value | symbol>): Promise<Valu
     throw new Error("Setup cancelled.");
   }
   return value;
+};
+
+const promptGitHubAppTriple = async (
+  reference: GitHubAppReference,
+  repository: string,
+): Promise<GitHubAppTriple> => {
+  prompts.note(githubAppSetupChecklist(reference, repository), `Provision the ${reference} GitHub App`);
+  const appId = await requiredPrompt(`${reference} App ID`, () =>
+    prompts.text({ message: `${reference} App ID`, placeholder: "123456" }),
+  );
+  const installationId = await requiredPrompt(`${reference} Installation ID`, () =>
+    prompts.text({ message: `${reference} Installation ID`, placeholder: "12345678" }),
+  );
+  const privateKey = await requiredPrompt(`${reference} private key`, () =>
+    prompts.password({ message: `${reference} private key (paste the .pem contents)`, mask: "*" }),
+  );
+  return { appId, installationId, privateKey };
 };
 
 export const defaultSetupPrompts: SetupPrompts = {
@@ -56,24 +79,14 @@ export const defaultSetupPrompts: SetupPrompts = {
         ...(discovered === undefined ? {} : { initialValue: discovered }),
       }),
     ),
-  githubCredential: async (discovered) => {
-    if (discovered !== undefined) {
-      const reuse = await promptValue(
-        prompts.confirm({
-          message: `Use the GitHub credential from ${discovered.source}?`,
-          initialValue: true,
-        }),
-      );
-      if (reuse) return discovered;
+  githubApps: async (repository) => {
+    const triples = {} as Record<GitHubAppReference, GitHubAppTriple>;
+    for (const reference of GITHUB_APP_REFERENCES) {
+      triples[reference] = await promptGitHubAppTriple(reference, repository);
     }
-    const token = await requiredPrompt("GitHub token", () =>
-      prompts.password({
-        message: "Fine-grained GitHub personal access token",
-        mask: "*",
-      }),
-    );
-    return { token, source: "secure prompt" };
+    return triples;
   },
+  githubApp: async (reference, repository) => await promptGitHubAppTriple(reference, repository),
   review: async (review: SetupReview) => {
     prompts.note(
       [

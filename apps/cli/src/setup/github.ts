@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 
-import { Octokit } from "@octokit/rest";
+import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
+import type { GitHubAppTriple } from "@ambient-agent/installation/schema.ts";
 
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 
@@ -45,32 +46,8 @@ export const discoverOriginRepository = async (
   }
 };
 
-export interface DiscoveredGitHubCredential {
-  readonly token: string;
-  readonly source: string;
-}
-
-export const discoverGitHubCredential = async (
-  options: {
-    readonly environment?: Readonly<Record<string, string | undefined>>;
-    readonly run?: CommandRunner;
-  } = {},
-): Promise<DiscoveredGitHubCredential | undefined> => {
-  const environment = options.environment ?? process.env;
-  for (const name of ["GH_TOKEN", "GITHUB_TOKEN"] as const) {
-    const token = environment[name]?.trim();
-    if (token) return { token, source: `environment ${name}` };
-  }
-  try {
-    const token = (await (options.run ?? runCommand)("gh", ["auth", "token"])).stdout.trim();
-    return token ? { token, source: "GitHub CLI" } : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-export interface GitHubAccessClient {
-  readonly users: {
+export interface GitHubAppAccessClient {
+  readonly apps: {
     getAuthenticated(input?: { readonly request?: { readonly signal?: AbortSignal } }): Promise<unknown>;
   };
   readonly repos: {
@@ -82,18 +59,25 @@ export interface GitHubAccessClient {
   };
 }
 
-export const verifyGitHubRepositoryAccess = async (input: {
-  readonly token: string;
+/**
+ * Verify a pasted GitHub App triple both authenticates (`apps.getAuthenticated`) and reaches
+ * the target repository through its installation (`repos.get`), returning the normalized
+ * `owner/name`. Replaces the retired personal-token check: the runtime's identity is now the
+ * App, so setup and doctor prove access under the same installation the runtime uses. Never
+ * echoes the private key on failure.
+ */
+export const verifyGitHubAppRepositoryAccess = async (input: {
+  readonly credential: GitHubAppTriple;
   readonly repository: string;
-  readonly client?: GitHubAccessClient;
+  readonly client?: GitHubAppAccessClient;
   readonly signal?: AbortSignal;
 }): Promise<string> => {
   const repository = normalizeGitHubRepository(input.repository);
   const [owner, repo] = repository.split("/") as [string, string];
-  const client = input.client ?? (new Octokit({ auth: input.token }) as unknown as GitHubAccessClient);
+  const client = input.client ?? (githubAppClient(input.credential).rest as unknown as GitHubAppAccessClient);
   try {
     input.signal?.throwIfAborted();
-    await client.users.getAuthenticated({ request: { signal: input.signal } });
+    await client.apps.getAuthenticated({ request: { signal: input.signal } });
     await client.repos.get({ owner, repo, request: { signal: input.signal } });
     return repository;
   } catch {

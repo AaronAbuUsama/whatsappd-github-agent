@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { configureLogging, type LogFormat } from "@ambient-agent/engine/logging/logging.ts";
-import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubCredential } from "@ambient-agent/installation/configuration.ts";
+import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { installManagedRuntimeDependencies, startDeferredWhatsAppRuntime } from "@ambient-agent/installation/runtime-dependencies.ts";
 import type { ManagedPaths } from "@ambient-agent/installation/paths.ts";
 import type { ChatGptAuthentication } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
@@ -41,9 +41,9 @@ export const startGeneratedRuntime = async (
     level: logging.debug ? "debug" : "info",
     ...(logging.format === undefined ? {} : { format: logging.format }),
   });
-  await ensureManagedGitHubWebhookSecret(paths.githubCredential);
+  await ensureManagedGitHubWebhookSecret(paths.githubAppCredentials.planner);
   const configuration = await readManagedConfig(paths.config);
-  const githubCredential = await readManagedGitHubCredential(paths.githubCredential);
+  const githubCredential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
   if (githubCredential.webhookSecret === undefined) {
     throw new Error("The app-owned GitHub webhook credential migration did not complete.");
   }

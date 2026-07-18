@@ -11,7 +11,11 @@ import {
   type ManagedWhatsAppAccount,
   type PairingCallbacks,
 } from "@ambient-agent/installation/whatsapp-account.ts";
-import { normalizeGitHubRepository, type DiscoveredGitHubCredential } from "./github.ts";
+import type { GitHubAppReference, GitHubAppTriple, GitHubAppTriples } from "@ambient-agent/installation/schema.ts";
+import { normalizeGitHubRepository } from "./github.ts";
+
+/** The single line the review shows for the guided three-App paste; carries no secret material. */
+export const GUIDED_GITHUB_APP_SOURCE = "guided GitHub App paste";
 
 export interface SetupReview {
   readonly dataDirectory: string;
@@ -25,7 +29,10 @@ export interface SetupReview {
 export interface FirstRunPrompts {
   selectChat(candidates: readonly ChatCandidate[]): Promise<string>;
   repository(discovered?: string): Promise<string>;
-  githubCredential(discovered?: DiscoveredGitHubCredential): Promise<DiscoveredGitHubCredential>;
+  /** Guided paste of the three App triples; the implementation prints each App's checklist. */
+  githubApps(repository: string): Promise<GitHubAppTriples>;
+  /** Guided paste of a single App triple — the rotation path (`config --github-app <ref>`). */
+  githubApp(reference: GitHubAppReference, repository: string): Promise<GitHubAppTriple>;
   review(review: SetupReview): Promise<boolean>;
   validationError(field: "chat" | "repository" | "github", message: string): void;
 }
@@ -36,14 +43,13 @@ export interface FirstRunServices {
   readonly chatGptFor: (paths: ManagedPaths) => ChatGptSetup;
   readonly whatsappFor: (paths: ManagedPaths, archive: ConversationArchive) => ManagedWhatsAppAccount;
   readonly discoverRepository: () => Promise<string | undefined>;
-  readonly discoverCredential: () => Promise<DiscoveredGitHubCredential | undefined>;
-  readonly verifyGitHub: (token: string, repository: string, signal?: AbortSignal) => Promise<string>;
+  readonly verifyGitHub: (credential: GitHubAppTriple, repository: string, signal?: AbortSignal) => Promise<string>;
 }
 
 export interface ScriptedFirstRunValues {
   readonly chat?: string;
   readonly repository?: string;
-  readonly githubCredential?: DiscoveredGitHubCredential;
+  readonly githubApps?: GitHubAppTriples;
 }
 
 export interface RunFirstRunSetupInput extends ManagedPathEnvironment {
@@ -146,9 +152,8 @@ const selectChat = async (
 
 const resolveGitHub = async (
   input: RunFirstRunSetupInput,
-): Promise<{ readonly repository: string; readonly credential: DiscoveredGitHubCredential }> => {
+): Promise<{ readonly repository: string; readonly triples: GitHubAppTriples }> => {
   let discoveredRepository = input.scripted?.repository ?? (await input.services.discoverRepository());
-  const discoveredCredential = input.scripted?.githubCredential ?? (await input.services.discoverCredential());
   for (;;) {
     const raw = input.interactive ? await input.prompts.repository(discoveredRepository) : discoveredRepository;
     let repository: string;
@@ -164,20 +169,18 @@ const resolveGitHub = async (
       continue;
     }
 
-    const credential = input.interactive
-      ? await input.prompts.githubCredential(discoveredCredential)
-      : discoveredCredential;
-    if (!credential?.token.trim()) {
-      if (!input.interactive) {
-        throw new Error("Non-interactive setup requires an explicit valid GitHub credential source.");
-      }
-      input.prompts.validationError("github", "Enter or choose a non-empty GitHub credential.");
-      discoveredRepository = repository;
-      continue;
+    const triples = input.interactive
+      ? await input.prompts.githubApps(repository)
+      : input.scripted?.githubApps;
+    if (triples === undefined) {
+      // Non-interactive setup has no guided paste; the triples must be supplied up front.
+      throw new Error("Non-interactive setup requires the three GitHub App triples.");
     }
     try {
-      const verified = await input.services.verifyGitHub(credential.token, repository, input.signal);
-      return { repository: normalizeGitHubRepository(verified), credential };
+      // The Planner App is the runtime's own identity, so its installation is the one that
+      // must prove repository access before promotion (the Coder/Reviewer are verified lazily).
+      const verified = await input.services.verifyGitHub(triples.planner, repository, input.signal);
+      return { repository: normalizeGitHubRepository(verified), triples };
     } catch {
       if (input.signal?.aborted) {
         const reason = input.signal.reason;
@@ -272,7 +275,7 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         chatGptCredentialSource:
           chatGptStatus.state === "ready" ? "existing managed credential" : "fresh device authorization",
         whatsappCredentialSource: paired ? "fresh pairing" : "existing managed session",
-        githubCredentialSource: github.credential.source,
+        githubCredentialSource: GUIDED_GITHUB_APP_SOURCE,
       };
       const approved = input.interactive ? await input.prompts.review(review) : true;
       if (input.signal?.aborted) {
@@ -284,7 +287,7 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
       return {
         managedChats: [selected.jid],
         defaultRepository: github.repository,
-        githubToken: github.credential.token,
+        githubApps: github.triples,
       };
     },
   });

@@ -7,18 +7,30 @@ import packageManifest from "../../../package.json" with { type: "json" };
 import { upstreamWhatsAppLogger } from "@ambient-agent/engine/logging/logging.ts";
 import {
   acquireSetupLock,
+  githubAppCredentialFrom,
   inspectManagedData,
   promoteReplacementWhatsAppStore,
   releaseSetupLock,
 } from "@ambient-agent/installation/installation.ts";
 import { createManagedChatGptAuthentication } from "@ambient-agent/installation/chatgpt-authentication.ts";
 import {
+  atomicWriteManagedConfig,
   readManagedConfig,
-  readManagedGitHubCredential,
+  readManagedGitHubAppCredential,
   writeManagedConfiguration,
 } from "@ambient-agent/installation/configuration.ts";
 import { inspectManagedServices, inspectWhatsAppSession } from "@ambient-agent/installation/diagnostics.ts";
-import { migrateLegacyManagedData, type ManagedDataMigration } from "@ambient-agent/installation/migration.ts";
+import {
+  migrateLegacyManagedData,
+  migrateManagedGitHubCredential,
+  type ManagedDataMigration,
+} from "@ambient-agent/installation/migration.ts";
+import {
+  GITHUB_APP_REFERENCES,
+  type GitHubAppReference,
+  type GitHubAppTriple,
+  type GitHubAppTriples,
+} from "@ambient-agent/installation/schema.ts";
 import { managedPaths, type ManagedPaths } from "@ambient-agent/installation/paths.ts";
 import {
   probeAmbientRuntimeHealth,
@@ -36,10 +48,9 @@ import {
 } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import type { ChatGptReadinessReceipt } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
-  discoverGitHubCredential,
   discoverOriginRepository,
   normalizeGitHubRepository,
-  verifyGitHubRepositoryAccess,
+  verifyGitHubAppRepositoryAccess,
 } from "./setup/github.ts";
 import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "./setup/first-run.ts";
 import { createWhatsAppAccount } from "@ambient-agent/installation/whatsapp-account.ts";
@@ -101,14 +112,26 @@ const defaultOutput: CliOutput = {
 };
 
 
-const readGitHubToken = async (path: string): Promise<string> => {
+/** Read three App triples from a private JSON file for headless (non-interactive) setup. */
+const readGitHubAppTriplesFile = async (path: string): Promise<GitHubAppTriples> => {
+  let parsed: unknown;
   try {
-    const token = (await readFile(path, "utf8")).trim();
-    if (!token) throw new Error("empty");
-    return token;
+    parsed = JSON.parse(await readFile(path, "utf8"));
   } catch {
-    throw new Error(`Could not read a non-empty GitHub token from ${path}.`);
+    throw new Error(`Could not read GitHub App triples from ${path}; expected a JSON object.`);
   }
+  const triples = {} as Record<GitHubAppReference, GitHubAppTriple>;
+  for (const reference of GITHUB_APP_REFERENCES) {
+    const entry = (parsed as Record<string, unknown> | null)?.[reference] as Partial<GitHubAppTriple> | undefined;
+    const appId = entry?.appId?.trim();
+    const installationId = entry?.installationId?.trim();
+    const privateKey = entry?.privateKey?.trim();
+    if (!appId || !installationId || !privateKey) {
+      throw new Error(`The ${reference} App triple in ${path} needs a non-empty appId, installationId, and privateKey.`);
+    }
+    triples[reference] = { appId, installationId, privateKey };
+  }
+  return triples;
 };
 
 const bareDataDirectory = (args: readonly string[]): { readonly dataDirectory?: string } | undefined => {
@@ -152,10 +175,9 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           logger: upstreamWhatsAppLogger(),
         })),
     discoverRepository: serviceOverrides.discoverRepository ?? (() => discoverOriginRepository()),
-    discoverCredential: serviceOverrides.discoverCredential ?? (() => discoverGitHubCredential()),
     verifyGitHub:
       serviceOverrides.verifyGitHub ??
-      ((token, repository, signal) => verifyGitHubRepositoryAccess({ token, repository, signal })),
+      ((credential, repository, signal) => verifyGitHubAppRepositoryAccess({ credential, repository, signal })),
   };
   const startRuntime =
     dependencies.startRuntime ??
@@ -165,7 +187,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     dependencies.runtimeHealthFor ??
     (async (paths) => {
       const configuration = await readManagedConfig(paths.config);
-      const credential = await readManagedGitHubCredential(paths.githubCredential);
+      const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
       if (credential.webhookSecret === undefined) return { state: "stopped", whatsapp: { phase: "stopped" } };
       return await probeAmbientRuntimeHealth({
         port: configuration.runtime.port,
@@ -213,7 +235,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .description("create a secure managed installation")
     .option("--chat <jid>", "managed WhatsApp chat JID")
     .option("--repository <owner/name>", "default GitHub repository")
-    .option("--github-token-file <path>", "read the GitHub token from a file")
+    .option("--github-apps-file <path>", "read the three GitHub App triples from a private JSON file")
     .option("--whatsapp-store <path>", "copy a stopped local WhatsApp store into setup")
     .option("--authorize", "allow explicit headless ChatGPT device authorization")
     .action(async (options) => {
@@ -229,10 +251,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           `Refusing to replace ${current.state} managed data at ${current.dataDirectory}; run ambient-agent doctor.`,
         );
       }
-      const scriptedCredential =
-        options.githubTokenFile === undefined
-          ? undefined
-          : { token: await readGitHubToken(options.githubTokenFile), source: "token file" };
+      const scriptedApps =
+        options.githubAppsFile === undefined ? undefined : await readGitHubAppTriplesFile(options.githubAppsFile);
       const result = await runFirstRunSetup({
         dataDirectory: global.dataDir,
         interactive,
@@ -243,7 +263,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         scripted: {
           ...(options.chat === undefined ? {} : { chat: options.chat }),
           ...(options.repository === undefined ? {} : { repository: options.repository }),
-          ...(scriptedCredential === undefined ? {} : { githubCredential: scriptedCredential }),
+          ...(scriptedApps === undefined ? {} : { githubApps: scriptedApps }),
         },
         chatGptCallbacks: deviceCodeCallbacks,
         whatsappCallbacks,
@@ -286,11 +306,23 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--canary-chat <jid>", "dedicated managed WhatsApp group for live smoke canaries")
     .option("--repository <owner/name>", "default GitHub repository")
     .option("--port <port>", "foreground runtime HTTP port")
-    .option("--github-token-file <path>", "replace the GitHub token from a private file")
+    .option("--github-app <reference>", "rotate one GitHub App (coder|reviewer|planner) by pasting a fresh triple")
     .action(async (options) => {
       const paths = await readyManagedPaths("reconfigure");
       const currentConfig = await readManagedConfig(paths.config);
-      const currentCredential = await readManagedGitHubCredential(paths.githubCredential);
+      const rotateReference = options.githubApp as GitHubAppReference | undefined;
+      if (rotateReference !== undefined && !GITHUB_APP_REFERENCES.includes(rotateReference)) {
+        throw new Error("The --github-app reference must be one of coder, reviewer, or planner.");
+      }
+      // One-time token->App cutover: a lingering personal-token file is walked to three Apps.
+      const credentialMigration = await migrateManagedGitHubCredential({
+        paths,
+        collectTriples: () => setupPrompts.githubApps(currentConfig.github.defaultRepository),
+      });
+      if (credentialMigration.migrated) {
+        output.stdout("Provisioned three GitHub Apps and retired the personal-token credential.\n");
+      }
+      const currentCredential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
       let selected = {
         jid: options.chat ?? currentConfig.managedChats[0]!,
         name: options.chat ?? currentConfig.managedChats[0]!,
@@ -356,17 +388,24 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           ? await setupPrompts.repository(options.repository ?? currentConfig.github.defaultRepository)
           : (options.repository ?? currentConfig.github.defaultRepository),
       );
-      const credentialFromFile =
-        options.githubTokenFile === undefined
-          ? undefined
-          : { token: await readGitHubToken(options.githubTokenFile), source: "token file" };
-      const credential = interactive
-        ? await setupPrompts.githubCredential(
-            credentialFromFile ?? { token: currentCredential.token, source: "existing managed credential" },
-          )
-        : (credentialFromFile ?? { token: currentCredential.token, source: "existing managed credential" });
+      // Rotation re-pastes one App's triple; the Planner file also keeps the runtime webhook secret.
+      let rotatedPlanner: typeof currentCredential | undefined;
+      if (rotateReference !== undefined) {
+        if (!interactive) throw new Error("Rotating a GitHub App requires the interactive guided paste.");
+        const triple = await setupPrompts.githubApp(rotateReference, repository);
+        const rotated = {
+          ...githubAppCredentialFrom(rotateReference, { [rotateReference]: triple } as GitHubAppTriples),
+          ...(rotateReference === "planner" && currentCredential.webhookSecret !== undefined
+            ? { webhookSecret: currentCredential.webhookSecret }
+            : {}),
+        };
+        if (rotateReference === "planner") rotatedPlanner = rotated;
+        else await atomicWriteManagedConfig(paths.githubAppCredentials[rotateReference], rotated);
+      }
+      // The runtime's own identity is the Planner App, so it proves access to the repository.
+      const plannerCredential = rotatedPlanner ?? currentCredential;
       const verifiedRepository = await firstRunServices.verifyGitHub(
-        credential.token,
+        plannerCredential,
         repository,
         authenticationSignal(),
       );
@@ -376,7 +415,8 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         repository: verifiedRepository,
         chatGptCredentialSource: "existing managed credential",
         whatsappCredentialSource: "existing managed session",
-        githubCredentialSource: credential.source,
+        githubCredentialSource:
+          rotateReference === undefined ? "existing managed credential" : `rotated ${rotateReference} App`,
       };
       if (interactive && !(await setupPrompts.review(review))) {
         throw new Error("Configuration cancelled; managed configuration was not changed.");
@@ -397,7 +437,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       const runtimePort = options.port === undefined ? currentConfig.runtime.port : parseRuntimePort(options.port);
       await writeManagedConfiguration(
         paths.config,
-        paths.githubCredential,
+        paths.githubAppCredentials.planner,
         {
           ...currentConfig,
           managedChats,
@@ -409,12 +449,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
             allowedRepositories,
           },
         },
-        {
-          schemaVersion: 1,
-          kind: "personal-token",
-          token: credential.token,
-          ...(currentCredential.webhookSecret === undefined ? {} : { webhookSecret: currentCredential.webhookSecret }),
-        },
+        plannerCredential,
       );
       output.stdout(`Updated validated managed configuration at ${paths.config}.\n`);
     });

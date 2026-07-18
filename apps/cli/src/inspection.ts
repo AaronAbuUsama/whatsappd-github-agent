@@ -1,9 +1,10 @@
+import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
 import { createManagedChatInbox, inspectWindowDeliveryCounts } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createManagedChatGptAuthentication } from "@ambient-agent/installation/chatgpt-authentication.ts";
-import { readManagedConfig, readManagedGitHubCredential } from "@ambient-agent/installation/configuration.ts";
+import { readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { inspectManagedServices } from "@ambient-agent/installation/diagnostics.ts";
 import { inspectManagedData } from "@ambient-agent/installation/installation.ts";
 import { managedPaths, type ManagedPaths } from "@ambient-agent/installation/paths.ts";
@@ -22,7 +23,7 @@ import {
   runChatGptReadinessCheck,
   type ChatGptReadinessReceipt,
 } from "@ambient-agent/engine/model/pi-subscription.ts";
-import { verifyGitHubRepositoryAccess } from "./setup/github.ts";
+import { verifyGitHubAppRepositoryAccess } from "./setup/github.ts";
 import type { CliDependencies, CliOutput } from "./program.ts";
 import { renderInspection, type InspectionReport, type WindowDeliveryCounts } from "./rendering.ts";
 
@@ -57,13 +58,12 @@ export const createInspectionReporter = ({
   const readinessSignal = (): AbortSignal => operationSignal(dependencies.readinessTimeoutMillis ?? 60_000);
   const verifyGitHub =
     dependencies.firstRunServices?.verifyGitHub ??
-    ((token: string, repository: string, signal: AbortSignal) =>
-      verifyGitHubRepositoryAccess({ token, repository, signal }));
+    ((credential, repository, signal) => verifyGitHubAppRepositoryAccess({ credential, repository, signal }));
   const runtimeHealthFor =
     dependencies.runtimeHealthFor ??
     (async (paths: ManagedPaths) => {
       const configuration = await readManagedConfig(paths.config);
-      const credential = await readManagedGitHubCredential(paths.githubCredential);
+      const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
       if (credential.webhookSecret === undefined) return { state: "stopped", whatsapp: { phase: "stopped" } } as const;
       return await probeAmbientRuntimeHealth({
         port: configuration.runtime.port,
@@ -74,7 +74,7 @@ export const createInspectionReporter = ({
   const uncertainWorkFor =
     dependencies.uncertainWorkFor ??
     (async (paths: ManagedPaths): Promise<UncertainWorkController> => {
-      const token = (await readManagedGitHubCredential(paths.githubCredential)).token;
+      const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
       const archive = createConversationArchive(paths.applicationDatabase);
       try {
         // Opening the inbox performs the one-way Window-ledger migration (ADR 0014).
@@ -84,7 +84,7 @@ export const createInspectionReporter = ({
       }
       return createUncertainWorkController({
         operations: createIssueOperationStore(paths.applicationDatabase),
-        repository: createOctokitIssueRepository(token),
+        repository: createOctokitIssueRepository(githubAppClient(credential)),
       });
     });
 
@@ -104,7 +104,9 @@ export const createInspectionReporter = ({
       ({ name, state }) => name === "github-credential" && state === "ready",
     );
     const managedGitHubCredential =
-      ready && githubCredentialReady ? await readManagedGitHubCredential(paths.githubCredential) : undefined;
+      ready && githubCredentialReady
+        ? await readManagedGitHubAppCredential(paths.githubAppCredentials.planner)
+        : undefined;
     if (managedGitHubCredential !== undefined && managedGitHubCredential.webhookSecret === undefined) {
       checks.push({
         name: "github-webhook-secret",
@@ -117,7 +119,7 @@ export const createInspectionReporter = ({
     if (live && managedGitHubCredential !== undefined) {
       const config = await readManagedConfig(paths.config);
       try {
-        await verifyGitHub(managedGitHubCredential.token, config.github.defaultRepository, readinessSignal());
+        await verifyGitHub(managedGitHubCredential, config.github.defaultRepository, readinessSignal());
         checks.push({
           name: "github-access",
           state: "ready",
@@ -130,7 +132,7 @@ export const createInspectionReporter = ({
           state: "failed",
           code: "github.access-failed",
           message: `GitHub authentication or repository access failed for ${config.github.defaultRepository}.`,
-          remediation: "Run ambient-agent config with a valid scoped GitHub token, then run doctor --live again.",
+          remediation: "Run ambient-agent config --github-app <coder|reviewer|planner> with a fresh App triple, then run doctor --live again.",
         });
       }
     }
@@ -203,7 +205,7 @@ export const createInspectionReporter = ({
       } else {
         if (!githubCredentialReady) {
           throw new Error(
-            "Uncertain-work actions need a usable GitHub credential. Run ambient-agent config --github-token-file <path> with a valid scoped GitHub token.",
+            "Uncertain-work actions need a usable GitHub credential. Run ambient-agent config --github-app <coder|reviewer|planner> and paste a fresh App triple.",
           );
         }
         const controller = await uncertainWorkFor(paths);

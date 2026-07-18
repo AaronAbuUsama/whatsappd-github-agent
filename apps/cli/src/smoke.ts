@@ -1,4 +1,4 @@
-import { readManagedConfig, readManagedGitHubCredential } from "@ambient-agent/installation/configuration.ts";
+import { readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { runtimeSmokeAuthorization } from "@ambient-agent/installation/runtime-health.ts";
 import type { ManagedPaths } from "@ambient-agent/installation/paths.ts";
 import type { InspectionReport } from "./rendering.ts";
@@ -37,7 +37,7 @@ export const requestRuntimeSmokeCanary: SmokeCanary = async (paths, nonce, timeo
       "No dedicated smoke canary group is configured; run ambient-agent config --canary-chat <group-jid>.",
     );
   }
-  const credential = await readManagedGitHubCredential(paths.githubCredential);
+  const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
   if (credential.webhookSecret === undefined) throw new Error("The runtime installation identity is unavailable.");
   const signal = AbortSignal.timeout(timeoutMillis + 1_000);
   const response = await fetch(`http://127.0.0.1:${configuration.runtime.port}/smoke`, {
