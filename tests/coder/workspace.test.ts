@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  coderPullRequestBody,
-  coderResult,
+  coderOutcome,
+  coderTmpDir,
   diffSnapshots,
+  ensureClosesIssue,
   gitignoreMatcher,
   isEmptyDiff,
   parseHashListing,
@@ -11,22 +12,12 @@ import {
 } from "../../packages/agents/src/capabilities/coder/workspace.ts";
 import type { GraphDigest } from "@ambient-agent/engine/graph/digest.ts";
 
-describe("coderPullRequestBody", () => {
-  // The ingress `linkedIssueNumbers` closing-keyword regex (closes/fixes/resolves + #N).
-  const closesKeyword = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+)#([1-9]\d*)\b/i;
-
-  it("carries `Closes #N` in the green variant so a merge auto-closes the issue", () => {
-    const body = coderPullRequestBody(42, true, "the suite is green");
-    expect(body).toContain("Closes #42");
-    expect(closesKeyword.exec(body)?.[1]).toBe("42");
-    expect(body).not.toContain("DRAFT");
-  });
-
-  it("carries `Closes #N` in the draft variant while keeping the blocked explanation", () => {
-    const body = coderPullRequestBody(42, false, "last failure");
-    expect(body).toContain("Closes #42");
-    expect(closesKeyword.exec(body)?.[1]).toBe("42");
-    expect(body).toContain("DRAFT");
+describe("coderTmpDir — the workspace-local TMPDIR (#172, survives noexec /tmp)", () => {
+  it("is under the workspaces root, never the host /tmp", () => {
+    const tmp = coderTmpDir("/home/agent/.ambient-agent/workspaces");
+    expect(tmp).toBe("/home/agent/.ambient-agent/workspaces/.tmp");
+    expect(tmp.startsWith("/home/agent/.ambient-agent/workspaces")).toBe(true);
+    expect(tmp.startsWith("/tmp")).toBe(false);
   });
 });
 
@@ -62,34 +53,54 @@ describe("diffSnapshots", () => {
   });
 });
 
-describe("coderResult — the green gate", () => {
-  const base = { branch: "agent/coder/issue-7", summary: "s" };
+describe("coderOutcome — the conductor's light after-check (#172)", () => {
+  const branch = "agent/coder/issue-7";
 
-  it("green + a freshly opened PR → opened-pr, non-blocked, testsPassed", () => {
-    const result = coderResult({ ...base, hasChanges: true, testsPassed: true, prCreated: true, prUrl: "u", prNumber: 3 });
+  it("a freshly opened, non-draft PR → opened-pr, testsPassed true", () => {
+    const result = coderOutcome({ url: "u", number: 3, created: true, draft: false }, 7, branch);
     expect(result.outcome).toBe("opened-pr");
     expect(result.testsPassed).toBe(true);
-    expect(result).toMatchObject({ prUrl: "u", prNumber: 3, branch: "agent/coder/issue-7" });
+    expect(result).toMatchObject({ prUrl: "u", prNumber: 3, branch });
   });
 
-  it("green + a PR already open → updated-pr (relaunch pushed more commits)", () => {
-    expect(coderResult({ ...base, hasChanges: true, testsPassed: true, prCreated: false }).outcome).toBe("updated-pr");
+  it("a reused open PR → updated-pr (relaunch pushed more commits, no duplicate)", () => {
+    expect(coderOutcome({ url: "u", number: 3, created: false, draft: false }, 7, branch).outcome).toBe("updated-pr");
   });
 
-  it("red after N attempts → blocked (the draft PR path), never presented as done", () => {
-    const result = coderResult({ ...base, hasChanges: true, testsPassed: false, prCreated: true });
+  it("a draft PR → testsPassed false (the model's own red judgment), never presented as done", () => {
+    const result = coderOutcome({ url: "u", number: 3, created: true, draft: true }, 7, branch);
+    expect(result.outcome).toBe("opened-pr");
+    expect(result.testsPassed).toBe(false);
+    expect(result.summary).toContain("draft");
+  });
+
+  it("no PR opened → blocked (the model made no committable change or gave up)", () => {
+    const result = coderOutcome(undefined, 7, branch);
     expect(result.outcome).toBe("blocked");
-    expect(result.testsPassed).toBe(false);
+    expect(result.prUrl).toBeUndefined();
+    expect(result.branch).toBe(branch);
+  });
+});
+
+describe("ensureClosesIssue — the load-bearing `Closes #N` (#172, Finding 1)", () => {
+  it("appends `Closes #N` when the model's body has no closing keyword for the issue", () => {
+    expect(ensureClosesIssue("A rich narrative.", 172)).toBe("A rich narrative.\n\nCloses #172");
   });
 
-  it("no change + green → no-op (nothing to do, the suite was already green)", () => {
-    expect(coderResult({ ...base, hasChanges: false, testsPassed: true, prCreated: false }).outcome).toBe("no-op");
+  it("leaves the body untouched when it already closes the issue (any keyword, case-insensitive)", () => {
+    for (const kw of ["Closes #172", "closed #172", "Fixes #172", "fix #172", "Resolves #172", "resolved #172"]) {
+      const body = `Done. ${kw} for good.`;
+      expect(ensureClosesIssue(body, 172)).toBe(body);
+    }
   });
 
-  it("no change + still red → failed, never the benign no-op (attempts exhausted, nothing fixed)", () => {
-    const result = coderResult({ ...base, hasChanges: false, testsPassed: false, prCreated: false });
-    expect(result.outcome).toBe("failed");
-    expect(result.testsPassed).toBe(false);
+  it("still appends when the body closes a DIFFERENT issue (must close its own)", () => {
+    expect(ensureClosesIssue("Closes #99.", 172)).toBe("Closes #99.\n\nCloses #172");
+  });
+
+  it("honors an owner/repo-qualified closing keyword", () => {
+    const body = "Closes acme/widgets#172.";
+    expect(ensureClosesIssue(body, 172)).toBe(body);
   });
 });
 

@@ -82,26 +82,35 @@ describe("ensureBranch — idempotent per-issue natural key (check-then-act)", (
 });
 
 describe("upsertPullRequest — one open PR per head→base", () => {
-  it("reuses the open PR rather than opening a second (push-more-commits)", async () => {
-    const list = vi.fn(async () => ({ data: [{ number: 9, html_url: "https://x/pr/9", draft: false }] }));
+  it("reuses the open PR and patches its title/body with the model's fresh values (#172 update-if-open)", async () => {
+    const list = vi.fn(async () => ({ data: [{ number: 9, html_url: "https://x/pr/9", draft: true }] }));
     const create = vi.fn();
-    const gh = { pulls: { list, create } } as unknown as CoderGitHub;
+    const update = vi.fn(async () => ({ data: {} }));
+    const gh = { pulls: { list, create, update } } as unknown as CoderGitHub;
 
     const pr = await upsertPullRequest(gh, REPO, {
       branch: "agent/coder/issue-42",
       base: "main",
-      title: "t",
-      body: "b",
+      title: "fresh title",
+      body: "fresh body",
       draft: false,
     });
 
-    expect(pr).toEqual({ number: 9, url: "https://x/pr/9", created: false, draft: false });
+    // Reports the PR's ACTUAL draft (true), not the caller's input.draft (false).
+    expect(pr).toEqual({ number: 9, url: "https://x/pr/9", created: false, draft: true });
     expect(list).toHaveBeenCalledWith({
       owner: "acme",
       repo: "widgets",
       head: "acme:agent/coder/issue-42",
       base: "main",
       state: "open",
+    });
+    expect(update).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      pull_number: 9,
+      title: "fresh title",
+      body: "fresh body",
     });
     expect(create).not.toHaveBeenCalled();
   });

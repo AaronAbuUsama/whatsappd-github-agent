@@ -71,6 +71,13 @@ export interface CoderGitHub {
       body: string;
       draft: boolean;
     }): Promise<{ data: { number: number; html_url: string } }>;
+    update(input: {
+      owner: string;
+      repo: string;
+      pull_number: number;
+      title: string;
+      body: string;
+    }): Promise<{ data: unknown }>;
   };
 }
 
@@ -210,10 +217,13 @@ export const commitChanges = async (
 };
 
 /**
- * Idempotent PR (§8 principle 3): one open PR per `head→base`. Lists open PRs for the
- * head first; if one exists the new commits already rode the branch, so reuse it
- * (`created:false`) rather than opening a second. Green-gate is the caller's: a red
- * run passes `draft:true` (only reached when no PR is open yet).
+ * Idempotent PR (§8 principle 3): one open PR per `head→base`, "update if open" (#172).
+ * Lists open PRs for the head first; if one exists the new commits already rode the branch,
+ * so reuse it (`created:false`) and PATCH its title + body with the model's fresh values
+ * rather than opening a second or discarding them. `draft` reported is the PR's ACTUAL state
+ * (`existing.draft`), not the caller's `input.draft` — flipping draft→ready needs the GraphQL
+ * `markPullRequestReadyForReview` (out of scope), so an honest report beats a silent lie.
+ * Green-gate is the caller's: a red run passes `draft:true` (only used when opening fresh).
  */
 export const upsertPullRequest = async (
   gh: CoderGitHub,
@@ -230,6 +240,13 @@ export const upsertPullRequest = async (
   });
   const existing = open[0];
   if (existing !== undefined) {
+    await gh.pulls.update({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: existing.number,
+      title: input.title,
+      body: input.body,
+    });
     return { number: existing.number, url: existing.html_url, created: false, draft: existing.draft ?? false };
   }
   const { data } = await gh.pulls.create({

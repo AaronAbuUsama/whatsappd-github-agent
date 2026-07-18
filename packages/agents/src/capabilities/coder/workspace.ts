@@ -50,6 +50,44 @@ export const diffSnapshots = (before: WorkspaceSnapshot, after: WorkspaceSnapsho
 export const isEmptyDiff = (diff: WorkspaceDiff): boolean => diff.changed.length === 0 && diff.deleted.length === 0;
 
 /**
+ * Deterministic handler plumbing (#172): guarantee the PR body carries a `Closes #N`. This
+ * is load-bearing, not templating — a merged PR auto-closes its issue AND the ingress
+ * backstop (engine/github/ingress.ts `linkedIssueNumbers`) parses it to correlate the
+ * Coder's own `pull_request.opened` webhook to the issue. #172 deleted the body TEMPLATE,
+ * not this one line. Idempotent: if the model's body already closes #N with any GitHub
+ * closing keyword (close(s|d)/fix(es|ed)/resolve(s|d), optional `owner/repo` prefix),
+ * append nothing. Mirrors the ingress regex so what we write is exactly what it reads.
+ */
+export const ensureClosesIssue = (body: string, issue: number): string => {
+  const closesN = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\\s*|\\s+)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${issue}\\b`,
+    "i",
+  );
+  return closesN.test(body) ? body : `${body}\n\nCloses #${issue}`;
+};
+
+/**
+ * What the `open_pull_request` handler records when it opens (or reuses) the PR, so the
+ * conductor's light after-check can tell the model finished from the model giving up
+ * without a second GitHub round-trip. `draft` is the model's own green/red judgment.
+ */
+export interface OpenPrRecord {
+  readonly url: string;
+  readonly number: number;
+  readonly created: boolean;
+  readonly draft: boolean;
+}
+
+/**
+ * The workspace-local scratch dir the model's shell tools use as `TMPDIR`, so the test
+ * run survives a `noexec /tmp` on hardened hosts. Kept at the workspaces root (not under
+ * the per-issue `repoDir`) so the conductor's end-of-run `rm(repoDir)` never destroys it.
+ * Bound into the sandbox env at composition (`local({ env: { TMPDIR } })`) and `mkdir`ed
+ * by the conductor per run.
+ */
+export const coderTmpDir = (workspacesRoot: string): string => `${workspacesRoot}/.tmp`;
+
+/**
  * Build-artifact patterns every JS/TS repo produces, layered UNDER the workspace
  * `.gitignore` so a repo that forgot one still never commits it (`node_modules`/`.git`
  * are already pruned by the `find`, listed here so the matcher is self-contained).
@@ -94,44 +132,35 @@ export const gitignoreMatcher = (gitignoreText: string): ((path: string) => bool
 };
 
 /**
- * The green-gate decision (§8 DoD), pure so it is unit-tested without a sandbox:
+ * The conductor's light after-check, pure so it is unit-tested without a sandbox: the
+ * model owned the loop and (if it got there) called `open_pull_request`, so the only thing
+ * left to decide is whether a PR exists.
  *
- * - No change after a green run → `no-op` (nothing to commit; no PR).
- * - No change after a still-red run → `failed`: attempts exhausted, nothing fixed, the
- *   suite left red — a real failure, not the benign `no-op`. The failure rides `summary`.
- * - Green + a freshly opened PR → `opened-pr`; green + a PR already open → `updated-pr`
- *   (relaunch pushed more commits). Non-draft either way.
- * - Change but still red after N attempts → a **draft** PR and `blocked`, the failure in
- *   `summary`. Red work is never presented as done (the caller opens `draft: !testsPassed`).
+ * - A PR record → `opened-pr` (fresh) or `updated-pr` (relaunch reused the open PR).
+ *   `testsPassed` mirrors the model's own `draft` judgment (a draft PR is not green).
+ * - No record → the model made no committable change or gave up → `blocked`. Red/abandoned
+ *   work is never presented as done.
+ *
+ * ponytail: `summary` is the terse Speaker relay; the rich narrative is the MODEL-authored
+ * PR body on the PR itself, never templated here.
  */
-export const coderResult = (input: {
-  hasChanges: boolean;
-  testsPassed: boolean;
-  prCreated: boolean;
-  prUrl?: string;
-  prNumber?: number;
-  branch: string;
-  summary: string;
-}): CoderResult => {
-  const base = {
-    branch: input.branch,
-    summary: input.summary,
-    testsPassed: input.testsPassed,
-    ...(input.prUrl === undefined ? {} : { prUrl: input.prUrl }),
-    ...(input.prNumber === undefined ? {} : { prNumber: input.prNumber }),
+export const coderOutcome = (record: OpenPrRecord | undefined, issue: number, branch: string): CoderResult => {
+  if (record === undefined) {
+    return {
+      outcome: "blocked",
+      branch,
+      summary: `Issue #${issue}: no pull request was opened — the coder made no committable change or could not finish.`,
+    };
+  }
+  return {
+    outcome: record.created ? "opened-pr" : "updated-pr",
+    prUrl: record.url,
+    prNumber: record.number,
+    branch,
+    testsPassed: !record.draft,
+    summary: `Issue #${issue}: ${record.created ? "opened" : "updated"} ${record.draft ? "a draft (not yet green) " : "a "}pull request — ${record.url}`,
   };
-  if (!input.hasChanges) return { ...base, outcome: input.testsPassed ? "no-op" : "failed" };
-  if (!input.testsPassed) return { ...base, outcome: "blocked" };
-  return { ...base, outcome: input.prCreated ? "opened-pr" : "updated-pr" };
 };
-
-/**
- * The PR body. Both variants carry the `Closes #N` closing keyword so the ingress backstop
- * (`linkedIssueNumbers`: closes/fixes/resolves) correlates the Coder's own `pull_request.opened`
- * webhook, and a merge auto-closes the issue. The draft variant keeps its blocked explanation.
- */
-export const coderPullRequestBody = (issue: number, testsPassed: boolean, summary: string): string =>
-  `${testsPassed ? "" : "DRAFT — blocked on a red suite. "}Closes #${issue}.\n\n${summary}`;
 
 /**
  * Render the pushed graph digest (§8, seeded at launch) into a compact prompt block the

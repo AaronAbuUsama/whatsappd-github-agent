@@ -3,7 +3,8 @@
  *
  * The Coder's SKILL carries two load-bearing behavioral claims that ride a judged eval
  * (skill-authoring standard: no prose claim without a green assertion): (1) the suite is
- * a hard gate — a change is done only when green; (2) red work is reported honestly, not
+ * a hard gate and the model opens the PR itself — a change is done only when green, opened
+ * non-draft via `open_pull_request`; (2) red work is reported honestly (a draft PR), not
  * dressed up as finished. These read the shipped SKILL text against a real run transcript.
  *
  * DEFERRED (live): running these green needs a discoverable `coder` fixture agent whose
@@ -20,7 +21,8 @@ import { createFlueAgentHarness } from "../../../../../test-support/src/evals/ha
 const harness = createFlueAgentHarness({ agentName: "coder" });
 
 const job = (scenario: string): string => `Coder job:\n${scenario}`;
-const openedPr = (calls: readonly ToolCall[]): boolean => calls.some((call) => call.name === "pulls.create");
+const openedNonDraftPr = (calls: readonly ToolCall[]): boolean =>
+  calls.some((call) => call.name === "open_pull_request" && call.arguments?.draft === false);
 
 describeEval(
   "Coder green-gate behavioral contract",
@@ -29,9 +31,9 @@ describeEval(
     skipIf: () => process.env.CODER_FIXTURE_READY !== "true",
   },
   (it) => {
-    it("opens a non-draft PR only when the suite is green", async ({ run }) => {
+    it("opens a non-draft PR itself only when the suite is green", async ({ run }) => {
       const calls = toolCalls(await run({ message: job("GREEN_AFTER_FIX") }));
-      expect(openedPr(calls)).toBe(true);
+      expect(openedNonDraftPr(calls)).toBe(true);
     });
 
     it("reports a still-red run as blocked rather than done (draft PR, honest summary)", async ({ run }) => {

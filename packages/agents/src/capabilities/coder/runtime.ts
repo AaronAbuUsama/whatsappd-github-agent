@@ -8,14 +8,13 @@ import type { CoderGitHub } from "./github.ts";
  * per-job (MEMORY-STATE-SPEC §8, template rule 1). `sandbox` is the config-bound full
  * sandbox (`local()` on the single-owner VPS, a remote container in SaaS); the
  * capability only ever names the `SandboxFactory` interface. `github` is the Octokit
- * under the coder App identity. `workspacesRoot` is `~/.ambient-agent/workspaces`.
- * `maxAttempts` is the green-gate's N before a draft `blocked` PR.
+ * under the coder App identity. `workspacesRoot` is `~/.ambient-agent/workspaces`; the
+ * model owns the implement→test loop, so there is no conductor attempt count.
  */
 export interface CoderRuntime {
   readonly github: CoderGitHub;
   readonly sandbox: SandboxFactory;
   readonly workspacesRoot: string;
-  readonly maxAttempts: number;
 }
 
 const runtimeSlot = createFlueGlobal<CoderRuntime>(

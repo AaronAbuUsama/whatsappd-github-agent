@@ -17,6 +17,7 @@
     "./capabilities/delegation/ledger.ts": "./src/capabilities/delegation/ledger.ts",
     "./capabilities/delegation/bridge.ts": "./src/capabilities/delegation/bridge.ts",
     "./capabilities/coder/workflow.ts": "./src/capabilities/coder/workflow.ts",
+    "./capabilities/coder/workspace.ts": "./src/capabilities/coder/workspace.ts",
     "./capabilities/coder/runtime.ts": "./src/capabilities/coder/runtime.ts"
   },
   "dependencies": {

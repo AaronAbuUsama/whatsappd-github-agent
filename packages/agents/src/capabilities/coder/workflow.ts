@@ -10,31 +10,23 @@ import { coderJobInputSchema, coderResultSchema, type CoderJobInput, type CoderR
 export type { CoderGitHub } from "./github.ts";
 import {
   coderBranch,
-  commitChanges,
   downloadTarball,
-  ensureBranch,
   fetchDefaultBranch,
   fetchIssue,
   getBranchHead,
-  upsertPullRequest,
 } from "./github.ts";
+import { createOpenPullRequestTool } from "./tool.ts";
 import {
-  coderPullRequestBody,
-  coderResult,
-  diffSnapshots,
+  coderOutcome,
+  coderTmpDir,
   gitignoreMatcher,
-  isEmptyDiff,
   parseHashListing,
   renderGraphContext,
+  type OpenPrRecord,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 
-/** The project convention for the authoritative green gate (single-owner repos, §8 v1). */
-const TEST_COMMAND = "pnpm test";
-const INSTALL_AND_TEST_HINT = "pnpm install && pnpm test";
 const SHELL_TIMEOUT_MS = 20 * 60 * 1000;
-/** How much of a failing suite's output to carry into the next attempt / the blocked summary. */
-const FAILURE_TAIL = 4000;
 
 /**
  * The Coder agent — the config-bound full sandbox (template rule 1) plus read-only
@@ -77,25 +69,24 @@ const snapshotWorkspace = async (
   return snapshot;
 };
 
-const tail = (text: string, max: number): string => (text.length <= max ? text : text.slice(-max));
-
 /**
- * The issue → PR run (MEMORY-STATE-SPEC §8). Tarball in, model works the issue in the
- * sandbox, the suite is the authoritative green gate, and the change goes out via the
- * Git Data API on the per-issue branch — one open PR per head→base, non-draft only when
- * green (a draft `blocked` PR after N red attempts). Idempotent on the branch/PR natural
- * keys, so a relaunch converges rather than duplicating.
+ * The issue → PR run (MEMORY-STATE-SPEC §8, #172). The conductor is safe scaffolding only:
+ * fetch the issue + seed tarball, set up the workspace with a workspace-local `TMPDIR` (so a
+ * `noexec /tmp` host can't break the model's test run), mount the model's one safe write
+ * (`open_pull_request`), let the MODEL own the loop (detect toolchain → install → implement →
+ * run the repo's tests → author a rich PR body → open the PR, draft = its own green/red
+ * judgment), then a light after-check: a PR opened == done, none == `blocked`. No test re-run,
+ * no PR templating — the idempotent branch/PR plumbing lives in the tool handler.
  */
 const run = async ({
   harness,
   input,
-  log,
 }: {
   harness: FlueHarness;
   input: CoderJobInput;
   log: FlueLogger;
 }): Promise<CoderResult> => {
-  const { github, workspacesRoot, maxAttempts } = getCoderRuntime();
+  const { github, workspacesRoot } = getCoderRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
   const branch = coderBranch(input.issue);
 
@@ -104,15 +95,22 @@ const run = async ({
   const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
   // Relaunch seeding (§8): if the per-issue branch already exists, seed the workspace FROM
   // its head so the tested tree and the tree we later commit against are identical. A fresh
-  // issue seeds from the default branch. `ensureBranch(fromSha=baseSha)` below returns this
-  // same existing head (created:false), so `commitChanges` layers onto exactly what we ran.
+  // issue seeds from the default branch. `ensureBranch(fromSha=baseSha)` in the tool returns
+  // this same existing head (created:false), so `commitChanges` layers onto what we ran.
   const existingHead = await getBranchHead(github, repo, branch);
   const seedSha = existingHead ?? baseSha;
   const tarball = await downloadTarball(github, repo, seedSha);
 
   const repoDir = `${workspacesRoot}/issue-${input.issue}`;
+  const tmpDir = coderTmpDir(workspacesRoot);
   const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
   try {
+    // The model's shell tools inherit TMPDIR from the sandbox env (bound at composition);
+    // just make sure the workspace-local dir it points at exists before the model runs tests.
+    // ponytail: this .tmp accumulates across runs — kept at the workspaces root (not under
+    // repoDir) deliberately so the finally-block rm(repoDir) can't destroy a concurrent run's
+    // scratch. Ceiling: unbounded growth. Upgrade path: a periodic sweep of stale entries.
+    await harness.fs.mkdir(tmpDir, { recursive: true });
     await harness.fs.rm(repoDir, { recursive: true, force: true });
     await harness.fs.mkdir(repoDir, { recursive: true });
     await harness.fs.writeFile(`${repoDir}/.coder-source.tar.gz`, tarball);
@@ -128,72 +126,42 @@ const run = async ({
     const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
     const before = await snapshot();
 
+    // The model's one safe write, built with the workspace context bound in — the handler
+    // snapshots-diffs-commits-and-opens the PR idempotently. `record.pr` is the after-check's
+    // signal, and the seam a #173 verifier reads before the PR is opened.
+    const record: { pr?: OpenPrRecord } = {};
+    const openPullRequest = createOpenPullRequestTool({
+      github,
+      repo,
+      branch,
+      base,
+      baseSha,
+      issue: input.issue,
+      issueTitle: issue.title,
+      before,
+      snapshotAfter: snapshot,
+      readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
+      record,
+    });
+
     const session = await harness.session();
     const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
     const graphContext = renderGraphContext(input.graphContext);
-    let testsPassed = false;
-    let failure = "";
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const promptText =
-        attempt === 1
-          ? `Implement GitHub issue #${input.issue} — "${issue.title}" — in the repository at ${repoDir}.\n\n${issue.body}${framing}${graphContext}\n\nWork there now, then run \`${INSTALL_AND_TEST_HINT}\` and get the suite green.`
-          : `The suite is still failing after your last attempt. Read the failure and fix the cause, then make it green:\n\n${failure}`;
-      await session.prompt(promptText);
-      const test = await shellIn(TEST_COMMAND);
-      if (test.exitCode === 0) {
-        testsPassed = true;
-        break;
-      }
-      failure = tail(`${test.stdout}\n${test.stderr}`.trim(), FAILURE_TAIL);
-      log.warn("coder attempt failed the suite", { issue: input.issue, attempt });
-    }
+    // GROWTH SEAM (#173): this single model turn is the unit that later becomes
+    // `session.task("coder", …)` inside a planner→coder→verifier workflow — the tool mount
+    // and the after-check below stay identical; only who drives the turn changes.
+    await session.prompt(
+      `Implement GitHub issue #${input.issue} — "${issue.title}" — in the repository already checked out at ${repoDir}.\n\n` +
+        `${issue.body}${framing}${graphContext}\n\n` +
+        "Work there now: detect the project's toolchain, install it, make the change, and run the project's own test " +
+        "suite until you have a verdict. Then write a rich pull-request body (a clear narrative, structured sections, " +
+        "mermaid diagrams where they help) and call `open_pull_request` exactly once — set `draft` to false only if the " +
+        "suite is green, true if it is not. Never present a red or unfinished change as done.",
+      { tools: [openPullRequest] },
+    );
 
-    const after = await snapshot();
-    const diff = diffSnapshots(before, after);
-
-    if (isEmptyDiff(diff)) {
-      return coderResult({
-        hasChanges: false,
-        testsPassed,
-        prCreated: false,
-        branch,
-        summary: testsPassed
-          ? `Issue #${input.issue} needed no code change — the suite was already green.`
-          : `Issue #${input.issue}: nothing was changed and the suite is not green.`,
-      });
-    }
-
-    const head = await ensureBranch(github, repo, branch, baseSha);
-    const commitSha = await commitChanges(github, repo, {
-      branch,
-      headSha: head.sha,
-      message: `${testsPassed ? "" : "[blocked] "}Coder: issue #${input.issue} — ${issue.title}`.slice(0, 72),
-      files: diff.changed.map((path) => ({ path })),
-      deletions: diff.deleted,
-      read: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
-    });
-    log.info("coder committed", { issue: input.issue, commitSha, changed: diff.changed.length, deleted: diff.deleted.length });
-
-    const summary = testsPassed
-      ? `Implemented issue #${input.issue}; the suite is green.`
-      : `Issue #${input.issue} is not green after ${maxAttempts} attempts — opened a draft PR. Last failure: ${tail(failure, 400)}`;
-    const pr = await upsertPullRequest(github, repo, {
-      branch,
-      base,
-      title: `Coder: ${issue.title} (#${input.issue})`,
-      body: coderPullRequestBody(input.issue, testsPassed, summary),
-      draft: !testsPassed,
-    });
-
-    return coderResult({
-      hasChanges: true,
-      testsPassed,
-      prCreated: pr.created,
-      prUrl: pr.url,
-      prNumber: pr.number,
-      branch,
-      summary,
-    });
+    // Light after-check: no test re-run, no templating. A PR opened == the model finished.
+    return coderOutcome(record.pr, input.issue, branch);
   } finally {
     await harness.fs.rm(repoDir, { recursive: true, force: true }).catch(() => {});
   }

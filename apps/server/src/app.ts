@@ -9,6 +9,7 @@ import { createGraphStore } from "@ambient-agent/engine/graph/store.ts";
 import { createRunLedger } from "@ambient-agent/agents/capabilities/delegation/ledger.ts";
 import { sweepUnsettledLaunches } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { configureCoderRuntime } from "@ambient-agent/agents/capabilities/coder/runtime.ts";
+import { coderTmpDir } from "@ambient-agent/agents/capabilities/coder/workspace.ts";
 import type { CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
 import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
 import { readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
@@ -41,11 +42,13 @@ const configureCoderRuntimeIfProvisioned = async (paths: ManagedRuntimeDependenc
     console.warn("[coder] no coder App credential; start_coder_job is mounted but unprovisioned");
     return;
   }
+  // Workspace-local TMPDIR (#172): the model's shell tools run the repo's tests, and a
+  // hardened host may mount /tmp noexec — point TMPDIR at the workspaces tree so an install
+  // or test that shells a temp binary still runs. The conductor `mkdir`s it per run.
   configureCoderRuntime({
     github: githubAppClient(credential) as unknown as CoderGitHub,
-    sandbox: local(),
+    sandbox: local({ env: { TMPDIR: coderTmpDir(paths.workspaces) } }),
     workspacesRoot: paths.workspaces,
-    maxAttempts: 3,
   });
 };
 
