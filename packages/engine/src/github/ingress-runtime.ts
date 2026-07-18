@@ -23,7 +23,7 @@ export const installGitHubIngressRuntime = (
   ingressHandler.set(
     createGitHubIngress({
       store,
-      routes: settings.routes,
+      managedChats: settings.managedChats,
       dispatch,
       operations,
     }),
