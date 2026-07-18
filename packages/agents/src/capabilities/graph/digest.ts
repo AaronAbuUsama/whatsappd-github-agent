@@ -20,6 +20,31 @@ export const buildGraphDigest = (seeds: DigestSeeds, options?: DigestOptions): G
   computeGraphDigest(getGraphStore(), seeds, options);
 
 /**
+ * Digest seeds for a Specialist job (§5 D6): the job's repo + issue as GitHub natural
+ * keys (mirroring `speakerDigestSeeds`' `owner/repo` and `owner/repo#N` conventions),
+ * plus the launching thread. `graph_identities` resolves each to its entity.
+ */
+export const specialistJobSeeds = (chatId: string | undefined, repository: string, issue: number): DigestSeeds => ({
+  ...(chatId === undefined ? {} : { chatId }),
+  identities: [
+    { platform: "github", externalId: repository },
+    { platform: "github", externalId: `${repository}#${issue}` },
+  ],
+});
+
+/**
+ * The Specialist launch hook (§5 D6): build the pushed digest from a job's seeds, or
+ * `undefined` when no graph is wired or the neighbourhood is empty — so the launch tool
+ * is a no-op without a store (existing delegation tests stay green) and never ships an
+ * empty digest.
+ */
+export const buildJobGraphContext = (seeds: DigestSeeds, options?: DigestOptions): GraphDigest | undefined => {
+  if (tryGetGraphStore() === undefined) return undefined;
+  const digest = buildGraphDigest(seeds, options);
+  return isEmptyDigest(digest) ? undefined : digest;
+};
+
+/**
  * The funnel hook: compute the digest for an input and ride it on the input as a flat
  * `graphContext` field. A no-op when no graph is configured or the neighbourhood is
  * empty, so it never spends a transcript turn on nothing.

@@ -3,9 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   coderResult,
   diffSnapshots,
+  gitignoreMatcher,
   isEmptyDiff,
   parseHashListing,
+  renderGraphContext,
 } from "../../packages/agents/src/capabilities/coder/workspace.ts";
+import type { GraphDigest } from "@ambient-agent/engine/graph/digest.ts";
 
 describe("parseHashListing", () => {
   it("reads sha256sum-style lines and strips the leading ./", () => {
@@ -59,7 +62,63 @@ describe("coderResult — the green gate", () => {
     expect(result.testsPassed).toBe(false);
   });
 
-  it("no change → no-op regardless of the suite colour", () => {
+  it("no change + green → no-op (nothing to do, the suite was already green)", () => {
     expect(coderResult({ ...base, hasChanges: false, testsPassed: true, prCreated: false }).outcome).toBe("no-op");
+  });
+
+  it("no change + still red → failed, never the benign no-op (attempts exhausted, nothing fixed)", () => {
+    const result = coderResult({ ...base, hasChanges: false, testsPassed: false, prCreated: false });
+    expect(result.outcome).toBe("failed");
+    expect(result.testsPassed).toBe(false);
+  });
+});
+
+describe("gitignoreMatcher — snapshot honors .gitignore", () => {
+  const isIgnored = gitignoreMatcher(["# build output", "dist/", "coverage/", "*.tsbuildinfo", "/.env", ""].join("\n"));
+
+  it("ignores directory patterns, globs, root-anchored and common build artifacts", () => {
+    expect(isIgnored("dist/index.js")).toBe(true);
+    expect(isIgnored("packages/x/dist/a.js")).toBe(true); // unanchored dir matches any depth
+    expect(isIgnored("coverage/lcov.info")).toBe(true);
+    expect(isIgnored("tsconfig.tsbuildinfo")).toBe(true);
+    expect(isIgnored(".env")).toBe(true); // root-anchored
+    expect(isIgnored("node_modules/pkg/index.js")).toBe(true); // common-artifact backstop
+    expect(isIgnored("src/tsbuildinfo.ts")).toBe(false); // *.tsbuildinfo must not match a normal .ts
+  });
+
+  it("keeps source and tracked files (e.g. the committed lockfile)", () => {
+    expect(isIgnored("src/index.ts")).toBe(false);
+    expect(isIgnored("packages/agents/src/capabilities/coder/workflow.ts")).toBe(false);
+    expect(isIgnored("pnpm-lock.yaml")).toBe(false);
+    expect(isIgnored("README.md")).toBe(false);
+  });
+
+  it("skips comments, blanks and negations without matching everything", () => {
+    const empty = gitignoreMatcher("# only comments\n\n!keep.ts\n");
+    expect(empty("src/a.ts")).toBe(false); // no real patterns → nothing ignored (but the artifact backstop still applies)
+    expect(empty("dist/a.js")).toBe(true);
+  });
+});
+
+describe("renderGraphContext — the pushed digest into the prompt", () => {
+  it("is empty for an undefined or empty digest (a clean prompt when no graph is wired)", () => {
+    expect(renderGraphContext(undefined)).toBe("");
+    expect(renderGraphContext({ seeds: [], entities: [], relations: [], commitments: [] })).toBe("");
+  });
+
+  it("renders entities, relations and commitments as a compact block", () => {
+    const digest: GraphDigest = {
+      seeds: ["e1"],
+      entities: [{ entityId: "e1", type: "issue", properties: { number: 158 }, confidence: 1, lowConfidence: false }],
+      relations: [{ fromId: "e1", relation: "part_of", toId: "e2", confidence: 1, lowConfidence: false }],
+      commitments: [
+        { entityId: "c1", type: "commitment", properties: { text: "ship it" }, confidence: 1, lowConfidence: false, overdue: true },
+      ],
+    };
+    const rendered = renderGraphContext(digest);
+    expect(rendered).toContain("Shared graph context");
+    expect(rendered).toContain("issue e1");
+    expect(rendered).toContain("part_of");
+    expect(rendered).toContain("(overdue)");
   });
 });

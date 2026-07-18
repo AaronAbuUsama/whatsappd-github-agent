@@ -4,6 +4,7 @@ import {
   coderBranch,
   commitChanges,
   ensureBranch,
+  getBranchHead,
   upsertPullRequest,
   type CoderGitHub,
 } from "../../packages/agents/src/capabilities/coder/github.ts";
@@ -11,6 +12,34 @@ import {
 const REPO = { owner: "acme", repo: "widgets" };
 
 const notFound = () => Object.assign(new Error("Not Found"), { status: 404 });
+
+describe("getBranchHead — the relaunch seeding choice (seed FROM the existing head)", () => {
+  it("returns the existing branch head sha, so a relaunch seeds the tarball from it", async () => {
+    const getRef = vi.fn(async () => ({ data: { object: { sha: "prev-run-head" } } }));
+    const gh = { git: { getRef } } as unknown as CoderGitHub;
+
+    const head = await getBranchHead(gh, REPO, coderBranch(158));
+
+    expect(head).toBe("prev-run-head"); // seedSha = existingHead → tested tree == committed tree
+    expect(getRef).toHaveBeenCalledWith({ owner: "acme", repo: "widgets", ref: "heads/agent/coder/issue-158" });
+  });
+
+  it("returns undefined for a fresh issue, so seeding falls back to the default branch", async () => {
+    const getRef = vi.fn(async () => {
+      throw notFound();
+    });
+    const gh = { git: { getRef } } as unknown as CoderGitHub;
+    expect(await getBranchHead(gh, REPO, coderBranch(158))).toBeUndefined();
+  });
+
+  it("rethrows a non-404 (never treats a real API failure as a fresh issue)", async () => {
+    const getRef = vi.fn(async () => {
+      throw Object.assign(new Error("boom"), { status: 500 });
+    });
+    const gh = { git: { getRef } } as unknown as CoderGitHub;
+    await expect(getBranchHead(gh, REPO, coderBranch(158))).rejects.toThrow("boom");
+  });
+});
 
 describe("ensureBranch — idempotent per-issue natural key (check-then-act)", () => {
   it("reuses an existing branch: a relaunch converges, opening no duplicate", async () => {

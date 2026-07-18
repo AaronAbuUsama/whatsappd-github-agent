@@ -15,9 +15,18 @@ import {
   ensureBranch,
   fetchDefaultBranch,
   fetchIssue,
+  getBranchHead,
   upsertPullRequest,
 } from "./github.ts";
-import { coderResult, diffSnapshots, isEmptyDiff, parseHashListing, type WorkspaceSnapshot } from "./workspace.ts";
+import {
+  coderResult,
+  diffSnapshots,
+  gitignoreMatcher,
+  isEmptyDiff,
+  parseHashListing,
+  renderGraphContext,
+  type WorkspaceSnapshot,
+} from "./workspace.ts";
 
 /** The project convention for the authoritative green gate (single-owner repos, §8 v1). */
 const TEST_COMMAND = "pnpm test";
@@ -52,6 +61,7 @@ const coderAgent = defineAgent(() => {
 /** Hash every tracked file so `diffSnapshots` can tell what the model changed — git-free (§8 rule 2). */
 const snapshotWorkspace = async (
   shell: (command: string) => Promise<{ stdout: string; exitCode: number }>,
+  isIgnored: (path: string) => boolean,
 ): Promise<WorkspaceSnapshot> => {
   // ponytail: sha256sum (coreutils) with a shasum fallback for hosts without it (macOS local()).
   // Excludes node_modules/.git so install churn never reads as a change. Upgrade path: a
@@ -59,7 +69,11 @@ const snapshotWorkspace = async (
   const find = "find . -type f -not -path './node_modules/*' -not -path './.git/*'";
   const primary = await shell(`${find} -exec sha256sum {} + 2>/dev/null`);
   const listing = primary.exitCode === 0 && primary.stdout.trim() !== "" ? primary.stdout : (await shell(`${find} -exec shasum -a 256 {} +`)).stdout;
-  return parseHashListing(listing);
+  // Drop .gitignore'd build artifacts (dist/, coverage/, *.tsbuildinfo, …) so they never
+  // hash-diff as changes and get committed (§8; the tarball seed carries the .gitignore).
+  const snapshot = new Map<string, string>();
+  for (const [path, hash] of parseHashListing(listing)) if (!isIgnored(path)) snapshot.set(path, hash);
+  return snapshot;
 };
 
 const tail = (text: string, max: number): string => (text.length <= max ? text : text.slice(-max));
@@ -87,7 +101,13 @@ const run = async ({
   const issue = await fetchIssue(github, repo, input.issue);
   const base = await fetchDefaultBranch(github, repo);
   const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
-  const tarball = await downloadTarball(github, repo, base);
+  // Relaunch seeding (§8): if the per-issue branch already exists, seed the workspace FROM
+  // its head so the tested tree and the tree we later commit against are identical. A fresh
+  // issue seeds from the default branch. `ensureBranch(fromSha=baseSha)` below returns this
+  // same existing head (created:false), so `commitChanges` layers onto exactly what we ran.
+  const existingHead = await getBranchHead(github, repo, branch);
+  const seedSha = existingHead ?? baseSha;
+  const tarball = await downloadTarball(github, repo, seedSha);
 
   const repoDir = `${workspacesRoot}/issue-${input.issue}`;
   const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
@@ -101,16 +121,21 @@ const run = async ({
     });
     await harness.fs.rm(`${repoDir}/.coder-source.tar.gz`, { force: true });
 
-    const before = await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }));
+    // The .gitignore rode in with the tarball seed; honor it so build artifacts never diff.
+    const gitignoreText = (await shellIn("cat .gitignore 2>/dev/null || true")).stdout;
+    const isIgnored = gitignoreMatcher(gitignoreText);
+    const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
+    const before = await snapshot();
 
     const session = await harness.session();
     const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+    const graphContext = renderGraphContext(input.graphContext);
     let testsPassed = false;
     let failure = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const promptText =
         attempt === 1
-          ? `Implement GitHub issue #${input.issue} — "${issue.title}" — in the repository at ${repoDir}.\n\n${issue.body}${framing}\n\nWork there now, then run \`${INSTALL_AND_TEST_HINT}\` and get the suite green.`
+          ? `Implement GitHub issue #${input.issue} — "${issue.title}" — in the repository at ${repoDir}.\n\n${issue.body}${framing}${graphContext}\n\nWork there now, then run \`${INSTALL_AND_TEST_HINT}\` and get the suite green.`
           : `The suite is still failing after your last attempt. Read the failure and fix the cause, then make it green:\n\n${failure}`;
       await session.prompt(promptText);
       const test = await shellIn(TEST_COMMAND);
@@ -122,7 +147,7 @@ const run = async ({
       log.warn("coder attempt failed the suite", { issue: input.issue, attempt });
     }
 
-    const after = await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }));
+    const after = await snapshot();
     const diff = diffSnapshots(before, after);
 
     if (isEmptyDiff(diff)) {

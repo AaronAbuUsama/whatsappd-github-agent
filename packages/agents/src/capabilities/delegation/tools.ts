@@ -9,6 +9,7 @@ import {
 import * as v from "valibot";
 
 import { getDelegationRuntime } from "./runtime.ts";
+import { buildJobGraphContext, specialistJobSeeds } from "../graph/digest.ts";
 
 /**
  * One Specialist as the delegation transport sees it. `input` IS the Specialist's own
@@ -48,7 +49,14 @@ export const createSpecialistLaunchTool = <TInput extends ActionInputSchema>(
     run: async ({ input }) => {
       const { ledger } = getDelegationRuntime();
       // The bound chatId is the return address (§8); it wins over any value in `input`.
-      const jobInput = { ...(input as Record<string, unknown>), chatId };
+      const record = input as Record<string, unknown>;
+      const jobInput: Record<string, unknown> = { ...record, chatId };
+      // §5 D6: push the graph digest, seeded from the job's repo/issue + launching thread.
+      // No-op without a graph store (existing delegation tests) or an empty neighbourhood.
+      if (typeof record.repository === "string" && typeof record.issue === "number") {
+        const graphContext = buildJobGraphContext(specialistJobSeeds(chatId, record.repository, record.issue));
+        if (graphContext !== undefined) jobInput.graphContext = graphContext;
+      }
       // Generic at the transport boundary: the concrete input/output typing is the
       // Specialist's own (its `input` schema gives the model-facing safety above).
       const { runId } = await invoke(spec.workflow, { input: jobInput } as never);

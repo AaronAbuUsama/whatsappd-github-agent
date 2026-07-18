@@ -114,6 +114,26 @@ export const downloadTarball = async (
 };
 
 /**
+ * The head sha of the per-issue branch if it already exists, else undefined (a fresh
+ * issue). Read-only check-then-act primitive: a relaunch reads the existing head so it
+ * can seed the workspace tarball FROM that head and commit against the same tree (the
+ * tested tree and the committed tree are then identical — no unvalidated combination).
+ */
+export const getBranchHead = async (
+  gh: CoderGitHub,
+  repo: GitHubRepositoryRef,
+  branch: string,
+): Promise<string | undefined> => {
+  try {
+    const { data } = await gh.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${branch}` });
+    return data.object.sha;
+  } catch (cause) {
+    if (isNotFound(cause)) return undefined;
+    throw cause;
+  }
+};
+
+/**
  * Idempotent branch (§8 principle 3): check-then-act on the natural key
  * `agent/coder/issue-<N>`. Returns the branch head sha and whether we created it, so a
  * relaunch converges on the same branch rather than duplicating.
@@ -124,14 +144,9 @@ export const ensureBranch = async (
   branch: string,
   fromSha: string,
 ): Promise<{ sha: string; created: boolean }> => {
-  const ref = `heads/${branch}`;
-  try {
-    const { data } = await gh.git.getRef({ owner: repo.owner, repo: repo.repo, ref });
-    return { sha: data.object.sha, created: false };
-  } catch (cause) {
-    if (!isNotFound(cause)) throw cause;
-  }
-  await gh.git.createRef({ owner: repo.owner, repo: repo.repo, ref: `refs/${ref}`, sha: fromSha });
+  const existing = await getBranchHead(gh, repo, branch);
+  if (existing !== undefined) return { sha: existing, created: false };
+  await gh.git.createRef({ owner: repo.owner, repo: repo.repo, ref: `refs/heads/${branch}`, sha: fromSha });
   return { sha: fromSha, created: true };
 };
 
