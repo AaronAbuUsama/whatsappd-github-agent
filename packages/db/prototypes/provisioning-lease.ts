@@ -231,6 +231,12 @@ async function selfCheck() {
 
   try {
     await db.executeMultiple(schema);
+    const foreignKeys = await db.execute("PRAGMA foreign_keys");
+    assert.equal(
+      Number(foreignKeys.rows[0]?.foreign_keys),
+      1,
+      "control DB startup must enable and verify foreign-key enforcement",
+    );
     await db.execute({ sql: "INSERT INTO user (id) VALUES (?1)", args: ["user-a"] });
     await db.execute({
       sql: `INSERT INTO tenant (

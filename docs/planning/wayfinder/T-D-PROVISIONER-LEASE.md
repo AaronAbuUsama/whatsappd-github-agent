@@ -13,7 +13,9 @@ unique stable Dokploy application per credentials store, and a monotonically
 increasing fencing token. A provisioner invocation owns the lease; the tenant
 container does not. Lease expiry permits a new reconcile but does not stop a
 healthy container. Every reconcile targets the same Dokploy `applicationId`,
-whose Swarm service is pinned to one replica.
+whose Swarm service is pinned to one replica. Dokploy auto-deploy is disabled,
+and both Swarm update and rollback order are explicitly `stop-first`, so no
+platform-triggered replacement can overlap the old task.
 
 This is the first Ponytail rung that holds: the control DB already exists,
 SQLite already supplies atomic compare-and-swap, and Dokploy already supplies a
@@ -53,6 +55,14 @@ export function createDb() {
 }
 ```
 
+This factory also exposes a production integrity gap for T-D: Turso documents
+foreign-key enforcement as off by default, while this code neither executes
+nor verifies `PRAGMA foreign_keys = ON`. The module-level `db = createDb()` and
+`createAuth()` at `packages/auth/src/index.ts:10-12` open separate clients, so
+enabling it on only one client would still leave another unchecked. The API
+must fail startup until every control-DB client used by auth or provisioning has
+enabled and read back the pragma.
+
 ```ts
 // packages/db/src/schema/index.ts:1-2
 export * from "./auth";
@@ -76,6 +86,11 @@ provisioner/schema seam is at `:156-161`. T-B fixes the physical topology:
 ### What this touches
 
 ```diff
+ packages/db/src/index.ts
+-export function createDb()
+-export const db = createDb()
++export async function openControlDb() // enable + assert foreign_keys
+
  packages/db/src/schema/index.ts
 +export * from "./provisioning";
 
@@ -89,10 +104,16 @@ provisioner/schema seam is at `:156-161`. T-B fixes the physical topology:
 +one idempotent reconcile function used by oRPC and Polar
 
  packages/auth/src/index.ts
+-export function createAuth() { const db = createDb(); ... }
++export function createAuth(db: ControlDb) { ... }
 -import { polar, checkout, portal } from "@polar-sh/better-auth";
 +import { polar, checkout, portal, webhooks } from "@polar-sh/better-auth";
 +webhooks({ secret: env.POLAR_WEBHOOK_SECRET,
 +  onSubscriptionActive: ({ data }) => requestTenantReconcile(data) })
+
+ apps/api/src/index.ts
++const db = await openControlDb();
++const auth = createAuth(db); // serve only after the integrity assertion
 
  packages/env/src/server.ts
 +POLAR_WEBHOOK_SECRET, DOKPLOY_API_URL, DOKPLOY_API_KEY,
@@ -144,7 +165,11 @@ undeployed, so it cannot join the WhatsApp session.
 After binding, that `applicationId` is stable for the tenant lifetime. Its Swarm
 service is pinned to the configured MVP worker as well as `replicas=1`; loss of
 that worker therefore gives zero replicas, never a replacement running beside a
-partitioned old task.
+partitioned old task. The application uses the Docker provider with
+`autoDeploy=false`; no Git provider webhook or preview deployment is installed.
+Both `updateConfigSwarm` and `rollbackConfigSwarm` set `Parallelism: 1` and
+`Order: "stop-first"`. Those settings defend the invariant even if an operator
+manually deploys from Dokploy instead of the provisioner.
 
 ### Option B — keep a DB transaction open across Turso and Dokploy calls
 
@@ -242,6 +267,42 @@ CREATE TABLE provisioner_lease (
   )
 );
 ```
+
+### Foreign-key startup gate
+
+The `REFERENCES` and `ON DELETE CASCADE` clauses are active only after the
+setting is enabled on a connection. This is not a migration-only pragma. Replace
+the two current implicit clients with one initialized control-DB dependency and
+inject it into auth, API context, and reconciliation:
+
+```ts
+export async function openControlDb() {
+  const client = createClient({
+    url: env.DATABASE_URL,
+    authToken: env.DATABASE_AUTH_TOKEN,
+  });
+
+  await client.execute("PRAGMA foreign_keys = ON");
+  const result = await client.execute("PRAGMA foreign_keys");
+  if (Number(result.rows[0]?.foreign_keys) !== 1) {
+    client.close();
+    throw new Error("control_db_foreign_keys_disabled");
+  }
+
+  return { client, db: drizzle({ client, schema }) };
+}
+```
+
+`apps/api/src/index.ts` awaits `openControlDb()`, passes the same initialized DB
+to `createAuth(db)`, router context, and reconcile dependencies, and calls
+`serve()` only after the assertion succeeds. Migration and one-off maintenance
+clients have the same initializer. The production acceptance check must run an
+orphan-insert rejection and a three-level `user -> tenant -> agent_instance ->
+provisioner_lease` cascade against the actual control Turso URL; a driver mode
+that cannot preserve the pragma for its connection is unsupported and blocks
+startup. Destructive tenant deletion also observes zero child rows before
+remote resource deletion, so a failed cascade cannot silently orphan control
+state.
 
 `tenant_db_url` and `tenant_db_token_ciphertext` are nullable while an active
 subscription waits in `pending_input` or before the per-tenant DB is created;
@@ -411,7 +472,10 @@ For one acquired lease:
 4. Configure the stopped application: Docker image/build settings, exactly one
    replica, a placement constraint for the configured MVP worker,
    `dokploy-network`, health check, tenant DB URL/token env, bridge secret, and
-   `config.json` file mount. `config_version` is included in the boot
+   `config.json` file mount. Set `autoDeploy=false`; do not create a Git provider
+   webhook or preview deployment. Set both `updateConfigSwarm` and
+   `rollbackConfigSwarm` to `{ Parallelism: 1, Order: "stop-first" }` and read
+   them back before proceeding. `config_version` is included in the boot
    environment. Configuration and credential writes finish before any
    start/deploy call. Multi-node failover remains disabled: availability loss is
    preferable to two network-partitioned tasks sharing WhatsApp credentials.
@@ -434,33 +498,36 @@ be added only when the build proves event-driven retries insufficient.
 
 ## Crash and restart table
 
-| Crash point                                | Durable observation on retry                    | Recovery                                                                                |
-| ------------------------------------------ | ----------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Before acquire                             | No owned lease                                  | Another invocation acquires                                                             |
-| After tenant DB create, before local write | Deterministic Turso DB exists                   | Get it by name, mint/store scoped token                                                 |
-| After token mint, before local write       | DB exists, token outcome unknown                | Mint a replacement scoped token; store only the new encrypted token                     |
-| After Dokploy create, before ID bind       | One or more marked shells may exist             | Fenced CAS binds one; losers never receive credentials or start                         |
-| After config write, before version write   | Remote config may already equal desired version | Reapply same config, then fenced version write                                          |
-| After deploy/start, before `running` write | Stable application may already be live          | Observe, repeat idempotent start, fenced state write                                    |
-| Owner stalls past expiry                   | Old fence cannot mutate control state           | New owner increments token and reconciles same app                                      |
-| Stop outcome unknown                       | Stable application may be at 0 or 1             | Observe and repeat stop; never create another app                                       |
-| Unbound marked shells                      | Credentialless and undeployed                   | Stop/delete visible losers; a delayed loser is swept later                              |
-| Bound app missing or replicas > 1          | Safety cannot be proven                         | Stop all known matches, mark `blocked_invariant`, require operator proof before pairing |
+| Crash point                                                | Durable observation on retry                     | Recovery                                                                                |
+| ---------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Before acquire                                             | No owned lease                                   | Another invocation acquires                                                             |
+| After tenant DB create, before local write                 | Deterministic Turso DB exists                    | Get it by name, mint/store scoped token                                                 |
+| After token mint, before local write                       | DB exists, token outcome unknown                 | Mint a replacement scoped token; store only the new encrypted token                     |
+| After Dokploy create, before ID bind                       | One or more marked shells may exist              | Fenced CAS binds one; losers never receive credentials or start                         |
+| After config write, before version write                   | Remote config may already equal desired version  | Reapply same config, then fenced version write                                          |
+| After deploy/start, before `running` write                 | Stable application may already be live           | Observe, repeat idempotent start, fenced state write                                    |
+| Owner stalls past expiry                                   | Old fence cannot mutate control state            | New owner increments token and reconciles same app                                      |
+| Stop outcome unknown                                       | Stable application may be at 0 or 1              | Observe and repeat stop; never create another app                                       |
+| Unbound marked shells                                      | Credentialless and undeployed                    | Stop/delete visible losers; a delayed loser is swept later                              |
+| Bound app missing or replicas > 1                          | Safety cannot be proven                          | Stop all known matches, mark `blocked_invariant`, require operator proof before pairing |
+| Dokploy auto-deploy enabled or update order not stop-first | An uncontrolled rolling update may overlap tasks | Stop app, repair and read back policy, remain `blocked_invariant` until proven          |
+| Control DB reports `foreign_keys != 1`                     | Cascades and referential checks are inactive     | Fail API startup; do not accept auth, webhook, or reconcile traffic                     |
 
 Lease expiry never deletes credentials, stops a healthy container, or creates a
 new Dokploy application. It only transfers permission to reconcile.
 
 ## Failure states and API result
 
-| State/result                             | Meaning                                                    | Retry                                          |
-| ---------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------- |
-| `pending_input`                          | Active subscription lacks config/model credential          | User action, no container start                |
-| `lease_busy`                             | Another invocation owns the unexpired row                  | Return 202/current state; do not spin          |
-| `provisioning` / `starting` / `stopping` | Normal durable intermediate phase                          | Reconcile is idempotent after crash            |
-| `retryable_error`                        | Turso/Dokploy timeout, 429, or 5xx; outcome observed first | Bounded backoff, same stable identities        |
-| `lease_lost`                             | Renew/fenced write returned no row                         | Stop this invocation immediately               |
-| `blocked_invariant`                      | Bound-ID mismatch, >1 replica, secret/config ambiguity     | Fail closed; stop known apps; human inspection |
-| `running` / `stopped`                    | Desired state was observed and fenced into control DB      | No retry unless intent/version changes         |
+| State/result                             | Meaning                                                                         | Retry                                              |
+| ---------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `pending_input`                          | Active subscription lacks config/model credential                               | User action, no container start                    |
+| `lease_busy`                             | Another invocation owns the unexpired row                                       | Return 202/current state; do not spin              |
+| `provisioning` / `starting` / `stopping` | Normal durable intermediate phase                                               | Reconcile is idempotent after crash                |
+| `retryable_error`                        | Turso/Dokploy timeout, 429, or 5xx; outcome observed first                      | Bounded backoff, same stable identities            |
+| `lease_lost`                             | Renew/fenced write returned no row                                              | Stop this invocation immediately                   |
+| `blocked_invariant`                      | Bound-ID mismatch, >1 replica, unsafe deploy policy, or secret/config ambiguity | Fail closed; stop known apps; human inspection     |
+| `control_db_foreign_keys_disabled`       | Startup pragma assertion returned anything but `1`                              | Fatal startup error; fix connection initialization |
+| `running` / `stopped`                    | Desired state was observed and fenced into control DB                           | No retry unless intent/version changes             |
 
 Secrets are redacted from all failure payloads. A `409/CONFLICT` during Dokploy
 creation triggers a marked-shell lookup; it is not treated as proof that a
@@ -471,7 +538,8 @@ particular retry created or owns the conflicting application.
 The committed self-check exercises acquisition contention, renewal, expiry
 takeover, monotonic fencing, stale-owner rejection, release CAS, fenced
 application binding/state writes, nullable pre-provisioning fields, the unique
-credentials-store binding, and deletion cascades:
+credentials-store binding, the foreign-key pragma assertion, and deletion
+cascades:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -495,6 +563,11 @@ Before the production build calls this done, create one throwaway deterministic
 application with the final tenant template and prove the external assumptions:
 
 ```bash
+curl -fsS -H "x-api-key: $DOKPLOY_API_KEY" \
+  "$DOKPLOY_API_URL/api/application.one?applicationId=$DOKPLOY_TEST_APPLICATION_ID" \
+  | jq '{autoDeploy, replicas, updateConfigSwarm, rollbackConfigSwarm, placementSwarm}'
+# require false, 1, Order=stop-first, Order=stop-first, and the pinned worker
+
 curl -fsS -H "x-api-key: $DOKPLOY_API_KEY" \
   "$DOKPLOY_API_URL/api/environment.one?environmentId=$DOKPLOY_ENVIRONMENT_ID" \
   | jq --arg name "$DOKPLOY_TEST_NAME" \
@@ -526,8 +599,9 @@ Aaron: ratify **Option A**, specifically these two semantics:
 1. the lease owns **reconciliation**, so lease expiry does not kill a healthy
    tenant container; and
 2. the one **fenced-bound** Dokploy `applicationId` plus worker placement and
-   `replicas=1` is the external at-most-one fence; unbound retry shells never
-   receive credentials or start.
+   `replicas=1`, `autoDeploy=false`, and stop-first update/rollback policy is the
+   external at-most-one fence; unbound retry shells never receive credentials
+   or start.
 
 After that ratification, the artifact graduates into build tickets for the
 control schema, Polar/oRPC reconcile service, Dokploy/Turso clients, boot retry,
@@ -547,5 +621,11 @@ and the one logged-in-instance proof above.
   a random six-character suffix is appended even when `appName` is supplied.
 - [Dokploy lifecycle source at `df3965a`](https://github.com/Dokploy/dokploy/blob/df3965a5816700d61c39fd1a13241b5766d7b24e/packages/server/src/utils/docker/utils.ts#L111-L125):
   stop scales to zero; [start scales to one](https://github.com/Dokploy/dokploy/blob/df3965a5816700d61c39fd1a13241b5766d7b24e/packages/server/src/utils/docker/utils.ts#L363-L378).
+- [Dokploy Swarm config source at `df3965a`](https://github.com/Dokploy/dokploy/blob/df3965a5816700d61c39fd1a13241b5766d7b24e/packages/server/src/utils/docker/utils.ts#L591-L608):
+  absent update and rollback settings default to `Order: "start-first"`.
+- [Dokploy application schema at `df3965a`](https://github.com/Dokploy/dokploy/blob/df3965a5816700d61c39fd1a13241b5766d7b24e/packages/server/src/db/schema/application.ts#L126-L135):
+  `autoDeploy` defaults to true.
+- [Turso PRAGMA reference](https://docs.turso.tech/sql-reference/pragmas#foreign-keys):
+  foreign-key enforcement is off by default and must be enabled explicitly.
 - [Polar Better Auth adapter](https://polar.sh/docs/integrate/sdk/adapters/better-auth):
   signed `/api/auth/polar/webhooks` handler and `onSubscriptionActive` callback.
