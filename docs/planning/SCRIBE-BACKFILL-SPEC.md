@@ -97,23 +97,39 @@ All Speaker inputs converge at
 Speaker, records its receipt, then offers the original input to the detached Scribe
 coalescer.
 
-Backfill adds a WhatsApp-only gate around that final Scribe offer:
+The managed coalescer can buffer a Window before the Speaker dispatches it
+(`packages/engine/src/coalescer/coalescer.ts:72-95`). A mode-only gate is therefore
+insufficient: a pre-handoff event may be consumed by backfill, then reach this funnel
+after the mode has become `live`.
+
+Backfill adds a WhatsApp-only, event-level gate around the final Scribe offer:
 
 ```ts
 const receipt = await dispatch(speaker, { id, input: enriched });
 speakerActivity.accepted(receipt, enriched);
 
-if (!isWhatsAppInput(input) || scribeBackfill.allowsLive(input.chatId)) {
-  scribeCoalescer.offer({ id, input });
+const liveInput = isWhatsAppInput(input)
+  ? scribeBackfill.liveSlice(input)
+  : input;
+
+if (liveInput !== undefined) {
+  scribeCoalescer.offer({ id, input: liveInput });
 }
 
 return receipt;
 ```
 
-The Speaker path is unchanged. GitHub and specialist-result inputs are unchanged.
-Only WhatsApp inputs for chats in `catching_up` or `failed` are withheld from the live
-Scribe coalescer; those inputs are already in the archive and will be consumed by the
-backfill cursor.
+`liveSlice()` reads the chat's state and resolves every Window event ID to its archive
+`rowid` in one archive transaction:
+
+- `catching_up`, `failed`, or `disabled`: return no live Scribe input;
+- `live`: retain only messages and updates whose `rowid > after_sequence`;
+- no retained events: return `undefined` and do not offer an empty input.
+
+The filter is per event because one buffered Window may straddle the handoff cutoff.
+The Speaker path is unchanged and always receives the full Window. GitHub and
+specialist-result inputs are unchanged. No second buffer or delivery ledger is added;
+the existing archive sequence and durable backfill cursor decide ownership.
 
 ### 3.4 Scribe role and Flue session
 
@@ -197,7 +213,7 @@ CREATE TABLE scribe_backfills (
     CHECK (mode IN ('catching_up', 'live', 'failed', 'disabled')),
   phase TEXT NOT NULL
     CHECK (phase IN ('snapshot', 'tail')),
-  snapshot_high_water INTEGER,
+  snapshot_high_water INTEGER NOT NULL DEFAULT 0,
   snapshot_unknown_time INTEGER,
   snapshot_occurred_at_ms INTEGER,
   snapshot_sequence INTEGER,
@@ -224,8 +240,17 @@ Do not create a second run ledger. Flue owns workflow run records and run events
 
 ### 6.1 Initial snapshot
 
-After provider-online eligibility and admission, capture the chat's archive high-water
-sequence. Read only events at or below that sequence, ordered chronologically:
+After provider-online eligibility, capture the chat's archive high-water sequence while
+creating its state row:
+
+```sql
+SELECT COALESCE(MAX(rowid), 0) AS snapshot_high_water
+  FROM conversation_events
+ WHERE chat_id = :chat_id;
+```
+
+An empty chat therefore starts with high-water `0`, never `NULL`. Read only events at
+or below the captured sequence, ordered chronologically:
 
 ```sql
 SELECT rowid AS archive_sequence, *
@@ -263,7 +288,8 @@ history batches in conversation order.
 ### 6.2 Tail
 
 After the snapshot is complete, set `after_sequence = snapshot_high_water` and consume
-new events in archive insertion order:
+new events in archive insertion order. For an empty initial snapshot this keeps the
+non-null tail cursor at `0`:
 
 ```sql
 SELECT rowid AS archive_sequence, *
@@ -415,6 +441,13 @@ live transition commits first
   => the later append observes live mode and ordinary Scribe receives the input
 ```
 
+In `live` mode, the retained `after_sequence` is the immutable handoff cutoff used by
+`liveSlice()`. A Window dispatched after handoff may contain events from both sides:
+rows at or below the cutoff belonged to backfill, while rows above it belong to live
+Scribe. If `liveSlice()` reads before the handoff transaction commits, it sees
+`catching_up` and withholds the whole input; backfill must consume those rows before it
+can complete the handoff.
+
 No quiet-period timer participates in correctness.
 
 ## 10. Failure, retry, interruption, and removal
@@ -559,7 +592,7 @@ The implementation session should work in this dependency order:
    - receipt filtering with raw-page cursor advancement;
    - `scribe_backfills` state transitions;
    - transactional final handoff;
-   - focused first-page/order, race/checkpoint, and receipt-only-page tests.
+   - focused empty/first-page/order, race/checkpoint, and receipt-only-page tests.
 
 2. **Shared keyless convergence**
 
@@ -577,7 +610,8 @@ The implementation session should work in this dependency order:
 
    - boot and managed-chat-change reconciliation;
    - one active run per chat;
-   - WhatsApp-only live-Scribe gate;
+   - WhatsApp-only, event-level live-Scribe cutoff gate;
+   - one regression test for a Window that straddles the handoff cutoff;
    - disabled/failed/retry behavior.
 
 5. **Developer proof surface**
@@ -598,6 +632,8 @@ The implementation is complete when all of the following are proven:
 - Initial history is presented chronologically in windows of at most 50 events.
 - A newly admitted chat reads its first snapshot page, and equal-timestamp events retain
   archive insertion order.
+- An empty newly managed chat captures high-water `0`, reaches tail, and can transition
+  to live without violating its non-null cursor.
 - Mixed and receipt-only archive pages never send receipts to Scribe and still advance
   the durable raw archive cursor.
 - Windows run sequentially on one Scribe conversation and update the graph after each
@@ -607,6 +643,8 @@ The implementation is complete when all of the following are proven:
   facts; confidence may increase under the existing policy.
 - An event inserted at the final handoff is processed exactly once by either backfill
   or live Scribe.
+- A buffered Window dispatched after handoff is sliced at the durable archive cutoff;
+  pre-cutoff events are not replayed and post-cutoff events still reach live Scribe.
 - Three failures produce durable `failed` state without stopping the Speaker or losing
   later archive events.
 - Removing a managed chat stops at the next window boundary and marks it disabled.
