@@ -1,16 +1,11 @@
 import { env } from "@ambient-agent/env/server";
-import { createClient } from "@libsql/client";
-import { drizzle } from "drizzle-orm/libsql";
 
-import * as schema from "./schema";
+import { openControlDb } from "./control-db";
 
-export function createDb() {
-  const client = createClient({
-    url: env.DATABASE_URL,
-    authToken: env.DATABASE_AUTH_TOKEN,
-  });
+export * from "./control-db";
 
-  return drizzle({ client, schema });
-}
-
-export const db = createDb();
+export const controlDb = await openControlDb({
+  url: env.DATABASE_URL,
+  authToken: env.DATABASE_AUTH_TOKEN,
+});
+export const { client, db } = controlDb;
