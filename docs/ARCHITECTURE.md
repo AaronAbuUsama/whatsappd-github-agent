@@ -1,13 +1,13 @@
 # Architecture map
 
 The ratified taxonomy (#117 → #131): three packages, two apps, one arrow diagram —
-enforced, not aspirational (`tests/ambience/hard-cut.test.ts`).
+enforced, not aspirational (`tests/speaker/hard-cut.test.ts`).
 
 ```mermaid
 graph TD
   subgraph apps
     CLI["apps/cli<br/>operate the installation"]
-    SRV["apps/server<br/>Flue build root — hosts Ambience"]
+    SRV["apps/server<br/>Flue build root — hosts Speaker"]
   end
   subgraph packages
     AG["agents<br/>everything that thinks:<br/>agents own identity,<br/>capabilities are shared"]
@@ -36,15 +36,15 @@ from an agent folder, and no package may publish a `./*` wildcard export.
 sequenceDiagram
   participant WA as WhatsApp (whatsappd)
   participant ENG as engine (Coalescer + intake)
-  participant AG as agents (Ambience)
+  participant AG as agents (Speaker)
   participant FLUE as Flue runtime
   participant GH as GitHub
 
   WA->>ENG: ConversationEvent → Conversation Archive (append-only)
   ENG->>ENG: Coalescer: one fiber per chatId,<br/>throttle + settle window → Window
   ENG->>AG: WindowDispatcher port → admitWindow (admission, retry, at-least-once)
-  AG->>FLUE: dispatchAmbience (Flue dispatch + activity correlation)
-  FLUE->>AG: runs Ambience with mounted capabilities
+  AG->>FLUE: dispatchSpeaker (Flue dispatch + activity correlation)
+  FLUE->>AG: runs Speaker with mounted capabilities
   AG->>WA: Say / React (whatsapp-participation port)
   AG->>GH: issue operations with Operation Identity (issue-management port)
   FLUE-->>AG: lifecycle observations (dispatchId only)<br/>→ activity reporter re-attaches chat context

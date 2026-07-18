@@ -59,26 +59,26 @@ Most chat agents wait for a command, answer once, and forget. Ambient Agent is d
 ### It participates without requiring invocation
 
 Every accepted message in a Managed Chat is processed. A mention or direct question can make a Window flush
-immediately, but no wake word is required. Ambience decides whether a contribution would help.
+immediately, but no wake word is required. The Speaker decides whether a contribution would help.
 
 ### It is one continuing presence
 
-Each Managed Chat is mapped to one continuing Ambience instance using the WhatsApp `chatId`. Later messages return to
+Each Managed Chat is mapped to one continuing Speaker instance using the WhatsApp `chatId`. Later messages return to
 the same canonical context rather than creating isolated one-shot conversations.
 
 ### It is private by default
 
-The model's ordinary prose is private working context. Nothing is posted back to WhatsApp unless Ambience explicitly
+The model's ordinary prose is private working context. Nothing is posted back to WhatsApp unless the Speaker explicitly
 calls the chat-bound `say` Tool. Thinking and speaking are different operations.
 
 ### It listens at conversation speed
 
-A per-chat Coalescer turns bursts of messages into stable, lossless Windows. Ambience reads the conversation as a
+A per-chat Coalescer turns bursts of messages into stable, lossless Windows. The Speaker reads the conversation as a
 sequence of meaningful moments instead of being interrupted once per message.
 
 ### It acts through named Capabilities
 
-Ambience does not receive one universal command Tool. Each kind of work arrives as a cohesive Capability: a versioned
+The Speaker does not receive one universal command Tool. Each kind of work arrives as a cohesive Capability: a versioned
 Skill explains the judgment and policy, typed Tools provide direct abilities, and provider adapters remain private.
 
 This is the reusable design pattern. The current product applies it to software delivery in WhatsApp, but the same
@@ -96,9 +96,9 @@ flowchart LR
     COALESCER --> WINDOW["Stable Window"]
     WINDOW --> RELAY["Admission Relay"]
     RELAY --> FLUE["Flue dispatch: id = chatId"]
-    FLUE --> AMBIENCE["Continuing Ambience instance"]
-    AMBIENCE --> WA_CAP["WhatsApp Participation"]
-    AMBIENCE --> ISSUE_CAP["Issue Management"]
+    FLUE --> SPEAKER["Continuing Speaker instance"]
+    SPEAKER --> WA_CAP["WhatsApp Participation"]
+    SPEAKER --> ISSUE_CAP["Issue Management"]
     WA_CAP -->|say| WA
     ISSUE_CAP --> GITHUB["Authorized GitHub repository"]
     WEBHOOK["Verified GitHub webhook"] --> RELAY
@@ -113,7 +113,7 @@ The separation is intentional:
 
 | Boundary                       | What it owns                                                                                   |
 | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| **Ambience**                   | Conversational judgment and continuing private context                                         |
+| **Speaker**                    | Conversational judgment and continuing private context                                         |
 | **Skill**                      | Versioned process and policy: how to approach a kind of work                                   |
 | **Tool**                       | One typed, validated application ability with an observable result                             |
 | **Host adapter**               | WhatsApp, GitHub, or another provider's concrete API mechanics                                 |
@@ -237,7 +237,7 @@ To add Code Review, for example:
 3. Add narrowly scoped, typed Tools for direct reads and effects.
 4. Put real GitHub mechanics in a private adapter under `src/host/`.
 5. Configure the adapter from managed dependencies in `src/app.ts`.
-6. Import the Skill and Tool factory in `src/agents/ambience.ts`.
+6. Import the Skill and Tool factory in `src/agents/speaker.ts`.
 7. Add deterministic contract tests, behavioral Evaluation Scenarios, and separately gated live evidence.
 
 Registration is explicit—there is no dynamic plugin scan:
@@ -257,7 +257,7 @@ export default defineAgent(({ id }) => ({
 - Use a **Tool** for a direct typed application function: read a pull request, search issues, add a comment, or Say.
 - Use an **Action** when a reusable operation needs its own narrowly instructed agent harness.
 - Use a **Bounded Workflow** for independent, inspectable work such as implementing an issue or performing a substantial
-  review. A Bounded Workflow finishes or fails and returns control to Ambience; it does not become a second chat
+  review. A Bounded Workflow finishes or fails and returns control to the Speaker; it does not become a second chat
   participant.
 
 The stable base currently ships Tools only. Actions and software-delivery Bounded Workflows are extension seams, not
@@ -277,11 +277,11 @@ hidden features.
 
 ## Memory today and tomorrow
 
-Today, one Managed Chat maps to one continuing Ambience context. WhatsApp history Tools are permanently scoped to that
+Today, one Managed Chat maps to one continuing Speaker context. WhatsApp history Tools are permanently scoped to that
 chat, so one group cannot accidentally reach another group's working context.
 
 The Conversation Archive already retains normalized events observed across the configured WhatsApp account, including
-events outside the Managed Chat. Ambience cannot currently search that cross-chat history. Cross-chat and cross-thread
+events outside the Managed Chat. The Speaker cannot currently search that cross-chat history. Cross-chat and cross-thread
 memory will require an explicit Capability with its own authorization, relevance, and privacy rules rather than silently
 removing the existing boundary.
 
@@ -310,7 +310,7 @@ Behavioral evaluations run through the same public Flue HTTP interface used by p
 fresh fixture processes and runs the exact faux-model mechanics first, followed by the real-model judged suites:
 
 ```bash
-export AMBIENCE_FIXTURE_DATA_DIR=/path/to/initialized/non-production/data
+export SPEAKER_FIXTURE_DATA_DIR=/path/to/initialized/non-production/data
 export BRAINTRUST_API_KEY=replace-with-a-non-production-key
 # Optional: choose an existing project by ID or name; the default name is "Flue".
 export BRAINTRUST_PROJECT_NAME="Ambient Agent Evals"
@@ -319,7 +319,7 @@ pnpm evals
 
 `pnpm evals:deterministic` runs only the credential-free mechanics family; `pnpm evals:live` runs only the real-model and
 LLM-judge family. Each command creates a run-scoped Braintrust experiment name unless `BRAINTRUST_EXPERIMENT_NAME` is
-set intentionally to append to an existing experiment. `AMBIENCE_EVAL_PORT` can pin the otherwise dynamically allocated
+set intentionally to append to an existing experiment. `SPEAKER_EVAL_PORT` can pin the otherwise dynamically allocated
 fixture port. Braintrust traces and experiment records are content-bearing, so use a reviewed non-production project and
 credential. Live model checks are not substitutes for deterministic tests, and deterministic green checks are not
 presented as proof of real provider delivery.
