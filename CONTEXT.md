@@ -53,6 +53,37 @@ _Avoid_: Best-effort listener, live queue
 The single explicit act of sending a message to a Managed Chat. Anything the agent produces without Saying it is private working context.
 _Avoid_: Reply, respond, send
 
+### Shared graph
+
+**The Graph**:
+The shared, cross-thread, cross-agent memory of the multi-agent suite — a typed knowledge graph in `application.sqlite`, beside the Conversation Archive. A *derived-meaning layer* above two raw sources (the Conversation Archive locally, GitHub remotely), never a store of truth and never a mirror of either. It holds only what agents need cheaply that those layers can't answer: who is who across platforms, what connects to what, and the social facts GitHub never records. The Scribe writes it, the Speaker reads it, Workers consult it, webhook fan-out queries it.
+_Avoid_: Knowledge base, cache, GitHub mirror, second transcript
+
+**Scribe**:
+The silent per-thread agent that writes the Graph. It receives the same input stream as the Speaker — chat Windows, GitHub events, finished-job results — but never speaks and holds no GitHub identity; its only Tools record Entities and Relations. It records *honestly* rather than *certainly*: an ambiguity it cannot resolve at write time becomes a low-Confidence fact, not a blocked write.
+_Avoid_: Extractor, indexer, logger, second Ambience
+
+**Entity**:
+A typed node in the Graph — one of Person, Agent, Thread, Topic, Commitment, Repository, Issue, PullRequest, Project, Milestone, Goal. Carries typed properties, a Confidence, and Provenance.
+
+**Relation**:
+A typed, directed edge between two Entities (e.g. `discusses`, `made_by`, `blocks`). An edge is a single fact, stated once; restating it updates its Confidence. Every relation exists to power a named consumer query — facts GitHub already serves fresh are not edges.
+
+**Confidence**:
+A 0–1 score on every Entity and Relation recording how sure the Scribe is of a derived fact. The Graph is deliberately tentative: an uncertain memory is not a hazard but a question the Speaker may raise in conversation, and the answer raises the Confidence.
+_Avoid_: Certainty, weight, score (unqualified)
+
+**Provenance**:
+The pointer from a Graph row back to the raw fact that produced it — a Conversation Archive message (`source_chat_id`, `source_message_id`) or a GitHub webhook delivery (`source_delivery_id`). The Graph derives; provenance keeps the derivation traceable to its source.
+
+**Commitment**:
+A *social* fact in the Graph — a person told the group they would do something (status open/done/dropped, made by exactly one Person or Agent, optionally about an Issue, PR, or Topic). Distinct from an Issue: a Commitment is conversational and may never touch GitHub; it may *link* to an Issue but is never the same thing.
+_Avoid_: Task, TODO, Issue (when the promise is only spoken)
+
+**Cross-platform identity**:
+The rule that one real actor (human or Agent) is a single Entity however many platform handles it has — a WhatsApp sender id and a GitHub login converge on one node via the identities table, keyed so the database itself permits only one owner per external id. That convergence *is* the cross-thread memory.
+_Avoid_: Account (as the primary noun), duplicate person
+
 ### Agent anatomy
 
 **Instructions**:
