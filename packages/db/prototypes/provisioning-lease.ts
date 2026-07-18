@@ -58,7 +58,9 @@ CREATE TABLE agent_instance (
     (remote_config_state != 'idle'
       AND remote_config_operation_id IS NOT NULL
       AND remote_config_owner_id IS NOT NULL
+      AND remote_config_fencing_token IS NOT NULL
       AND remote_config_fencing_token > 0
+      AND remote_config_target_version IS NOT NULL
       AND remote_config_target_version > 0)
   )
 );
@@ -396,6 +398,34 @@ async function selfCheck() {
       ) VALUES (?1, ?2, ?3, ?4, ?5)`,
       args: ["agent-a", "tenant-a", key, "Ambient tenant tenant-a", "create-tenant-a"],
     });
+    await assert.rejects(
+      db.execute({
+        sql: `UPDATE agent_instance
+          SET remote_config_operation_id = 'invalid-null-fence',
+              remote_config_owner_id = 'invalid-owner',
+              remote_config_fencing_token = NULL,
+              remote_config_target_version = 1,
+              remote_config_state = 'pending'
+          WHERE creds_store_key = ?1`,
+        args: [key],
+      }),
+      /CHECK constraint failed/,
+      "a non-idle remote operation requires a fencing token",
+    );
+    await assert.rejects(
+      db.execute({
+        sql: `UPDATE agent_instance
+          SET remote_config_operation_id = 'invalid-null-version',
+              remote_config_owner_id = 'invalid-owner',
+              remote_config_fencing_token = 1,
+              remote_config_target_version = NULL,
+              remote_config_state = 'pending'
+          WHERE creds_store_key = ?1`,
+        args: [key],
+      }),
+      /CHECK constraint failed/,
+      "a non-idle remote operation requires a target version",
+    );
 
     const first = await acquire(db, key, "reconcile-a", 30_000);
     assert(first, "the first reconciler acquires the lease");

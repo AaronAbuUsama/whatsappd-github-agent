@@ -152,7 +152,7 @@ const syncSubscription = ({ data }: SubscriptionPayload) =>
   upsertSubscriptionIntentAndReconcile({
     polarSubscriptionId: data.id,
     userId: data.customer.externalId,
-    entitled: data.status === "active",
+    entitled: data.status === "active" || data.status === "trialing",
   });
 
 const subscriptionWebhooks = webhooks({
@@ -297,7 +297,9 @@ CREATE TABLE agent_instance (
     (remote_config_state != 'idle'
       AND remote_config_operation_id IS NOT NULL
       AND remote_config_owner_id IS NOT NULL
+      AND remote_config_fencing_token IS NOT NULL
       AND remote_config_fencing_token > 0
+      AND remote_config_target_version IS NOT NULL
       AND remote_config_target_version > 0)
   )
 );
@@ -618,8 +620,9 @@ adds no coordinator or queue and never claims the local fence can cancel a
 remote request. The acknowledgement SQL is not reachable from the Polar webhook,
 user oRPC mutation, startup sweep, or normal reconciler. A privileged operator
 command requires an authenticated operator identity plus a non-empty Dokploy
-quiescence evidence note and emits an audit record containing the operation ID,
-actor, time, and resolution before executing the CAS.
+quiescence evidence note. It executes the CAS first, emits a success audit
+containing the operation ID, actor, time, and resolution only when `RETURNING`
+succeeds, and records rejected attempts separately.
 
 ## Idempotent reconcile
 
@@ -628,16 +631,17 @@ Every Polar subscription callback first upserts subscription/tenant intent by
 therefore coalesce. Created, updated, active, canceled, revoked, and uncanceled
 all call the same reducer and then the same reconcile service as the protected
 oRPC mutation. Entitlement is derived from the payload's current status, not the
-event name: an end-of-period cancellation remains entitled while Polar reports
-it active, then the later revoked/updated payload flips `desired_state` to
-`stopped`. `past_due` arrives through `onSubscriptionUpdated` and is likewise
-reduced from the current status.
+event name: both `active` and `trialing` are entitled. An end-of-period
+cancellation remains entitled while Polar reports it active, then the later
+revoked/updated payload flips `desired_state` to `stopped`. `past_due` arrives
+through `onSubscriptionUpdated` and is likewise reduced from the current status.
 
 For one acquired lease:
 
-1. Re-read `tenant` + `agent_instance`. If subscription is not active, set
-   `desired_state='stopped'`. If required config or captured model credential is
-   absent, set `pending_input` and do not create/start anything.
+1. Re-read `tenant` + `agent_instance`. If subscription is neither `active` nor
+   `trialing`, set `desired_state='stopped'`. If required config or captured
+   model credential is absent, set `pending_input` and do not create/start
+   anything.
 2. Ensure the per-tenant Turso DB by deterministic name. “Already exists” is
    observation, not failure. Mint a scoped token if no decryptable token is
    recorded; write the encrypted token and URL using a fenced DB update. The
@@ -843,3 +847,5 @@ and the one logged-in-instance proof above.
 - [Polar subscription event sequence](https://polar.sh/docs/integrate/webhooks/events#subscriptions):
   `subscription.updated` is the catch-all lifecycle event; end-of-period
   cancellation remains active until the later revoked event.
+- [Polar subscription benefits](https://polar.sh/docs/features/subscriptions/introduction#how-subscriptions-work):
+  customers retain benefits while a subscription is active or trialing.
