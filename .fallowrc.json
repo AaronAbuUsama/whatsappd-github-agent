@@ -1,12 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
   "entry": [
-    "apps/server/src/app.ts",
+    "apps/runtime/src/app.ts",
     "packages/agents/evals/*.eval.ts",
     "packages/agents/src/capabilities/*/evals/*.eval.ts",
     "vitest.evals.config.ts",
-    "apps/server/src/agents/**/*.ts",
-    "apps/server/src/channels/**/*.ts"
+    "apps/runtime/src/agents/**/*.ts",
+    "apps/runtime/src/channels/**/*.ts"
   ],
   "framework": [
     {
@@ -24,14 +24,14 @@
       ],
       "usedExports": [
         {
-          "pattern": "apps/server/src/agents/**/*.ts",
+          "pattern": "apps/runtime/src/agents/**/*.ts",
           "exports": [
             "description",
             "default"
           ]
         },
         {
-          "pattern": "apps/server/src/db.ts",
+          "pattern": "apps/runtime/src/db.ts",
           "exports": [
             "default"
           ]

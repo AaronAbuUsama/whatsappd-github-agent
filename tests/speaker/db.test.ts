@@ -13,7 +13,7 @@ describe("Flue database configuration", () => {
       paths,
     });
     process.env.FLUE_DB_PATH = "/external/must-not-win.sqlite";
-    const { flueDatabasePath } = await import("../../apps/server/src/db.ts");
+    const { flueDatabasePath } = await import("../../apps/runtime/src/db.ts");
     expect(flueDatabasePath()).toBe(paths.flueDatabase);
     delete process.env.FLUE_DB_PATH;
   });

@@ -33,10 +33,11 @@ describe("the post-Eve production cut", () => {
       scripts: Record<string, string>;
     };
 
-    expect(packageJson.scripts.dev).toBe("pnpm run build && pnpm start");
-    expect(packageJson.scripts["build:server"]).toBe("flue build --target node --root apps/server --output dist");
+    expect(packageJson.scripts.dev).toBe("pnpm run build:dist && pnpm start");
+    expect(packageJson.scripts["build:runtime"]).toBe("flue build --target node --root apps/runtime --output dist");
     expect(packageJson.scripts["build:cli"]).toBe("vp pack");
-    expect(packageJson.scripts.build).toBe("pnpm run build:server && pnpm run build:cli");
+    expect(packageJson.scripts["build:dist"]).toBe("pnpm run build:runtime && pnpm run build:cli");
+    expect(packageJson.scripts.build).toBe("pnpm run build:dist && pnpm run build:api && pnpm run build:web");
     expect(packageJson.scripts.start).toBe("node dist/cli/main.js start");
     expect(Object.keys(packageJson.scripts)).not.toContain("speaker:build");
     expect(Object.values(packageJson.scripts).join("\n")).not.toMatch(
@@ -75,11 +76,11 @@ describe("the post-Eve production cut", () => {
   });
 
   it("keeps the canonical Coalescer-to-Speaker dispatch free of API-key fallback", async () => {
-    const runtime = await readFile(path.join(root, "apps/server/src/host/whatsapp-runtime.ts"), "utf8");
+    const runtime = await readFile(path.join(root, "apps/runtime/src/host/whatsapp-runtime.ts"), "utf8");
     expect(runtime).toContain("makeSpeakerWindowDispatcher");
 
     const files = (
-      await Promise.all(["apps/cli/src", "apps/server/src", "packages/engine/src", "packages/agents/src", "packages/installation/src"].map(sourceFiles))
+      await Promise.all(["apps/cli/src", "apps/runtime/src", "packages/engine/src", "packages/agents/src", "packages/installation/src"].map(sourceFiles))
     ).flat();
     const productionSource = await Promise.all(
       files.map(async (relativePath) => ({
@@ -96,14 +97,14 @@ describe("the post-Eve production cut", () => {
 
   it("keeps the workspace boundaries: the ratified arrow diagram, enforced", async () => {
     // engine -> nothing internal; agents -> engine; installation -> agents+engine;
-    // apps/server -> engine+agents+installation (never test-support);
+    // apps/runtime -> engine+agents+installation (never test-support);
     // apps/cli -> installation+engine (NEVER agents); test-support -> anything.
     const boundaries: ReadonlyArray<readonly [string, RegExp]> = [
       ["packages/engine/src", /@ambient-agent\//],
       ["packages/agents/src", /@ambient-agent\/(?!engine\/)/],
       ["packages/installation/src", /@ambient-agent\/(?!engine\/|agents\/)/],
       ["apps/cli/src", /@ambient-agent\/(?!engine\/|installation\/)/],
-      ["apps/server/src", /@ambient-agent\/(?!engine\/|agents\/|installation\/)/],
+      ["apps/runtime/src", /@ambient-agent\/(?!engine\/|agents\/|installation\/)/],
     ];
     for (const [directory, forbidden] of boundaries) {
       for (const relativePath of await sourceFiles(directory)) {

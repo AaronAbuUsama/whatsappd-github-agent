@@ -54,7 +54,7 @@ Worked example: a **codography** agent that reviews matching PRs. Five steps, in
    observe(correlator.ingest);   // import-time wiring, same as speaker
    ```
    and calls `correlator.accepted(receipt.dispatchId, context)` in its dispatch.
-5. **Discovery + boundaries** — a 3-line re-export stub in `apps/server/src/agents/codography.ts`
+5. **Discovery + boundaries** — a 3-line re-export stub in `apps/runtime/src/agents/codography.ts`
    (Flue discovers agents by directory), wire its adapters in `app.ts`, and the hard-cut
    boundary test needs no new rule — the existing arrows already cover it.
 
@@ -65,7 +65,7 @@ agent's own. If two agents need the same code and it isn't a capability, it grad
 
 ## Dependency arrows
 
-Imports `@ambient-agent/engine` only. Imported by `apps/server` (composition + Flue
+Imports `@ambient-agent/engine` only. Imported by `apps/runtime` (composition + Flue
 discovery) and `@ambient-agent/installation` (issue-repository types). `apps/cli`
 **never** imports this package (enforced).
 
