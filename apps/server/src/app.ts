@@ -6,6 +6,7 @@ import { dispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
 import { createIssueManagementPolicy } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createGraphStore } from "@ambient-agent/engine/graph/store.ts";
+import { createRunLedger } from "@ambient-agent/agents/capabilities/delegation/ledger.ts";
 import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
 import {
@@ -50,6 +51,11 @@ export const createAmbientAgentApp = async ({
       dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
     },
     graph: createGraphStore(paths.applicationDatabase),
+    delegation: {
+      ledger: createRunLedger(paths.applicationDatabase),
+      // A SpecialistInput is a SpeakerInput, so the funnel delivers it to both Speaker and Scribe.
+      dispatch: (request) => dispatchSpeaker(request),
+    },
     // The WhatsApp participation port is wired later by runWhatsAppSession, once the
     // live socket exists.
     health: () => {

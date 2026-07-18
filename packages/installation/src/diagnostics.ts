@@ -133,6 +133,8 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
     ],
   ],
   ["graph_identities", ["platform", "external_id", "entity_id", "display_name"]],
+  // The delegation run ledger (MEMORY-STATE-SPEC §8) — launch memory beside the archive.
+  ["delegation_launches", ["run_id", "chat_id", "workflow", "launched_at", "settled_at"]],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;
 const LEGACY_APPLICATION_SCHEMA = new Map<string, readonly string[]>([
   ...LEGACY_APPLICATION_CORE_SCHEMA,

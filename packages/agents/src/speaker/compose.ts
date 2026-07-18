@@ -12,6 +12,9 @@ import { configureGraphStore } from "../capabilities/graph/runtime.ts";
 import type { GraphStore } from "@ambient-agent/engine/graph/store.ts";
 import { configureWhatsAppParticipationPort } from "../capabilities/whatsapp-participation/whatsapp-port.ts";
 import type { WhatsAppParticipationPort } from "../capabilities/whatsapp-participation/whatsapp-port.ts";
+import { configureDelegationRuntime, type DispatchSpecialist } from "../capabilities/delegation/runtime.ts";
+import type { RunLedger } from "../capabilities/delegation/ledger.ts";
+import { installDelegationBridge, sweepUnsettledLaunches } from "../capabilities/delegation/bridge.ts";
 import { installGitHubIngressRuntime } from "@ambient-agent/engine/github/ingress-runtime.ts";
 import type { GitHubIngressStore } from "@ambient-agent/engine/github/ingress-store.ts";
 import type { GitHubIngressSettings } from "@ambient-agent/engine/github/ingress.ts";
@@ -41,6 +44,12 @@ export interface SpeakerAdapters {
   /** The shared graph store, wired so later graph consumers reach it via `getGraphStore()`. */
   readonly graph?: GraphStore;
   readonly participation?: WhatsAppParticipationPort;
+  /**
+   * Delegation transport (#157): the run ledger + the funnel that delivers a Specialist
+   * result to a chat's Speaker. When present, the ADR 0001 bridge is installed and the
+   * boot sweep runs (any launch a crash left unsettled → an `interrupted` result).
+   */
+  readonly delegation?: { readonly ledger: RunLedger; readonly dispatch: DispatchSpecialist };
   /** Payload for GET /health; defaults to a static `{ ok: true }`. */
   readonly health?: () => Record<string, unknown>;
   /** Caller-owned routes (smoke route, /test seams), mounted before the Flue routes. */
@@ -60,6 +69,15 @@ export const composeSpeaker = (adapters: SpeakerAdapters): Hono => {
   );
   if (adapters.graph !== undefined) configureGraphStore(adapters.graph);
   if (adapters.participation !== undefined) configureWhatsAppParticipationPort(adapters.participation);
+  if (adapters.delegation !== undefined) {
+    configureDelegationRuntime(adapters.delegation);
+    installDelegationBridge();
+    // Detached like the Scribe funnel: reconciliation is best-effort and self-heals on
+    // the next boot; it must not block the composition root from returning the app.
+    void sweepUnsettledLaunches(adapters.delegation).catch((cause) => {
+      console.error("[delegation] boot sweep failed", cause);
+    });
+  }
   const app = new Hono();
   const health = adapters.health ?? (() => ({ ok: true }));
   app.get("/health", (context) => context.json(health()));

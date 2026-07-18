@@ -13,7 +13,8 @@
  "./scribe/agent.ts": "./src/scribe/agent.ts",
     "./capabilities/issue-management/issue-repository.ts": "./src/capabilities/issue-management/issue-repository.ts",
     "./capabilities/issue-management/runtime.ts": "./src/capabilities/issue-management/runtime.ts",
-    "./capabilities/whatsapp-participation/whatsapp-port.ts": "./src/capabilities/whatsapp-participation/whatsapp-port.ts"
+    "./capabilities/whatsapp-participation/whatsapp-port.ts": "./src/capabilities/whatsapp-participation/whatsapp-port.ts",
+    "./capabilities/delegation/ledger.ts": "./src/capabilities/delegation/ledger.ts"
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.9",
