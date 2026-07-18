@@ -153,6 +153,7 @@ describe("connectPiChatGptSubscription", () => {
         id: SPEAKER_MODEL_ID,
         provider: "openai-codex",
         reasoning: true,
+        thinkingLevelMap: { minimal: "low", xhigh: "xhigh" },
       }),
       { messages: [] },
       expect.objectContaining({ reasoning: "low" }),
@@ -185,13 +186,13 @@ describe("connectPiChatGptSubscription", () => {
         maxTokens: 0,
       },
       { messages: [] },
-      { reasoning: "high" },
+      { reasoning: "xhigh" },
     );
     expect(codexApi.streamSimple).toHaveBeenNthCalledWith(
       2,
-      expect.not.objectContaining({ thinkingLevelMap: expect.anything() }),
+      expect.objectContaining({ thinkingLevelMap: { xhigh: "xhigh" } }),
       { messages: [] },
-      expect.objectContaining({ reasoning: "high" }),
+      expect.objectContaining({ reasoning: "xhigh" }),
     );
   });
 

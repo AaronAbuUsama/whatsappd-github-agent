@@ -194,9 +194,10 @@ function codexSubscriptionModel(model: Model<Api>): Model<Api> {
     ...model,
     api: CODEX_API,
     reasoning: true,
+    thinkingLevelMap: { ...model.thinkingLevelMap, xhigh: "xhigh" },
   };
   return model.id === LUNA_MODEL_ID
-    ? { ...configured, thinkingLevelMap: { ...model.thinkingLevelMap, minimal: "low", xhigh: "xhigh" } }
+    ? { ...configured, thinkingLevelMap: { ...configured.thinkingLevelMap, minimal: "low" } }
     : configured;
 }
 
