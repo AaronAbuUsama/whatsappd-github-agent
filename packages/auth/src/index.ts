@@ -1,11 +1,18 @@
-import { db } from "@ambient-agent/db";
+import { client, db } from "@ambient-agent/db";
 import * as schema from "@ambient-agent/db/schema/auth";
 import { env } from "@ambient-agent/env/server";
-import { polar, checkout, portal } from "@polar-sh/better-auth";
+import { polar, checkout, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 
 import { polarClient } from "./lib/payments";
+import {
+  createSubscriptionEntitlementStore,
+  entitlementSnapshot,
+  subscriptionLifecycleEvent,
+} from "./subscription-entitlement";
+
+export const subscriptionEntitlements = createSubscriptionEntitlementStore(client);
 
 export function createAuth() {
   return betterAuth({
@@ -44,6 +51,13 @@ export function createAuth() {
             authenticatedUsersOnly: true,
           }),
           portal(),
+          webhooks({
+            secret: env.POLAR_WEBHOOK_SECRET,
+            onPayload: async (payload) => {
+              const event = subscriptionLifecycleEvent(payload);
+              if (event) await subscriptionEntitlements.reduce(event);
+            },
+          }),
         ],
       }),
     ],
@@ -51,3 +65,13 @@ export function createAuth() {
 }
 
 export const auth = createAuth();
+
+export const getEntitlementSnapshot = async (userId: string) => {
+  const projection = await subscriptionEntitlements.get(userId);
+  if (projection?.status === "active" || projection?.status === "trialing") {
+    return entitlementSnapshot(projection);
+  }
+
+  const customerState = await polarClient.customers.getStateExternal({ externalId: userId });
+  return entitlementSnapshot(projection, customerState.activeSubscriptions.length > 0);
+};
