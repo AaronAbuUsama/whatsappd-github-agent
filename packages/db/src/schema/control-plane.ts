@@ -25,7 +25,7 @@ export const subscriptionEntitlement = sqliteTable(
       .references(() => user.id, { onDelete: "cascade" }),
     polarCustomerId: text("polar_customer_id").unique(),
     polarSubscriptionId: text("polar_subscription_id").unique(),
-    status: text("status", { enum: ["inactive", "active", "past_due", "canceled"] })
+    status: text("status", { enum: ["inactive", "trialing", "active", "past_due", "canceled"] })
       .default("inactive")
       .notNull(),
     lastEventId: text("last_event_id").unique(),
@@ -36,7 +36,7 @@ export const subscriptionEntitlement = sqliteTable(
     unique("subscription_entitlement_id_user_unique").on(table.id, table.userId),
     check(
       "subscription_entitlement_status_check",
-      sql`${table.status} in ('inactive', 'active', 'past_due', 'canceled')`,
+      sql`${table.status} in ('inactive', 'trialing', 'active', 'past_due', 'canceled')`,
     ),
   ],
 );
@@ -100,6 +100,7 @@ export const agentInstance = sqliteTable(
       .default("absent")
       .notNull(),
     observedAtMs: integer("observed_at_ms"),
+    runtimeBaseUrl: text("runtime_base_url"),
     dokployDisplayName: text("dokploy_display_name").notNull().unique(),
     dokployCreationToken: text("dokploy_creation_token").notNull().unique(),
     dokployApplicationId: text("dokploy_application_id").unique(),
@@ -364,7 +365,7 @@ export const controlOperation = sqliteTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull(),
+    kind: text("kind", { enum: ["provision_setup", "activate", "restart", "repair"] }).notNull(),
     status: text("status", { enum: ["pending", "running", "succeeded", "failed", "uncertain"] })
       .default("pending")
       .notNull(),
@@ -379,6 +380,7 @@ export const controlOperation = sqliteTable(
   (table) => [
     unique("control_operation_identity_unique").on(table.tenantId, table.operationIdentity),
     index("control_operation_tenant_status_idx").on(table.tenantId, table.status),
+    check("control_operation_kind_check", sql`${table.kind} in ('provision_setup', 'activate', 'restart', 'repair')`),
     check(
       "control_operation_status_check",
       sql`${table.status} in ('pending', 'running', 'succeeded', 'failed', 'uncertain')`,
@@ -406,7 +408,7 @@ export const tenantReadiness = sqliteView("tenant_readiness", {
   select
     tenant.id as tenant_id,
     case
-      when subscription_entitlement.status != 'active'
+      when subscription_entitlement.status not in ('active', 'trialing')
         or tenant.status in ('suspended', 'archived') then 'suspended'
       when tenant.status = 'active'
         and agent_instance.desired_mode = 'operate'

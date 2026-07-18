@@ -1,4 +1,4 @@
-import { createDb } from "@ambient-agent/db";
+import { db } from "@ambient-agent/db";
 import * as schema from "@ambient-agent/db/schema/auth";
 import { env } from "@ambient-agent/env/server";
 import { polar, checkout, portal } from "@polar-sh/better-auth";
@@ -8,8 +8,6 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { polarClient } from "./lib/payments";
 
 export function createAuth() {
-  const db = createDb();
-
   return betterAuth({
     database: drizzleAdapter(db, {
       provider: "sqlite",

@@ -1,7 +1,15 @@
 import { readdir, readFile } from "node:fs/promises";
 
-import { createClient, type Client } from "@libsql/client";
+import type { Client } from "@libsql/client";
 import { afterEach, describe, expect, test } from "vitest";
+
+import {
+  acquireLease,
+  openControlDb,
+  releaseLease,
+  renewLease,
+  writeAgentPhase,
+} from "../../packages/db/src/control-db";
 
 const migrationDirectory = new URL("../../packages/db/src/migrations/", import.meta.url);
 
@@ -11,8 +19,8 @@ async function migrate() {
   const [migration] = (await readdir(migrationDirectory)).filter((file) => file.endsWith(".sql"));
   if (!migration) throw new Error("control-plane migration is missing");
 
-  db = createClient({ url: "file::memory:" });
-  await db.execute("PRAGMA foreign_keys = ON");
+  const opened = await openControlDb({ url: "file::memory:" });
+  db = opened.client;
   await db.executeMultiple(await readFile(new URL(migration, migrationDirectory), "utf8"));
   return db;
 }
@@ -130,6 +138,8 @@ describe("control-plane ledger migration", () => {
         "whatsapp_connection",
       ]),
     );
+    const agentColumns = await client.execute("PRAGMA table_info(agent_instance)");
+    expect(agentColumns.rows.map((row) => row.name)).toContain("runtime_base_url");
   });
 
   test("rejects relationships that cross tenant boundaries", async () => {
@@ -197,7 +207,7 @@ describe("control-plane ledger migration", () => {
     ).rejects.toThrow(/CHECK constraint failed/);
   });
 
-  test("cascades one account deletion through the complete tenant ledger", async () => {
+  test("cascades one user deletion through the complete tenant ledger", async () => {
     const client = await migrate();
     const seeded = await seedTenant(client, "4", "active");
     await seedInstance(client, seeded.tenantId, seeded.credsStoreKey, "4");
@@ -236,36 +246,26 @@ describe("control-plane ledger migration", () => {
     }
   });
 
-  test("rejects a stale lease fence", async () => {
+  test("opens with foreign keys enabled and rejects a stale lease fence", async () => {
     const client = await migrate();
     const seeded = await seedTenant(client, "5");
     await seedInstance(client, seeded.tenantId, seeded.credsStoreKey, "5");
-    await client.execute({
-      sql: `INSERT INTO provisioner_lease (
-        creds_store_key, owner_id, fencing_token, expires_at_ms
-      ) VALUES (?1, 'current-owner', 2, 9999999999999)`,
-      args: [seeded.credsStoreKey],
-    });
+    const foreignKeys = await client.execute("PRAGMA foreign_keys");
+    expect(Number(foreignKeys.rows[0]?.foreign_keys)).toBe(1);
 
-    const writePhase = (ownerId: string, fencingToken: number) =>
-      client.execute({
-        sql: `UPDATE agent_instance
-          SET phase = 'provisioning'
-          WHERE creds_store_key = ?1
-            AND EXISTS (
-              SELECT 1 FROM provisioner_lease
-              WHERE provisioner_lease.creds_store_key = agent_instance.creds_store_key
-                AND owner_id = ?2
-                AND fencing_token = ?3
-                AND expires_at_ms > cast(unixepoch('subsecond') * 1000 as integer)
-            )
-          RETURNING phase`,
-        args: [seeded.credsStoreKey, ownerId, fencingToken],
-      });
+    const first = await acquireLease(client, seeded.credsStoreKey, "first-owner");
+    expect(first).not.toBeNull();
+    if (!first) throw new Error("first lease was not acquired");
+    expect(await writeAgentPhase(client, seeded.credsStoreKey, first, "provisioning")).toBe(true);
+    expect(await renewLease(client, seeded.credsStoreKey, first)).not.toBeNull();
+    expect(await releaseLease(client, seeded.credsStoreKey, first)).toBe(true);
 
-    expect((await writePhase("stale-owner", 1)).rows).toHaveLength(0);
-    expect((await writePhase("current-owner", 1)).rows).toHaveLength(0);
-    expect((await writePhase("current-owner", 2)).rows).toHaveLength(1);
+    const successor = await acquireLease(client, seeded.credsStoreKey, "successor-owner");
+    expect(successor?.fencingToken).toBe(first.fencingToken + 1);
+    if (!successor) throw new Error("successor lease was not acquired");
+    expect(await writeAgentPhase(client, seeded.credsStoreKey, first, "running")).toBe(false);
+    expect(await releaseLease(client, seeded.credsStoreKey, first)).toBe(false);
+    expect(await writeAgentPhase(client, seeded.credsStoreKey, successor, "running")).toBe(true);
   });
 
   test("returns one durable receipt for repeated operation identity", async () => {
@@ -286,6 +286,14 @@ describe("control-plane ledger migration", () => {
     expect((await insertReceipt("operation-retry")).rows[0]?.id).toBe("operation-first");
     const count = await client.execute("SELECT count(*) AS count FROM control_operation");
     expect(Number(count.rows[0]?.count)).toBe(1);
+    await expect(
+      client.execute({
+        sql: `INSERT INTO control_operation (
+          id, tenant_id, kind, operation_identity
+        ) VALUES ('operation-typo', ?1, 'activte', 'operation-typo')`,
+        args: [seeded.tenantId],
+      }),
+    ).rejects.toThrow(/CHECK constraint failed/);
   });
 
   test("derives readiness from current independent facts and config revisions", async () => {
@@ -301,6 +309,11 @@ describe("control-plane ledger migration", () => {
       return result.rows[0]?.readiness;
     };
 
+    expect(await readiness()).toBe("healthy");
+    await client.execute({
+      sql: "UPDATE subscription_entitlement SET status = 'trialing' WHERE id = ?1",
+      args: [seeded.entitlementId],
+    });
     expect(await readiness()).toBe("healthy");
     await client.execute({
       sql: "UPDATE tenant SET config_version = 2 WHERE id = ?1",

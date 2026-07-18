@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "87666d6a-e161-4030-ab12-1e4d6f632ca2",
+  "id": "79456e9b-d7e2-42c8-95a8-283a5080d35c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "account": {
@@ -403,6 +403,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "runtime_base_url": {
+          "name": "runtime_base_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "dokploy_display_name": {
           "name": "dokploy_display_name",
           "type": "text",
@@ -716,6 +723,10 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
+        "control_operation_kind_check": {
+          "name": "control_operation_kind_check",
+          "value": "\"control_operation\".\"kind\" in ('provision_setup', 'activate', 'restart', 'repair')"
+        },
         "control_operation_status_check": {
           "name": "control_operation_status_check",
           "value": "\"control_operation\".\"status\" in ('pending', 'running', 'succeeded', 'failed', 'uncertain')"
@@ -1333,7 +1344,7 @@
       "checkConstraints": {
         "subscription_entitlement_status_check": {
           "name": "subscription_entitlement_status_check",
-          "value": "\"subscription_entitlement\".\"status\" in ('inactive', 'active', 'past_due', 'canceled')"
+          "value": "\"subscription_entitlement\".\"status\" in ('inactive', 'trialing', 'active', 'past_due', 'canceled')"
         }
       }
     },
@@ -1695,7 +1706,7 @@
       },
       "name": "tenant_readiness",
       "isExisting": false,
-      "definition": "\n  select\n    tenant.id as tenant_id,\n    case\n      when subscription_entitlement.status != 'active'\n        or tenant.status in ('suspended', 'archived') then 'suspended'\n      when tenant.status = 'active'\n        and agent_instance.desired_mode = 'operate'\n        and agent_instance.observed_state = 'healthy'\n        and agent_instance.applied_config_version = tenant.config_version\n        and model_connection.status = 'ready'\n        and whatsapp_connection.status = 'online'\n        and managed_chat_selection.status = 'selected'\n        and (\n          select count(*)\n          from github_installation\n          where github_installation.tenant_id = tenant.id\n            and github_installation.status = 'installed'\n            and github_installation.role in ('coder', 'reviewer', 'planner')\n        ) = 3\n        and exists (\n          select 1 from tenant_managed_chat\n          where tenant_managed_chat.tenant_id = tenant.id\n        )\n        and exists (\n          select 1\n          from github_installation\n          join github_repository\n            on github_repository.tenant_id = github_installation.tenant_id\n            and github_repository.installation_role = github_installation.role\n          where github_installation.tenant_id = tenant.id\n            and github_installation.status = 'installed'\n            and github_repository.selected = 1\n            and github_repository.is_default = 1\n        )\n        and delivery_route.status = 'ready' then 'healthy'\n      when tenant.status = 'active' then 'degraded'\n      else 'onboarding'\n    end as readiness\n  from tenant\n  join subscription_entitlement\n    on subscription_entitlement.id = tenant.subscription_entitlement_id\n  left join agent_instance on agent_instance.tenant_id = tenant.id\n  left join model_connection on model_connection.tenant_id = tenant.id\n  left join whatsapp_connection on whatsapp_connection.tenant_id = tenant.id\n  left join managed_chat_selection on managed_chat_selection.tenant_id = tenant.id\n  left join delivery_route on delivery_route.tenant_id = tenant.id\n"
+      "definition": "\n  select\n    tenant.id as tenant_id,\n    case\n      when subscription_entitlement.status not in ('active', 'trialing')\n        or tenant.status in ('suspended', 'archived') then 'suspended'\n      when tenant.status = 'active'\n        and agent_instance.desired_mode = 'operate'\n        and agent_instance.observed_state = 'healthy'\n        and agent_instance.applied_config_version = tenant.config_version\n        and model_connection.status = 'ready'\n        and whatsapp_connection.status = 'online'\n        and managed_chat_selection.status = 'selected'\n        and (\n          select count(*)\n          from github_installation\n          where github_installation.tenant_id = tenant.id\n            and github_installation.status = 'installed'\n            and github_installation.role in ('coder', 'reviewer', 'planner')\n        ) = 3\n        and exists (\n          select 1 from tenant_managed_chat\n          where tenant_managed_chat.tenant_id = tenant.id\n        )\n        and exists (\n          select 1\n          from github_installation\n          join github_repository\n            on github_repository.tenant_id = github_installation.tenant_id\n            and github_repository.installation_role = github_installation.role\n          where github_installation.tenant_id = tenant.id\n            and github_installation.status = 'installed'\n            and github_repository.selected = 1\n            and github_repository.is_default = 1\n        )\n        and delivery_route.status = 'ready' then 'healthy'\n      when tenant.status = 'active' then 'degraded'\n      else 'onboarding'\n    end as readiness\n  from tenant\n  join subscription_entitlement\n    on subscription_entitlement.id = tenant.subscription_entitlement_id\n  left join agent_instance on agent_instance.tenant_id = tenant.id\n  left join model_connection on model_connection.tenant_id = tenant.id\n  left join whatsapp_connection on whatsapp_connection.tenant_id = tenant.id\n  left join managed_chat_selection on managed_chat_selection.tenant_id = tenant.id\n  left join delivery_route on delivery_route.tenant_id = tenant.id\n"
     }
   },
   "enums": {},

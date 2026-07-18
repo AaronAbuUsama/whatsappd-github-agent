@@ -58,6 +58,7 @@ CREATE TABLE `agent_instance` (
 	`desired_mode` text DEFAULT 'stopped' NOT NULL,
 	`observed_state` text DEFAULT 'absent' NOT NULL,
 	`observed_at_ms` integer,
+	`runtime_base_url` text,
 	`dokploy_display_name` text NOT NULL,
 	`dokploy_creation_token` text NOT NULL,
 	`dokploy_application_id` text,
@@ -119,6 +120,7 @@ CREATE TABLE `control_operation` (
 	`settled_at_ms` integer,
 	`updated_at_ms` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	FOREIGN KEY (`tenant_id`) REFERENCES `tenant`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "control_operation_kind_check" CHECK("control_operation"."kind" in ('provision_setup', 'activate', 'restart', 'repair')),
 	CONSTRAINT "control_operation_status_check" CHECK("control_operation"."status" in ('pending', 'running', 'succeeded', 'failed', 'uncertain')),
 	CONSTRAINT "control_operation_target_version_check" CHECK("control_operation"."target_config_version" is null or "control_operation"."target_config_version" > 0),
 	CONSTRAINT "control_operation_fencing_token_check" CHECK("control_operation"."fencing_token" is null or "control_operation"."fencing_token" > 0),
@@ -215,7 +217,7 @@ CREATE TABLE `subscription_entitlement` (
 	`last_event_id` text,
 	`updated_at_ms` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
-	CONSTRAINT "subscription_entitlement_status_check" CHECK("subscription_entitlement"."status" in ('inactive', 'active', 'past_due', 'canceled'))
+	CONSTRAINT "subscription_entitlement_status_check" CHECK("subscription_entitlement"."status" in ('inactive', 'trialing', 'active', 'past_due', 'canceled'))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `subscription_entitlement_polar_customer_id_unique` ON `subscription_entitlement` (`polar_customer_id`);--> statement-breakpoint
@@ -274,11 +276,11 @@ CREATE TABLE `whatsapp_connection` (
 	CONSTRAINT "whatsapp_connection_online_check" CHECK("whatsapp_connection"."status" != 'online' or ("whatsapp_connection"."account_jid" is not null and "whatsapp_connection"."observed_at_ms" is not null))
 );
 --> statement-breakpoint
-CREATE VIEW `tenant_readiness` AS
+CREATE VIEW `tenant_readiness` AS 
   select
     tenant.id as tenant_id,
     case
-      when subscription_entitlement.status != 'active'
+      when subscription_entitlement.status not in ('active', 'trialing')
         or tenant.status in ('suspended', 'archived') then 'suspended'
       when tenant.status = 'active'
         and agent_instance.desired_mode = 'operate'
