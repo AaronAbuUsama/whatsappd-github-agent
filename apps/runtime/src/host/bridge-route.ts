@@ -26,6 +26,7 @@ const chatErrorResponse = (context: Context, cause: WhatsAppAccountError) => {
 
 export const installBridgeRoute = (app: Hono, options: BridgeRouteOptions): void => {
   app.get("/pairing", (context) => {
+    context.header("Cache-Control", "no-store");
     if (!authorized(context, options, "pairing-read")) {
       return context.json({ error: "bridge authorization rejected" }, 403);
     }
@@ -33,6 +34,7 @@ export const installBridgeRoute = (app: Hono, options: BridgeRouteOptions): void
   });
 
   app.get("/chats", async (context) => {
+    context.header("Cache-Control", "no-store");
     if (!authorized(context, options, "chats-read")) {
       return context.json({ error: "bridge authorization rejected" }, 403);
     }

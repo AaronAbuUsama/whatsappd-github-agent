@@ -43,6 +43,20 @@ const appWith = (options: {
 };
 
 describe("tenant runtime bridge", () => {
+  it("prevents authenticated bridge polling responses from being cached", async () => {
+    const available = appWith({ status: () => ({ phase: "pairing" }) });
+    const unavailable = appWith({ status: () => ({ phase: "stopped" }), control: () => undefined });
+    const responses = [
+      await request(available, "/pairing"),
+      await request(available, "/pairing", "pairing-read"),
+      await request(available, "/chats"),
+      await request(available, "/chats", "chats-read"),
+      await request(unavailable, "/chats", "chats-read"),
+    ];
+
+    for (const response of responses) expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("rejects missing, invalid, and cross-purpose authorization while allowing polling replays", async () => {
     const app = appWith({ status: () => ({ phase: "starting" }) });
 
