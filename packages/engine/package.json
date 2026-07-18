@@ -19,6 +19,7 @@
     "./github/ingress.ts": "./src/github/ingress.ts",
     "./github/operation-store.ts": "./src/github/operation-store.ts",
     "./github/repository.ts": "./src/github/repository.ts",
+    "./graph/digest.ts": "./src/graph/digest.ts",
     "./graph/store.ts": "./src/graph/store.ts",
     "./inputs.ts": "./src/inputs.ts",
     "./intake/admission-relay.ts": "./src/intake/admission-relay.ts",

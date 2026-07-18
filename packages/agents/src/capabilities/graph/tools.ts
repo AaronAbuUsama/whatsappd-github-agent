@@ -41,8 +41,26 @@ const relationOutput = v.object({
 const publicEntity = (entity: GraphEntity): v.InferOutput<typeof entityOutput> => ({ ...entity });
 const publicRelation = (relation: GraphRelation): v.InferOutput<typeof relationOutput> => ({ ...relation });
 
-export const createGraphTools = (store: GraphStore = getGraphStore()): ToolDefinition[] => [
-  defineTool({
+/**
+ * The default store, resolved lazily so mounting these tools on an agent never forces
+ * the graph to be configured at `initialize()` time — only when a tool actually runs
+ * (by then production has wired it via `composeSpeaker`). Every store method is a
+ * closure that ignores `this`, so forwarding through the proxy is safe. Tests pass an
+ * explicit store and bypass this entirely.
+ */
+const lazyGraphStore: GraphStore = new Proxy({} as GraphStore, {
+  get: (_target, property) => Reflect.get(getGraphStore(), property) as unknown,
+});
+
+/**
+ * The four ontology tools, keyed by name so each of the three graph consumers mounts
+ * exactly its slice (§5 D5/D6) without re-declaring a tool: the Scribe writes and
+ * reads everything; the Speaker gets read + the confirmed-resolution subset
+ * (`lookup_graph` + `record_entity` + `merge_entities`, never `record_relation`); the
+ * Specialists are read-only (`lookup_graph`).
+ */
+const graphToolsByName = (store: GraphStore) => ({
+  record_entity: defineTool({
     name: "record_entity",
     description:
       "Record one typed entity in the shared graph. Keyed entities (people, threads, and GitHub objects) " +
@@ -55,7 +73,7 @@ export const createGraphTools = (store: GraphStore = getGraphStore()): ToolDefin
       return { entityId: entity.entityId, type: entity.type, confidence: entity.confidence };
     },
   }),
-  defineTool({
+  record_relation: defineTool({
     name: "record_relation",
     description:
       "Record one typed edge between two existing entities in the shared graph. Re-recording the same edge " +
@@ -88,7 +106,7 @@ export const createGraphTools = (store: GraphStore = getGraphStore()): ToolDefin
       return { relationId: relation.relationId, confidence: relation.confidence };
     },
   }),
-  defineTool({
+  merge_entities: defineTool({
     name: "merge_entities",
     description:
       "Merge two entities that turned out to be the same one. Every edge and identity of the loser is " +
@@ -100,7 +118,7 @@ export const createGraphTools = (store: GraphStore = getGraphStore()): ToolDefin
       return { survivorId: input.survivorId };
     },
   }),
-  defineTool({
+  lookup_graph: defineTool({
     name: "lookup_graph",
     description:
       "Read the shared graph: resolve an external identity or entity id to its one-hop neighborhood, or list " +
@@ -148,4 +166,19 @@ export const createGraphTools = (store: GraphStore = getGraphStore()): ToolDefin
       return { entities: entities.map(publicEntity), relations: [] };
     },
   }),
+});
+
+/** All four tools — the Scribe's write + read surface (§4). */
+export const createGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] =>
+  Object.values(graphToolsByName(store));
+
+/** Read + confirmed-resolution subset for the Speaker (§5 D5); no `record_relation`. */
+export const createSpeakerGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] => {
+  const tools = graphToolsByName(store);
+  return [tools.lookup_graph, tools.record_entity, tools.merge_entities];
+};
+
+/** Read-only surface for the Specialists (§5 D6). */
+export const createSpecialistGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] => [
+  graphToolsByName(store).lookup_graph,
 ];

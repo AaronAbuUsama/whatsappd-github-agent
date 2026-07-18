@@ -1,7 +1,17 @@
 import type { ConversationWindow } from "./coalescer/events.ts";
 import * as v from "valibot";
 
+import { graphDigestSchema, type DigestSeeds } from "./graph/digest.ts";
+
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
+
+/**
+ * The pushed graph digest (§5), computed at the `dispatchSpeaker` funnel and carried
+ * as a flat optional field on every input-union member — never an envelope wrapper,
+ * so existing `input.type` consumers are untouched. Must appear in each schema or
+ * valibot's `object` would strip it on parse.
+ */
+const graphContext = v.optional(graphDigestSchema);
 const updateBase = {
   id: nonEmptyString,
   providerMessageId: nonEmptyString,
@@ -61,6 +71,7 @@ const whatsappWindowInputSchema = v.object({
       }),
     ]),
   ),
+  graphContext,
 });
 
 export type WhatsAppWindowInput = v.InferOutput<typeof whatsappWindowInputSchema>;
@@ -87,6 +98,7 @@ export const githubIssueOpenedInputSchema = v.object({
     id: v.pipe(v.number(), v.integer(), v.minValue(1)),
     type: nonEmptyString,
   }),
+  graphContext,
 });
 
 export type GitHubIssueOpenedInput = v.InferOutput<typeof githubIssueOpenedInputSchema>;
@@ -118,6 +130,7 @@ export const githubPullRequestOpenedInputSchema = v.object({
     id: v.pipe(v.number(), v.integer(), v.minValue(1)),
     type: nonEmptyString,
   }),
+  graphContext,
 });
 
 export type GitHubPullRequestOpenedInput = v.InferOutput<typeof githubPullRequestOpenedInputSchema>;
@@ -133,3 +146,34 @@ export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowI
     messages: window.messages,
     updates: window.updates,
   });
+
+/**
+ * Seeds the digest walk (§5 D2/D6) from keys already in the window: the thread's chat
+ * id, its human participants, and any GitHub objects in view — all natural keys that
+ * `graph_identities` resolves to entities.
+ */
+export const speakerDigestSeeds = (input: SpeakerInput): DigestSeeds => {
+  if (input.type === "whatsapp.window") {
+    const identities = new Set<string>();
+    for (const message of input.messages) {
+      if (!message.fromMe) identities.add(message.from);
+      for (const mention of message.mentions) identities.add(mention);
+    }
+    return {
+      chatId: input.chatId,
+      identities: [...identities].map((externalId) => ({ platform: "whatsapp", externalId })),
+    };
+  }
+  const repo = `${input.repository.owner}/${input.repository.repo}`;
+  const externalIds = new Set<string>([repo, input.sender.login]);
+  if (input.type === "github.issue.opened") {
+    externalIds.add(`${repo}#${input.issue.number}`);
+  } else {
+    externalIds.add(`${repo}#${input.pullRequest.number}`);
+    for (const issue of input.issues) externalIds.add(`${repo}#${issue.number}`);
+  }
+  return {
+    chatId: input.chatId,
+    identities: [...externalIds].map((externalId) => ({ platform: "github", externalId })),
+  };
+};

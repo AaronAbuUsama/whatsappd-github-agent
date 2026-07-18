@@ -1018,6 +1018,9 @@ describe("production Issue Management tools", () => {
       "github_update_issue_comment",
       "github_delete_issue_comment",
       "github_set_issue_state",
+      "lookup_graph",
+      "record_entity",
+      "merge_entities",
     ]);
     expect(config.tools?.some((tool) => tool.name === "github_delete_issue")).toBe(false);
     const create = config.tools?.find((tool) => tool.name === "github_create_issue");

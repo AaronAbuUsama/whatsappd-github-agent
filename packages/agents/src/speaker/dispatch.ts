@@ -8,6 +8,7 @@ import { admitWindow, type DispatchRetryPolicy } from "@ambient-agent/engine/int
 import type { ManagedChatInbox } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { speakerActivity } from "./activity-reporter.ts";
 import { scribeCoalescer } from "../scribe/coalescer.ts";
+import { attachGraphContext } from "../capabilities/graph/digest.ts";
 import { whatsappWindowInput, type SpeakerInput } from "@ambient-agent/engine/inputs.ts";
 
 export interface SpeakerDispatchRequest {
@@ -18,8 +19,11 @@ export interface SpeakerDispatchRequest {
 export type DispatchSpeaker = (request: SpeakerDispatchRequest) => Promise<DispatchReceipt>;
 
 export const dispatchSpeaker = async ({ id, input }: SpeakerDispatchRequest): Promise<DispatchReceipt> => {
-  const receipt = await dispatch(speaker, { id, input });
-  speakerActivity.accepted(receipt, input);
+  // The funnel is the one site all three input kinds converge (§5 D2): attach the live
+  // graph digest here so the Speaker replies in one turn without a pull round-trip.
+  const enriched = attachGraphContext(input);
+  const receipt = await dispatch(speaker, { id, input: enriched });
+  speakerActivity.accepted(receipt, enriched);
   scribeCoalescer.offer({ id, input }); // Scribe — debounced + detached; failures never touch the Speaker (#155)
   return receipt;
 };
