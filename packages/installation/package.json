@@ -19,11 +19,13 @@
     "./runtime-dependencies.ts": "./src/runtime-dependencies.ts",
     "./runtime-health.ts": "./src/runtime-health.ts",
     "./specialist-return.ts": "./src/specialist-return.ts",
+    "./tenant-credentials.ts": "./src/tenant-credentials.ts",
     "./uncertain-work.ts": "./src/uncertain-work.ts",
     "./whatsapp-account.ts": "./src/whatsapp-account.ts"
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.9",
+    "@libsql/client": "0.17.4",
     "@octokit/auth-app": "^8.0.0",
     "@octokit/rest": "^22.0.0",
     "pino": "^10.3.1",

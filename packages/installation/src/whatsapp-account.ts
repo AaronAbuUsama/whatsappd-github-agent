@@ -10,6 +10,7 @@ import {
   type IncomingMessage,
   type Outbound,
   type SendOptions,
+  type SessionStore,
   type Status,
   type Update,
   type WaIdentity,
@@ -26,6 +27,11 @@ import {
   smokeCanaryArrival,
   conversationUpdate,
 } from "@ambient-agent/engine/intake/conversation-event.ts";
+import {
+  libsqlStore,
+  tenantCredentialDatabaseFromEnvironment,
+  type TenantCredentialEnvironment,
+} from "./tenant-credentials.ts";
 
 export interface PairingProgress {
   readonly method: "qr" | "pairing_code";
@@ -69,7 +75,8 @@ export interface CreateWhatsAppAccountOptions {
   readonly archive: Pick<ConversationArchive, "append">;
   /** App-owned child logger injected through whatsappd's public seam (ADR 0016). */
   readonly logger?: Logger;
-  readonly sessionFactory?: () => WhatsAppSession;
+  readonly sessionFactory?: (store: SessionStore) => WhatsAppSession;
+  readonly environment?: TenantCredentialEnvironment;
   readonly now?: () => number;
   readonly syncTimeoutMillis?: number;
 }
@@ -115,10 +122,15 @@ const candidateName = (chat: HistoryChat, contacts: ReadonlyMap<string, HistoryC
   chat.subject?.trim() || contacts.get(chat.id)?.displayName?.trim() || chat.id;
 
 export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): ManagedWhatsAppAccount => {
+  const createStore = (): SessionStore => {
+    const tenantDatabase = tenantCredentialDatabaseFromEnvironment(options.environment ?? process.env);
+    return tenantDatabase === undefined ? fileStore(options.storeDirectory) : libsqlStore(tenantDatabase);
+  };
+  const store = createStore();
   const session =
-    options.sessionFactory?.() ??
+    options.sessionFactory?.(store) ??
     createSession({
-      store: fileStore(options.storeDirectory),
+      store,
       auth: qrAuth(),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
