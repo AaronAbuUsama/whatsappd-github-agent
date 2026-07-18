@@ -2,9 +2,10 @@
   "name": "@ambient-agent/installation",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
   "description": "Installation machinery: the managed data directory (paths, config, schema, installation, diagnostics, migration, repair), credentials, WhatsApp pairing, and platform adapters. What ambient-agent init/config/repair/doctor operate on.",
+  "type": "module",
   "exports": {
+    "./bridge-contract.ts": "./src/bridge-contract.ts",
     "./chatgpt-authentication.ts": "./src/chatgpt-authentication.ts",
     "./configuration.ts": "./src/configuration.ts",
     "./diagnostics.ts": "./src/diagnostics.ts",

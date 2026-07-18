@@ -1,11 +1,14 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
+import type { PairingProgress } from "./whatsapp-account.ts";
+
 export type AmbientRuntimeState = "stopped" | "starting" | "healthy" | "failed";
-export type WhatsAppRuntimePhase = "disabled" | "starting" | "online" | "failed" | "stopped";
+export type WhatsAppRuntimePhase = "disabled" | "starting" | "pairing" | "online" | "failed" | "stopped";
 export interface WhatsAppRuntimeStatus {
   readonly phase: WhatsAppRuntimePhase;
   readonly chatTarget?: string;
   readonly botIds?: readonly string[];
+  readonly pairing?: PairingProgress;
   readonly error?: string;
 }
 
@@ -18,9 +21,22 @@ export interface AmbientRuntimeHealth {
 export const runtimeInstallationId = (webhookSecret: string): string =>
   createHash("sha256").update(`ambient-agent\0${webhookSecret}`).digest("base64url").slice(0, 22);
 
-/** Request-scoped proof of the private runtime credential; unlike installationId, this value is never published. */
+/** Request-scoped proof of the private runtime credential; unlike runtimeId, this value is never published. */
 export const runtimeSmokeAuthorization = (webhookSecret: string, nonce: string, timeoutMillis: number): string =>
   createHmac("sha256", webhookSecret).update(`ambient-agent-smoke\0${nonce}\0${timeoutMillis}`).digest("base64url");
+
+export type RuntimeBridgePurpose = "pairing-read" | "chats-read";
+
+/** Replay-safe proof for a polled bridge resource, isolated from every other bridge purpose. */
+export const runtimeBridgeAuthorization = (webhookSecret: string, purpose: RuntimeBridgePurpose): string =>
+  createHmac("sha256", webhookSecret).update(`ambient-agent-bridge\0${purpose}`).digest("base64url");
+
+const authorizationMatches = (candidate: string | undefined, expected: string): boolean => {
+  if (candidate === undefined) return false;
+  const expectedBytes = Buffer.from(expected);
+  const actualBytes = Buffer.from(candidate);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+};
 
 export const runtimeSmokeAuthorizationMatches = (
   candidate: string | undefined,
@@ -28,11 +44,14 @@ export const runtimeSmokeAuthorizationMatches = (
   nonce: string,
   timeoutMillis: number,
 ): boolean => {
-  if (candidate === undefined) return false;
-  const expected = Buffer.from(runtimeSmokeAuthorization(webhookSecret, nonce, timeoutMillis));
-  const actual = Buffer.from(candidate);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  return authorizationMatches(candidate, runtimeSmokeAuthorization(webhookSecret, nonce, timeoutMillis));
 };
+
+export const runtimeBridgeAuthorizationMatches = (
+  candidate: string | undefined,
+  webhookSecret: string,
+  purpose: RuntimeBridgePurpose,
+): boolean => authorizationMatches(candidate, runtimeBridgeAuthorization(webhookSecret, purpose));
 
 export const ambientRuntimeHealth = (whatsapp: WhatsAppRuntimeStatus): AmbientRuntimeHealth => ({
   state:
@@ -48,7 +67,14 @@ export const ambientRuntimeHealth = (whatsapp: WhatsAppRuntimeStatus): AmbientRu
 });
 
 const runtimeStates = new Set<AmbientRuntimeState>(["stopped", "starting", "healthy", "failed"]);
-const whatsappPhases = new Set<WhatsAppRuntimeStatus["phase"]>(["disabled", "starting", "online", "failed", "stopped"]);
+const whatsappPhases = new Set<WhatsAppRuntimeStatus["phase"]>([
+  "disabled",
+  "starting",
+  "pairing",
+  "online",
+  "failed",
+  "stopped",
+]);
 
 /** Bounded local HTTP observation; only an explicit refusal means stopped, never stale-process inference. */
 export const probeAmbientRuntimeHealth = async (options: {
@@ -66,7 +92,7 @@ export const probeAmbientRuntimeHealth = async (options: {
     const runtime = value.runtime as Record<string, unknown> | undefined;
     const whatsapp = runtime?.whatsapp as Record<string, unknown> | undefined;
     if (
-      value.installationId !== options.installationId ||
+      value.runtimeId !== options.installationId ||
       !runtimeStates.has(runtime?.state as AmbientRuntimeState) ||
       !whatsappPhases.has(whatsapp?.phase as never)
     ) {

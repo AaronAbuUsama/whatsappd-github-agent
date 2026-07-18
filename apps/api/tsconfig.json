@@ -1,7 +1,9 @@
 {
   "extends": "@ambient-agent/config/tsconfig.base.json",
   "compilerOptions": {
+    "allowImportingTsExtensions": true,
     "composite": true,
+    "noEmit": true,
     "outDir": "dist",
     "paths": {
       "@/*": ["./src/*"]
