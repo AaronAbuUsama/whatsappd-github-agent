@@ -214,6 +214,16 @@ describe.sequential("subscription entitlement projection", () => {
       polarSubscriptionId: "subscription-new-pro",
       status: "active",
     });
+
+    await authPackage.subscriptionEntitlements.reduce(
+      event("product-change-user", "subscription.revoked", "canceled", "2026-07-18T17:00:00.000Z", {
+        polarSubscriptionId: "subscription-entitled",
+      }),
+    );
+    expect(await authPackage.subscriptionEntitlements.get("product-change-user")).toMatchObject({
+      polarSubscriptionId: "subscription-new-pro",
+      status: "active",
+    });
   });
 
   it("keeps first-seen product changes ordered without letting unrelated products block Pro", async () => {

@@ -153,12 +153,13 @@ export const createSubscriptionEntitlementStore = (database: EntitlementDatabase
 
   const reduce = async (event: SubscriptionLifecycleEvent): Promise<EntitlementProjection> => {
     const status = statusFor(event);
+    const grantsEntitlement = status === "active" || status === "trialing";
     const eventCursor = subscriptionEventCursor(event);
     const receivedAt = Date.now();
     const transaction = await database.transaction("write");
 
     try {
-      const reduction = event.entitlingProduct
+      const reduction = grantsEntitlement
         ? await transaction.execute({
             sql: `INSERT INTO subscription_entitlement (
               id, user_id, polar_customer_id, polar_subscription_id, status,
@@ -196,7 +197,10 @@ export const createSubscriptionEntitlementStore = (database: EntitlementDatabase
               status = excluded.status,
               last_event_id = excluded.last_event_id,
               updated_at_ms = excluded.updated_at_ms
-            WHERE subscription_entitlement.polar_subscription_id = excluded.polar_subscription_id
+            WHERE (
+                subscription_entitlement.polar_subscription_id IS NULL
+                OR subscription_entitlement.polar_subscription_id = excluded.polar_subscription_id
+              )
               AND (subscription_entitlement.last_event_id IS NULL
                 OR excluded.last_event_id > subscription_entitlement.last_event_id)`,
             args: [
@@ -210,7 +214,7 @@ export const createSubscriptionEntitlementStore = (database: EntitlementDatabase
             ],
           });
 
-      if (reduction.rowsAffected > 0 && status !== "active" && status !== "trialing") {
+      if (reduction.rowsAffected > 0 && !grantsEntitlement) {
         await transaction.execute({
           sql: `UPDATE agent_instance
             SET desired_mode = 'stopped', updated_at_ms = MAX(updated_at_ms, ?2)
