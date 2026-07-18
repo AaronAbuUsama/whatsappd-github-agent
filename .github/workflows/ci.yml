@@ -44,3 +44,6 @@ jobs:
           # Channel discovery constructs the verifier during build; this value
           # is CI-only and is never a production webhook credential.
           GITHUB_WEBHOOK_SECRET: ci-build-only-secret
+          # Public URL baked into the web build; overridden per deployment.
+          # CI-only placeholder so `next build` passes env validation.
+          NEXT_PUBLIC_SERVER_URL: http://localhost:3000
