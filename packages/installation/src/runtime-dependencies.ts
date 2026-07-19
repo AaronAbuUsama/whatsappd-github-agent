@@ -81,6 +81,14 @@ export const runtimeDeploymentIdentityFromEnvironment = (
   const mode = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
   const versionValue = environment.AMBIENT_AGENT_CONFIG_VERSION?.trim();
   if (!mode && !versionValue) return undefined;
+  if (
+    mode === "operate" &&
+    !versionValue &&
+    !environment.AMBIENT_AGENT_RUNTIME_ID?.trim() &&
+    !environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET?.trim()
+  ) {
+    throw new Error("The hosted operate runtime requires its bridge identity and config version.");
+  }
   if (mode !== "setup" && mode !== "operate") {
     throw new Error("AMBIENT_AGENT_RUNTIME_PROFILE must be setup or operate.");
   }
