@@ -58,12 +58,19 @@ const configureCoderRuntimeIfProvisioned = async (paths: ManagedRuntimeDependenc
   });
 };
 
-const configureReviewerRuntimeIfProvisioned = async (paths: ManagedRuntimeDependencies["paths"]): Promise<boolean> => {
+const configureReviewerRuntimeIfProvisioned = async (
+  paths: ManagedRuntimeDependencies["paths"],
+  sandbox: ManagedRuntimeDependencies["reviewerSandbox"],
+): Promise<boolean> => {
+  if (sandbox === undefined) {
+    console.warn("[reviewer] no isolated sandbox binding; automatic PR review is disabled");
+    return false;
+  }
   try {
     const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.reviewer);
     configureReviewerRuntime({
       github: githubAppClient(credential) as never,
-      sandbox: local(),
+      sandbox,
       workspacesRoot: paths.workspaces,
     });
     return true;
@@ -78,6 +85,7 @@ export const createAmbientAgentApp = async ({
   configuration,
   githubCredential,
   paths,
+  reviewerSandbox,
 }: ManagedRuntimeDependencies): Promise<Hono> => {
   configureAgentModelProfiles(configuration.model.profiles);
   const subscription = await connectPiChatGptSubscription({
@@ -91,7 +99,7 @@ export const createAmbientAgentApp = async ({
   // SaaS. The coder App may not be provisioned yet; if its credential is absent, the
   // start_coder_job tool stays mounted but a launch fails loudly rather than blocking boot.
   await configureCoderRuntimeIfProvisioned(paths);
-  const reviewerProvisioned = await configureReviewerRuntimeIfProvisioned(paths);
+  const reviewerProvisioned = await configureReviewerRuntimeIfProvisioned(paths, reviewerSandbox);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
   // A SpeakerInput is a SpeakerInput, so the funnel delivers a specialist result to both
   // Speaker and Scribe. Held out here so the boot sweep can reuse it after the port is wired.

@@ -251,38 +251,38 @@ export const createGitHubIngress = (options: {
 
     const payload = parsed.output;
     const repository = repositoryKey(payload.repository.owner.login, payload.repository.name);
+    const launchReview = async (pullRequest: number, expectedHeadSha: string) => {
+      if (options.review === undefined) return undefined;
+      try {
+        return await options.review.launch({ repository, pullRequest, expectedHeadSha });
+      } catch (cause) {
+        const error = errorMessage(cause);
+        options.store.settle(delivery.deliveryId, { status: "failed", repository, error, settledAt: now().toISOString() });
+        return null;
+      }
+    };
 
     if (
       isPullRequest &&
       "pull_request" in payload &&
       "head" in payload.pull_request &&
       !payload.pull_request.draft &&
+      payload.action !== "opened" &&
       options.review?.repositories.some((candidate) => candidate.toLowerCase() === repository)
     ) {
-      try {
-        const { runId } = await options.review.launch({
+      const admitted = await launchReview(payload.pull_request.number, payload.pull_request.head.sha);
+      if (admitted === null) return { status: "failed", record: options.store.get(delivery.deliveryId)! };
+      if (admitted !== undefined) {
+        options.store.settle(delivery.deliveryId, {
+          status: "done",
           repository,
-          pullRequest: payload.pull_request.number,
-          expectedHeadSha: payload.pull_request.head.sha,
+          chatId: options.managedChats[0]!,
+          ambience: "ambience",
+          dispatchId: admitted.runId,
+          acceptedAt: receivedAt,
+          settledAt: now().toISOString(),
         });
-        // ready_for_review/synchronize exist only for Reviewer admission. `opened` still
-        // continues to the existing Speaker correlation/broadcast path.
-        if (payload.action !== "opened") {
-          options.store.settle(delivery.deliveryId, {
-            status: "done",
-            repository,
-            chatId: options.managedChats[0]!,
-            ambience: "ambience",
-            dispatchId: runId,
-            acceptedAt: receivedAt,
-            settledAt: now().toISOString(),
-          });
-          return { status: "review-launched", deliveryId: delivery.deliveryId, repository, runId };
-        }
-      } catch (cause) {
-        const error = errorMessage(cause);
-        options.store.settle(delivery.deliveryId, { status: "failed", repository, error, settledAt: now().toISOString() });
-        return { status: "failed", record: options.store.get(delivery.deliveryId)! };
+        return { status: "review-launched", deliveryId: delivery.deliveryId, repository, runId: admitted.runId };
       }
     } else if (isPullRequest && "pull_request" in payload && payload.action !== "opened") {
       options.store.settle(delivery.deliveryId, { status: "unsupported", repository, settledAt: now().toISOString() });
@@ -357,6 +357,13 @@ export const createGitHubIngress = (options: {
           reason,
         });
         return { status: "deferred", deliveryId: delivery.deliveryId, repository, reason };
+      }
+      if (
+        !payload.pull_request.draft &&
+        options.review?.repositories.some((candidate) => candidate.toLowerCase() === repository)
+      ) {
+        const admitted = await launchReview(payload.pull_request.number, payload.pull_request.head.sha);
+        if (admitted === null) return { status: "failed", record: options.store.get(delivery.deliveryId)! };
       }
       if (correlation.completedIssueNumbers.length === 0) {
         options.store.settle(delivery.deliveryId, {

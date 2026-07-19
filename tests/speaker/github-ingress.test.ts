@@ -364,6 +364,7 @@ describe("GitHub ingress delivery ledger", () => {
         startedAt: "2026-07-16T00:00:00.000Z",
       });
       operations.uncertain("capture-29", "provider outcome unknown", "2026-07-16T00:00:01.000Z");
+      const reviewLaunches: unknown[] = [];
       const ingress = createGitHubIngress({
         store,
         operations,
@@ -372,11 +373,20 @@ describe("GitHub ingress delivery ledger", () => {
           dispatched.push(input);
           return { dispatchId: "dispatch-pr-42", acceptedAt: "2026-07-16T00:00:03.000Z" };
         },
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async (input) => {
+            reviewLaunches.push(input);
+            return { runId: "review-after-correlation" };
+          },
+        },
         logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
       });
       const delivery = pullRequestOpenedDelivery("pr-after-reconciliation");
 
       await expect(ingress(delivery)).resolves.toMatchObject({ status: "deferred" });
+      await expect(ingress(delivery)).resolves.toMatchObject({ status: "deferred" });
+      expect(reviewLaunches).toEqual([]);
       expect(store.get("pr-after-reconciliation")).toMatchObject({ status: "received" });
       expect(dispatched).toEqual([]);
 
