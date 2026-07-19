@@ -73,14 +73,15 @@ The installed Flue runtime establishes four constraints:
 ```mermaid
 flowchart TD
     I["new_issue or review_continuation"] --> R["Deterministic GitHub resolution"]
-    R --> C["Root Coder session"]
+    R --> C["Unprompted coordinator root"]
     C --> P["Planner child task"]
     P -->|"PlanArtifact"| C
-    C -->|"implement or repair"| W["Shared worktree"]
+    C --> D["Coder child task"]
+    D -->|"implement or repair"| W["Shared worktree"]
     W --> V["Verifier child task + vendored /verify"]
     V -->|"VerificationReceipt, full report"| C
-    C -->|"FAIL/BLOCKED and budget remains"| W
-    C -->|"PASS/SKIP or budget exhausted"| PR["Coder + open_pull_request"]
+    C -->|"FAIL/BLOCKED and budget remains"| D
+    C -->|"PASS/SKIP or budget exhausted"| PR["Coder publication child task + open_pull_request"]
     PR --> G["Ready or draft GitHub PR"]
     G --> ER["External Reviewer #147, separate workflow"]
     ER -->|"REQUEST_CHANGES on Coder-owned PR"| I
