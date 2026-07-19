@@ -1,6 +1,6 @@
 import { createContext } from "@ambient-agent/api/context";
-import { appRouter } from "@ambient-agent/api/routers/index";
-import { auth } from "@ambient-agent/auth";
+import { createAppRouter } from "@ambient-agent/api/routers/index";
+import { auth, getEntitlementSnapshot } from "@ambient-agent/auth";
 import { client } from "@ambient-agent/db";
 import { env } from "@ambient-agent/env/server";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
@@ -14,6 +14,7 @@ import { logger } from "hono/logger";
 import { installHostedGitHub } from "./github-hosted";
 
 const app = new Hono();
+const appRouter = createAppRouter({ getEntitlementSnapshot });
 
 app.use(logger());
 app.use(
