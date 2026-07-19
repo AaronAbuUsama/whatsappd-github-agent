@@ -42,6 +42,13 @@ export const bridgeHealth = (runtimeId: string, status: WhatsAppRuntimeStatus): 
   };
 };
 
+/** Setup liveness is the serving profile; WhatsApp pairing is a later capability fact. */
+export const setupBridgeHealth = (runtimeId: string, status: WhatsAppRuntimeStatus): BridgeHealth => {
+  const health = bridgeHealth(runtimeId, status);
+  if (status.phase === "failed" || status.phase === "stopped") return health;
+  return { ...health, ok: true, runtime: { ...health.runtime, state: "healthy" } };
+};
+
 export const bridgePairing = (status: WhatsAppRuntimeStatus): BridgePairing => {
   if (status.phase === "pairing" && status.pairing !== undefined) {
     return { status: "pairing", ...status.pairing };

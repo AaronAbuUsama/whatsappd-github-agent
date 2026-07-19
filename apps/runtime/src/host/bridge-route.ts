@@ -16,10 +16,10 @@ import { WhatsAppAccountError } from "@ambient-agent/installation/whatsapp-accou
 import type { WhatsAppRuntimeControl } from "./whatsapp-runtime.ts";
 
 export interface BridgeRouteOptions {
-  readonly runtimeId: string;
+  readonly runtimeId?: string;
   readonly webhookSecret: string;
   readonly status: () => WhatsAppRuntimeStatus;
-  readonly control: () => WhatsAppRuntimeControl | undefined;
+  readonly control: () => Pick<WhatsAppRuntimeControl, "synchronizedChats"> | undefined;
   readonly deliver?: (delivery: BridgeGitHubDelivery) => Promise<GitHubIngressResult>;
 }
 
@@ -79,6 +79,8 @@ export const installBridgeRoute = (app: Hono, options: BridgeRouteOptions): void
     }
   });
 
+  const runtimeId = options.runtimeId;
+  if (runtimeId === undefined) return;
   app.post("/deliveries", async (context) => {
     context.header("Cache-Control", "no-store");
     if (!authorized(context, options, "delivery-push")) {
@@ -92,7 +94,7 @@ export const installBridgeRoute = (app: Hono, options: BridgeRouteOptions): void
           ? await handleGitHubDelivery(delivery as RoutedGitHubWebhookDelivery)
           : await options.deliver(delivery);
       return context.json(
-        { runtimeId: options.runtimeId, githubAppId: delivery.githubAppId, result },
+        { runtimeId, githubAppId: delivery.githubAppId, result },
         deliveryIsDurable(result) ? 200 : 503,
       );
     } catch (cause) {

@@ -21,6 +21,7 @@ import {
 } from "./host/whatsapp-runtime.ts";
 import { installSmokeRoute } from "./host/smoke-route.ts";
 import { installBridgeRoute } from "./host/bridge-route.ts";
+import { stopRuntimeOnSignal } from "./host/runtime-signals.ts";
 import {
   deferWhatsAppRuntimeStart,
   getManagedRuntimeDependencies,
@@ -134,15 +135,7 @@ export const createAmbientAgentApp = async ({
       ...(configuration.smoke === undefined ? {} : { canaryChat: configuration.smoke.canaryChat }),
     });
     whatsappControl = whatsapp;
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      const shutdown = () => {
-        void whatsapp.stop().finally(() => {
-          process.removeListener(signal, shutdown);
-          process.kill(process.pid, signal);
-        });
-      };
-      process.once(signal, shutdown);
-    }
+    stopRuntimeOnSignal(whatsapp);
   });
 
   return app;
