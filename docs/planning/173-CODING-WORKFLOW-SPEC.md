@@ -118,6 +118,9 @@ for (let round = 1; round <= maxVerificationRounds; round += 1) {
   if (verification.data.verdict === "PASS" || verification.data.verdict === "SKIP") break;
 }
 
+const verifiedWorkspace = await snapshotAfter();
+const openPullRequest = createOpenPullRequestTool({ verifiedWorkspace });
+
 await coder.prompt(publicationPrompt({ plan: plan.data, priorVerification }), {
   tools: [openPullRequest],
 });
@@ -125,7 +128,11 @@ await coder.prompt(publicationPrompt({ plan: plan.data, priorVerification }), {
 
 `open_pull_request` is mounted only for the final publication prompt. Planner and
 Verifier never receive it. The publication prompt is evidence authoring and PR
-publication only: it must not modify the worktree after Verifier's final observation.
+publication only. Prompt text is not the enforcement boundary: immediately after the
+final Verifier task, the coordinator snapshots the workspace and binds that snapshot to
+`open_pull_request`. The tool must refuse publication if a fresh snapshot differs, before
+committing or updating GitHub. Thus any edit made during publication requires another
+Verifier round; unverified bytes cannot reach the PR branch.
 
 ## 4. Invocation and inputs
 
