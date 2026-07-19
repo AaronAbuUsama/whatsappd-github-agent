@@ -25,7 +25,7 @@ export interface ReviewerGitHub {
       data: ReadonlyArray<{ filename: string; patch?: string }>;
     }>;
     listReviews(input: { owner: string; repo: string; pull_number: number; per_page: 100; page: number }): Promise<{
-      data: ReadonlyArray<{ id: number; html_url: string; commit_id?: string | null; user?: { login?: string } | null }>;
+      data: ReadonlyArray<{ id: number; html_url: string; body?: string | null; commit_id?: string | null; user?: { login?: string } | null }>;
     }>;
     createReview(input: {
       owner: string;
@@ -85,6 +85,9 @@ export const reviewerSlug = async (github: ReviewerGitHub): Promise<string> =>
 export const reviewerLogin = async (github: ReviewerGitHub): Promise<string> =>
   `${await reviewerSlug(github)}[bot]`;
 
+export const reviewerHeadMarker = (headSha: string): string =>
+  `<!-- ambient-agent-review-head:${headSha} -->`;
+
 export const findReviewForHead = async (
   github: ReviewerGitHub,
   repo: GitHubRepositoryRef,
@@ -100,7 +103,10 @@ export const findReviewForHead = async (
       per_page: 100,
       page,
     });
-    const match = data.find((review) => review.commit_id === headSha && review.user?.login?.toLowerCase() === login);
+    // GitHub may rewrite an older approval's reported commit_id to a later PR head.
+    // The marker is the durable provider-side part of the App + PR + head key.
+    const marker = reviewerHeadMarker(headSha);
+    const match = data.find((review) => review.body?.includes(marker) && review.user?.login?.toLowerCase() === login);
     if (match !== undefined || data.length < 100) return match;
   }
 };

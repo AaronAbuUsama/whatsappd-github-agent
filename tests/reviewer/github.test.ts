@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as v from "valibot";
 
-import { findReviewForHead, renderReviewFinding, renderReviewSubmission, renderSummaryFinding, reviewEvent, reviewerLogin, reviewerSlug, validInlineLocations, type ReviewerGitHub } from "../../packages/agents/src/capabilities/reviewer/github.ts";
+import { findReviewForHead, renderReviewFinding, renderReviewSubmission, renderSummaryFinding, reviewEvent, reviewerHeadMarker, reviewerLogin, reviewerSlug, validInlineLocations, type ReviewerGitHub } from "../../packages/agents/src/capabilities/reviewer/github.ts";
 import { REVIEW_SEVERITIES, reviewFindingSchema } from "../../packages/agents/src/capabilities/reviewer/schemas.ts";
 import { reviewerExerciseCommand, serializeReviewerSubmission, singleSubmission } from "../../packages/agents/src/capabilities/reviewer/workflow.ts";
 
@@ -65,8 +65,8 @@ describe("Reviewer GitHub contract", () => {
       apps: { getAuthenticated: vi.fn(async () => ({ data: { slug: "reviewer" } })) },
       pulls: {
         listReviews: vi.fn(async () => ({ data: [
-          { id: 1, html_url: "old", commit_id: "old", user: { login: "reviewer[bot]" } },
-          { id: 2, html_url: "live", commit_id: "head", user: { login: "Reviewer[bot]" } },
+          { id: 1, html_url: "old", body: reviewerHeadMarker("old"), commit_id: "head", user: { login: "reviewer[bot]" } },
+          { id: 2, html_url: "live", body: reviewerHeadMarker("head"), commit_id: "head", user: { login: "Reviewer[bot]" } },
         ] })),
       },
     } as unknown as ReviewerGitHub;
@@ -75,6 +75,16 @@ describe("Reviewer GitHub contract", () => {
     expect(login).toBe("reviewer[bot]");
     await expect(findReviewForHead(github, { owner: "acme", repo: "widgets" }, 42, "head", login))
       .resolves.toMatchObject({ id: 2, html_url: "live" });
+  });
+
+  it("does not mistake GitHub's rewritten approval commit for a review of the new head", async () => {
+    const github = {
+      pulls: { listReviews: async () => ({ data: [
+        { id: 1, html_url: "legacy", body: "Approved before the push.", commit_id: "new-head", user: { login: "reviewer[bot]" } },
+      ] }) },
+    } as unknown as ReviewerGitHub;
+    await expect(findReviewForHead(github, { owner: "acme", repo: "widgets" }, 42, "new-head", "reviewer[bot]"))
+      .resolves.toBeUndefined();
   });
 
   it("accepts only RIGHT-side lines represented by a changed-file patch", () => {
