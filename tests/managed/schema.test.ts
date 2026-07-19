@@ -139,6 +139,14 @@ describe("managed schemas", () => {
     expect(v.parse(ManagedConfigSchema, older).runtime).toEqual({ port: 3000 });
     expect(v.safeParse(ManagedConfigSchema, { ...older, runtime: { port: 65_535 } }).success).toBe(true);
     expect(v.safeParse(ManagedConfigSchema, { ...older, runtime: { port: 65_536 } }).success).toBe(false);
+    expect(v.safeParse(ManagedConfigSchema, {
+      ...older,
+      runtime: { port: 3000, reviewerSandbox: { kind: "docker", image: "node:22-bookworm" } },
+    }).success).toBe(true);
+    expect(v.safeParse(ManagedConfigSchema, {
+      ...older,
+      runtime: { port: 3000, reviewerSandbox: { kind: "docker", image: "node:22 bookworm" } },
+    }).success).toBe(false);
   });
 
   it("accepts only a managed group as the dedicated smoke canary", () => {

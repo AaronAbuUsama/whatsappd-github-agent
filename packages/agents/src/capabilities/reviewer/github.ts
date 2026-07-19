@@ -1,10 +1,12 @@
 import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repository.ts";
-
-export type ReviewVerdict = "approve" | "request-changes" | "comment";
+import type { ReviewFinding } from "./schemas.ts";
 
 export interface ReviewerGitHub {
   readonly repos: {
     downloadTarballArchive(input: { owner: string; repo: string; ref: string }): Promise<{ data: unknown }>;
+    getCollaboratorPermissionLevel(input: { owner: string; repo: string; username: string }): Promise<{
+      data: { permission: string };
+    }>;
   };
   readonly pulls: {
     get(input: { owner: string; repo: string; pull_number: number; mediaType?: { format: "diff" } }): Promise<{
@@ -23,7 +25,7 @@ export interface ReviewerGitHub {
       data: ReadonlyArray<{ filename: string; patch?: string }>;
     }>;
     listReviews(input: { owner: string; repo: string; pull_number: number; per_page: 100; page: number }): Promise<{
-      data: ReadonlyArray<{ id: number; html_url: string; commit_id?: string | null; user?: { login?: string } | null }>;
+      data: ReadonlyArray<{ id: number; html_url: string; body?: string | null; commit_id?: string | null; user?: { login?: string } | null }>;
     }>;
     createReview(input: {
       owner: string;
@@ -40,15 +42,54 @@ export interface ReviewerGitHub {
   };
 }
 
-export const reviewEvent = (verdict: ReviewVerdict, checksPassed: boolean) =>
-  checksPassed && verdict === "approve"
-    ? "APPROVE" as const
-    : verdict === "comment" && checksPassed
+export const reviewEvent = (checksPassed: boolean, findings: readonly Pick<ReviewFinding, "blocking">[]) =>
+  !checksPassed || findings.some(({ blocking }) => blocking)
+    ? "REQUEST_CHANGES" as const
+    : findings.length > 0
       ? "COMMENT" as const
-      : "REQUEST_CHANGES" as const;
+      : "APPROVE" as const;
+
+export const missingVerdictReviewEvent = (checksPassed: boolean) =>
+  checksPassed ? "COMMENT" as const : "REQUEST_CHANGES" as const;
+
+export const renderReviewFinding = (finding: ReviewFinding): string =>
+  `**[${finding.severity}] ${finding.title}**\n\n${finding.body}`;
+
+export const renderSummaryFinding = (finding: ReviewFinding): string =>
+  `${renderReviewFinding(finding)}\n\nLocation: \`${finding.path}:${finding.line}\``;
+
+export const renderReviewSubmission = (
+  summary: string,
+  checksPassed: boolean,
+  findings: readonly ReviewFinding[],
+  inlineLocations: ReadonlySet<string>,
+) => {
+  const inline = findings.filter((finding) => inlineLocations.has(`${finding.path}:${finding.line}`));
+  const summaryOnly = findings.filter((finding) => !inlineLocations.has(`${finding.path}:${finding.line}`));
+  return {
+    body: [
+      checksPassed ? summary : `${summary}\n\nRepository exercise failed; approval is unavailable until it is green.`,
+      summaryOnly.length === 0
+        ? ""
+        : `### Findings without a valid diff line\n\n${summaryOnly.map(renderSummaryFinding).join("\n\n")}`,
+    ].filter(Boolean).join("\n\n"),
+    comments: inline.map((finding) => ({
+      path: finding.path,
+      line: finding.line,
+      side: "RIGHT" as const,
+      body: renderReviewFinding(finding),
+    })),
+  };
+};
+
+export const reviewerSlug = async (github: ReviewerGitHub): Promise<string> =>
+  (await github.apps.getAuthenticated()).data.slug.toLowerCase();
 
 export const reviewerLogin = async (github: ReviewerGitHub): Promise<string> =>
-  `${(await github.apps.getAuthenticated()).data.slug}[bot]`.toLowerCase();
+  `${await reviewerSlug(github)}[bot]`;
+
+export const reviewerHeadMarker = (headSha: string): string =>
+  `<!-- ambient-agent-review-head:${headSha} -->`;
 
 export const findReviewForHead = async (
   github: ReviewerGitHub,
@@ -65,7 +106,10 @@ export const findReviewForHead = async (
       per_page: 100,
       page,
     });
-    const match = data.find((review) => review.commit_id === headSha && review.user?.login?.toLowerCase() === login);
+    // GitHub may rewrite an older approval's reported commit_id to a later PR head.
+    // The marker is the durable provider-side part of the App + PR + head key.
+    const marker = reviewerHeadMarker(headSha);
+    const match = data.find((review) => review.body?.includes(marker) && review.user?.login?.toLowerCase() === login);
     if (match !== undefined || data.length < 100) return match;
   }
 };

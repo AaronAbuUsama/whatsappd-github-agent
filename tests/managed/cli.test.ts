@@ -687,6 +687,10 @@ describe("managed CLI", () => {
       JSON.stringify({
         ...existingConfig,
         managedChats: ["120363000@g.us", "15551234567@s.whatsapp.net"],
+        runtime: {
+          port: 3000,
+          reviewerSandbox: { kind: "docker", image: "node:22-bookworm" },
+        },
         github: {
           ...(existingConfig.github as Record<string, unknown>),
           allowedRepositories: ["owner/repo", "owner/other"],
@@ -708,7 +712,10 @@ describe("managed CLI", () => {
         defaultRepository: "Owner/Next",
         allowedRepositories: ["owner/repo", "owner/other", "Owner/Next"],
       },
-      runtime: { port: 4321 },
+      runtime: {
+        port: 4321,
+        reviewerSandbox: { kind: "docker", image: "node:22-bookworm" },
+      },
     });
     await expect(readFile(managed.applicationDatabase)).resolves.toEqual(beforeApplication);
     await expect(readFile(managed.flueDatabase)).resolves.toEqual(beforeFlue);

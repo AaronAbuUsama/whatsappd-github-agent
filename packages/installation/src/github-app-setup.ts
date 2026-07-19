@@ -16,7 +16,7 @@ const PERMISSIONS: Readonly<Record<GitHubAppReference, readonly string[]>> = {
   coder: ["Contents: read & write", "Pull requests: read & write", "Issues: read", "Metadata: read"],
   reviewer: ["Pull requests: read & write", "Contents: read", "Metadata: read"],
   // The Planner file is also the Speaker's issue-filing identity.
-  planner: ["Issues: read & write", "Metadata: read"],
+  planner: ["Issues: read & write", "Pull requests: read", "Metadata: read"],
 };
 
 export const recommendedGitHubAppName = (reference: GitHubAppReference): string => RECOMMENDED_NAME[reference];
@@ -31,7 +31,12 @@ export const githubAppSetupChecklist = (reference: GitHubAppReference, repositor
     `GitHub App ${GITHUB_APP_REFERENCES.indexOf(reference) + 1} of ${GITHUB_APP_REFERENCES.length} — the ${reference} identity (recommended name "${RECOMMENDED_NAME[reference]}"):`,
     `  1. Create a GitHub App at https://github.com/settings/apps/new (org owners may prefix the name to keep it globally unique).`,
     `  2. Grant exactly these repository permissions: ${PERMISSIONS[reference].join(", ")}.`,
-    `  3. Generate a private key and download the .pem file.`,
-    `  4. Install the App on ${repository} and open the installation settings.`,
-    `  5. Copy the App ID (App settings) and the Installation ID (the number in the installation settings URL), then paste them with the private key below.`,
+    ...(reference === "planner"
+      ? [
+          `  3. Enable the webhook and subscribe to exactly these events: Issues, Issue comment, Pull request, Pull request review.`,
+        ]
+      : []),
+    `  ${reference === "planner" ? 4 : 3}. Generate a private key and download the .pem file.`,
+    `  ${reference === "planner" ? 5 : 4}. Install the App on ${repository} and open the installation settings.`,
+    `  ${reference === "planner" ? 6 : 5}. Copy the App ID (App settings) and the Installation ID (the number in the installation settings URL), then paste them with the private key below.`,
   ].join("\n");

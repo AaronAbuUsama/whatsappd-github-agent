@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { configureLogging, type LogFormat } from "@ambient-agent/engine/logging/logging.ts";
 import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { installManagedRuntimeDependencies, startDeferredWhatsAppRuntime } from "@ambient-agent/installation/runtime-dependencies.ts";
+import { reviewerDockerSandbox } from "@ambient-agent/installation/reviewer-docker-sandbox.ts";
 import type { ManagedPaths } from "@ambient-agent/installation/paths.ts";
 import type { ChatGptAuthentication } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 
@@ -52,6 +53,13 @@ export const startGeneratedRuntime = async (
     configuration,
     githubCredential: { ...githubCredential, webhookSecret: githubCredential.webhookSecret },
     paths,
+    ...(configuration.runtime.reviewerSandbox === undefined ? {} : {
+      reviewerSandbox: reviewerDockerSandbox({
+        root: paths.workspaces,
+        cwd: paths.workspaces,
+        image: configuration.runtime.reviewerSandbox.image,
+      }),
+    }),
   });
   process.chdir(paths.root);
   const serverEntry = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs"));

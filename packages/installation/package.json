@@ -18,6 +18,7 @@
     "./qr.ts": "./src/qr.ts",
     "./runtime-dependencies.ts": "./src/runtime-dependencies.ts",
     "./runtime-health.ts": "./src/runtime-health.ts",
+    "./reviewer-docker-sandbox.ts": "./src/reviewer-docker-sandbox.ts",
     "./specialist-return.ts": "./src/specialist-return.ts",
     "./uncertain-work.ts": "./src/uncertain-work.ts",
     "./whatsapp-account.ts": "./src/whatsapp-account.ts"

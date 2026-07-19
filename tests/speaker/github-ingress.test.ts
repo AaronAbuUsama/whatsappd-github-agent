@@ -10,6 +10,7 @@ import { speakerDigestSeeds, type GitHubIngressInput } from "../../packages/engi
 import { createIssueOperationStore } from "../../packages/engine/src/github/operation-store.ts";
 import { createGitHubIngress } from "../../packages/engine/src/github/ingress.ts";
 import { createGitHubIngressStore } from "../../packages/engine/src/github/ingress-store.ts";
+import { serializeReviewerSubmission } from "../../packages/agents/src/capabilities/reviewer/workflow.ts";
 
 const issueOpenedDelivery = (deliveryId: string): GitHubWebhookDelivery =>
   ({
@@ -90,6 +91,33 @@ const pullRequestReviewSubmittedDelivery = (deliveryId: string): GitHubWebhookDe
       sender: { login: "reviewer[bot]", id: 2, type: "Bot" },
     },
   }) as GitHubWebhookDelivery;
+
+const reviewCommandDelivery = (
+  deliveryId: string,
+  options: { readonly body?: string; readonly login?: string; readonly pullRequest?: boolean } = {},
+): GitHubWebhookDelivery =>
+  ({
+    name: "issue_comment",
+    deliveryId,
+    payload: {
+      action: "created",
+      repository: {
+        id: 101,
+        name: "widgets",
+        html_url: "https://github.com/acme/widgets",
+        owner: { login: "acme" },
+      },
+      issue: {
+        number: 42,
+        state: "open",
+        ...(options.pullRequest === false ? {} : { pull_request: { url: "https://api.github.com/repos/acme/widgets/pulls/42" } }),
+      },
+      comment: {
+        body: options.body ?? "@tenant-reviewer review",
+        user: { login: options.login ?? "maintainer" },
+      },
+    },
+  }) as GitHubWebhookDelivery;
 describe("GitHub ingress delivery ledger", () => {
   it.each(["opened", "ready_for_review", "synchronize"] as const)(
     "admits an eligible non-draft PR on %s exactly once per webhook delivery",
@@ -120,6 +148,237 @@ describe("GitHub ingress delivery ledger", () => {
       }
     },
   );
+
+  it("admits the exact configured Reviewer App command with the refetched live head", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    const launches: unknown[] = [];
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "2026-07-18T00:00:01.000Z" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async (input) => {
+            launches.push(input);
+            return { runId: "manual-review" };
+          },
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => "write",
+            pullRequest: async () => ({ state: "open", draft: false, headSha: "live-head" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      const delivery = reviewCommandDelivery("manual-review");
+      await expect(ingress(delivery)).resolves.toMatchObject({ status: "review-launched", runId: "manual-review" });
+      await expect(ingress(delivery)).resolves.toMatchObject({ status: "duplicate" });
+      expect(launches).toEqual([{ repository: "acme/widgets", pullRequest: 42, expectedHeadSha: "live-head" }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("converges concurrent automatic and command admissions on the Reviewer App + PR + head key", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    let effects = 0;
+    let release!: () => void;
+    const overlap = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async (input) => {
+            const key = `tenant-reviewer[bot]:${input.repository}#${input.pullRequest}@${input.expectedHeadSha}`;
+            const result = await serializeReviewerSubmission(key, async () => {
+              effects += 1;
+              await overlap;
+              return { status: "approved", prNumber: 42, headSha: "head-42", summary: "Reviewed once." };
+            });
+            return { runId: `review-${result.headSha}` };
+          },
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => "write",
+            pullRequest: async () => ({ state: "open", draft: false, headSha: "head-42" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      const automatic = pullRequestOpenedDelivery("automatic-race") as GitHubWebhookDelivery & { payload: { action: string } };
+      automatic.payload.action = "synchronize";
+      const results = Promise.all([
+        ingress(automatic),
+        ingress(reviewCommandDelivery("manual-race")),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      release();
+      await expect(results).resolves.toEqual([
+        expect.objectContaining({ status: "review-launched" }),
+        expect.objectContaining({ status: "review-launched" }),
+      ]);
+      expect(effects).toBe(1);
+    } finally {
+      release();
+      store.close();
+    }
+  });
+
+  it.each(["write", "maintain", "admin"])("authorizes %s collaborators", async (permission) => {
+    const store = createGitHubIngressStore(":memory:");
+    let launches = 0;
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async () => ({ runId: `manual-${++launches}` }),
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => permission,
+            pullRequest: async () => ({ state: "open", draft: false, headSha: "live-head" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      await expect(ingress(reviewCommandDelivery(`permission-${permission}`))).resolves.toMatchObject({ status: "review-launched" });
+      expect(launches).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    [404, "unsupported"],
+    [500, "failed"],
+  ] as const)("maps a provider permission %s to %s", async (providerStatus, expectedStatus) => {
+    const store = createGitHubIngressStore(":memory:");
+    let launches = 0;
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async () => ({ runId: `unexpected-${++launches}` }),
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => {
+              throw Object.assign(new Error(`Provider status ${providerStatus}`), { status: providerStatus });
+            },
+            pullRequest: async () => ({ state: "open", draft: false, headSha: "live-head" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+
+      await expect(ingress(reviewCommandDelivery(`permission-provider-${providerStatus}`))).resolves.toMatchObject({
+        status: expectedStatus,
+      });
+      expect(launches).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    ["read", reviewCommandDelivery("unauthorized")],
+    ["malformed", reviewCommandDelivery("malformed", { body: "@tenant-reviewer please review" })],
+    ["wrong slug", reviewCommandDelivery("wrong-slug", { body: "@global-reviewer review" })],
+    ["issue conversation", reviewCommandDelivery("issue-comment", { pullRequest: false })],
+  ] as const)("rejects %s review commands without launching", async (_reason, delivery) => {
+    const store = createGitHubIngressStore(":memory:");
+    let launches = 0;
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async () => ({ runId: `unexpected-${++launches}` }),
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => "read",
+            pullRequest: async () => ({ state: "open", draft: false, headSha: "live-head" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      await expect(ingress(delivery)).resolves.toMatchObject({ status: "unsupported" });
+      expect(launches).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    ["closed", { state: "closed", draft: false }],
+    ["draft", { state: "open", draft: true }],
+  ] as const)("rejects a %s pull request after refetch", async (_reason, live) => {
+    const store = createGitHubIngressStore(":memory:");
+    let launches = 0;
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["acme/widgets"],
+          launch: async () => ({ runId: `unexpected-${++launches}` }),
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => "admin",
+            pullRequest: async () => ({ ...live, headSha: "live-head" }),
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      await expect(ingress(reviewCommandDelivery(`ineligible-${_reason}`))).resolves.toMatchObject({ status: "unsupported" });
+      expect(launches).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects commands outside the review allowlist before provider authorization", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    let providerReads = 0;
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "now" }),
+        review: {
+          repositories: ["other/repository"],
+          launch: async () => ({ runId: "unexpected" }),
+          command: {
+            appSlug: "tenant-reviewer",
+            permission: async () => {
+              providerReads += 1;
+              return "admin";
+            },
+            pullRequest: async () => {
+              providerReads += 1;
+              return { state: "open", draft: false, headSha: "live-head" };
+            },
+          },
+        },
+        logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      await expect(ingress(reviewCommandDelivery("not-allowlisted"))).resolves.toMatchObject({ status: "unsupported" });
+      expect(providerReads).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
 
   it("continues opened-PR Speaker ingress when Reviewer admission fails", async () => {
     const store = createGitHubIngressStore(":memory:");

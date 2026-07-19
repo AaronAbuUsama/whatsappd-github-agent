@@ -10,6 +10,7 @@ import { createRunLedger } from "@ambient-agent/agents/capabilities/delegation/l
 import { sweepUnsettledLaunches } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { configureCoderRuntime } from "@ambient-agent/agents/capabilities/coder/runtime.ts";
 import { configureReviewerRuntime } from "@ambient-agent/agents/capabilities/reviewer/runtime.ts";
+import { reviewerSlug, type ReviewerGitHub } from "@ambient-agent/agents/capabilities/reviewer/github.ts";
 import { reviewer } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
 import { coderTmpDir } from "@ambient-agent/agents/capabilities/coder/workspace.ts";
 import type { CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
@@ -61,22 +62,24 @@ const configureCoderRuntimeIfProvisioned = async (paths: ManagedRuntimeDependenc
 const configureReviewerRuntimeIfProvisioned = async (
   paths: ManagedRuntimeDependencies["paths"],
   sandbox: ManagedRuntimeDependencies["reviewerSandbox"],
-): Promise<boolean> => {
+): Promise<{ github: ReviewerGitHub; appSlug: string } | undefined> => {
   if (sandbox === undefined) {
     console.warn("[reviewer] no isolated sandbox binding; automatic PR review is disabled");
-    return false;
+    return undefined;
   }
   try {
     const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.reviewer);
+    const github = githubAppClient(credential) as unknown as ReviewerGitHub;
+    const appSlug = await reviewerSlug(github);
     configureReviewerRuntime({
-      github: githubAppClient(credential) as never,
+      github,
       sandbox,
       workspacesRoot: paths.workspaces,
     });
-    return true;
+    return { github, appSlug };
   } catch {
     console.warn("[reviewer] no reviewer App credential; automatic PR review is unprovisioned");
-    return false;
+    return undefined;
   }
 };
 
@@ -130,6 +133,15 @@ export const createAmbientAgentApp = async ({
             const admitted = await invoke(reviewer, { input });
             delegation.ledger.record({ runId: admitted.runId, workflow: "reviewer", launchedAt: new Date().toISOString() });
             return admitted;
+          },
+          command: {
+            appSlug: reviewerProvisioned.appSlug,
+            permission: async (input) =>
+              (await reviewerProvisioned.github.repos.getCollaboratorPermissionLevel(input)).data.permission,
+            pullRequest: async ({ owner, repo, pullRequest }) => {
+              const { data } = await reviewerProvisioned.github.pulls.get({ owner, repo, pull_number: pullRequest });
+              return { state: data.state, draft: data.draft ?? false, headSha: data.head.sha };
+            },
           },
         },
       } : {}),

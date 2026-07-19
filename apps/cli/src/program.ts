@@ -458,7 +458,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           ...currentConfig,
           managedChats,
           ...(canaryChat === undefined ? {} : { smoke: { canaryChat } }),
-          runtime: { port: runtimePort },
+          runtime: { ...currentConfig.runtime, port: runtimePort },
           github: {
             ...currentConfig.github,
             defaultRepository: verifiedRepository,

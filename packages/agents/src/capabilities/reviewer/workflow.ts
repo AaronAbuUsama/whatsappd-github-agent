@@ -4,7 +4,7 @@ import * as v from "valibot";
 import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 import reviewerSkill from "./SKILL.md" with { type: "skill" };
-import { archiveBytes, findReviewForHead, listChangedFiles, reviewEvent, reviewerLogin, validInlineLocations, type ReviewVerdict } from "./github.ts";
+import { archiveBytes, findReviewForHead, listChangedFiles, missingVerdictReviewEvent, renderReviewSubmission, reviewEvent, reviewerHeadMarker, reviewerLogin, validInlineLocations } from "./github.ts";
 import { getReviewerRuntime } from "./runtime.ts";
 import { reviewFindingSchema, reviewerJobInputSchema, reviewerResultSchema, type ReviewerJobInput, type ReviewerResult } from "./schemas.ts";
 
@@ -87,12 +87,12 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
     const files = await listChangedFiles(github, repo, pr.number);
     const inlineLocations = validInlineLocations(files);
     let submitted: ReviewerResult | undefined;
+    let missingModelVerdict = false;
     const submitOnce = singleSubmission<ReviewerResult>();
     const submitReview = defineTool({
       name: "submit_review",
       description: "Submit the one formal review for this exact pull-request head.",
       input: v.object({
-        verdict: v.picklist(["approve", "request-changes", "comment"]),
         summary: v.pipe(v.string(), v.trim(), v.minLength(1)),
         findings: v.optional(v.array(reviewFindingSchema), []),
       }),
@@ -109,23 +109,16 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
             submitted = { status: "commented", reviewUrl: alreadySubmitted.html_url, prNumber: pr.number, headSha: pr.head.sha, summary: "This Reviewer App already reviewed the live pull-request head." };
             return submitted;
           }
-          const event = reviewEvent(decision.verdict as ReviewVerdict, checks.passed);
-          const inline = decision.findings.filter((finding) => inlineLocations.has(`${finding.path}:${finding.line}`));
-          const summaryOnly = decision.findings.filter((finding) => !inlineLocations.has(`${finding.path}:${finding.line}`));
-          const body = [
-            checks.passed ? decision.summary : `${decision.summary}\n\nRepository exercise failed; approval is unavailable until it is green.`,
-            summaryOnly.length === 0
-              ? ""
-              : `Findings without a valid diff line:\n${summaryOnly.map((finding) => `- ${finding.path}:${finding.line} — ${finding.body}`).join("\n")}`,
-          ].filter(Boolean).join("\n\n");
+          const event = missingModelVerdict ? missingVerdictReviewEvent(checks.passed) : reviewEvent(checks.passed, decision.findings);
+          const rendered = renderReviewSubmission(decision.summary, checks.passed, decision.findings, inlineLocations);
           const review = await github.pulls.createReview({
             owner: repo.owner,
             repo: repo.repo,
             pull_number: pr.number,
             commit_id: pr.head.sha,
             event,
-            body,
-            ...(inline.length === 0 ? {} : { comments: inline.map((finding) => ({ ...finding, side: "RIGHT" as const })) }),
+            body: `${rendered.body}\n\n${reviewerHeadMarker(pr.head.sha)}`,
+            ...(rendered.comments.length === 0 ? {} : { comments: rendered.comments }),
           });
           submitted = {
             status: event === "APPROVE" ? "approved" : event === "COMMENT" ? "commented" : "changes-requested",
@@ -133,7 +126,7 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
             prNumber: pr.number,
             headSha: pr.head.sha,
             verdict: event,
-            summary: body,
+            summary: rendered.body,
           };
           return submitted;
         }));
@@ -150,9 +143,9 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
     if (submitted !== undefined) return submitted;
     // The workflow contract promises one formal review even if the model fails to call
     // its sole effect. Fall back conservatively; never turn silence into approval.
+    missingModelVerdict = true;
     return await submitReview.run({
       input: {
-        verdict: checks.passed ? "comment" : "request-changes",
         summary: checks.passed
           ? "Automated review completed without a model verdict; manual review is required."
           : "Repository exercise failed; changes are required before approval.",
