@@ -96,9 +96,9 @@ Flue exposes every configured subagent to a root model through its built-in `tas
 capability. Making Coder the root would therefore let it launch Planner or Verifier
 outside the TypeScript-owned budget. The root coordinator is never prompted. Planner,
 Coder, and Verifier are self-contained profiles without `subagents`; every model turn is
-a programmatic child task, so stage order and round limits remain application-enforced.
-Continuity crosses explicit artifacts plus the shared worktree, not hidden transcript
-state.
+a programmatic child task with the model-facing framework `task` capability disabled, so
+stage order and round limits remain application-enforced. Continuity crosses explicit
+artifacts plus the shared worktree, not hidden transcript state.
 
 The implementation shape is:
 
@@ -106,18 +106,22 @@ The implementation shape is:
 const seedBranchHead = (await getBranchHead(github, repo, branch)) ?? baseSha;
 await prepareWorkspaceAt(seedBranchHead);
 const coordinator = await harness.session("coordinator");
+const ROLE_TURN = { frameworkTools: { task: false } } as const;
 
 const plan = await coordinator.task(plannerPrompt, {
+  ...ROLE_TURN,
   agent: "planner",
   result: planArtifactSchema,
 });
 
 for (let round = 1; round <= maxVerificationRounds; round += 1) {
   await coordinator.task(coderPrompt({ plan: plan.data, priorVerification, round }), {
+    ...ROLE_TURN,
     agent: "coder",
   });
 
   const verification = await coordinator.task(verifierPrompt({ plan: plan.data, round }), {
+    ...ROLE_TURN,
     agent: "verifier",
     result: verificationReceiptSchema,
   });
@@ -130,10 +134,21 @@ const verifiedWorkspace = await snapshotAfter();
 const openPullRequest = createOpenPullRequestTool({ verifiedWorkspace, seedBranchHead });
 
 await coordinator.task(publicationPrompt({ plan: plan.data, priorVerification }), {
+  ...ROLE_TURN,
   agent: "coder",
   tools: [openPullRequest],
 });
 ```
+
+`frameworkTools` above names a required Flue boundary, not an API already provided by
+the pinned `@flue/runtime@1.0.0-beta.9`. That runtime appends its framework-owned `task`
+tool to every model turn even when `subagents` is empty, and an omitted `agent` argument
+delegates to the same profile. Before #210 can ship, it must either upgrade to a pinned
+Flue release that supports this per-operation exclusion or land the equivalent narrowly
+reviewed runtime change and pin it. The workflow must fail closed during registration if
+the capability is unavailable. Regression coverage must inspect the actual model tool
+schema for Planner, Coder, Verifier, and publication turns and prove that `task` is absent;
+prompt instructions and an empty `subagents` array are not substitutes.
 
 `open_pull_request` is mounted only for the final publication prompt. Planner and
 Verifier never receive it. The publication prompt is evidence authoring and PR
