@@ -53,6 +53,7 @@ export interface TenantBridgeOptions {
   readonly baseUrl: string;
   readonly webhookSecret: string;
   readonly fetch?: typeof globalThis.fetch;
+  readonly deliveryTimeoutMillis?: number;
 }
 
 export class TenantBridgeError extends Error {
@@ -112,6 +113,7 @@ export const tenantBridge = (options: TenantBridgeOptions) => {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(delivery),
+          signal: AbortSignal.timeout(options.deliveryTimeoutMillis ?? 10_000),
         }),
         "delivery acknowledgement",
       ),

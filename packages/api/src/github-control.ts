@@ -181,32 +181,34 @@ export const createGitHubControlService = (options: {
         return { status: 400 as const, body: { error: "GitHub webhook payload is malformed" } };
       }
       const receivedAtMs = now();
-      const accepted = await options.store.acceptDelivery({
-        githubAppId: configuration.appId,
-        deliveryGuid: input.deliveryGuid,
-        eventName: input.eventName,
-        installationRole: input.role,
-        installationId: installationIdFromPayload(payload),
-        payloadJson: input.body,
-        payloadSha256: payloadHash(input.body),
-        receivedAtMs,
-      });
-
+      const installationId = installationIdFromPayload(payload);
       const action = typeof payload.action === "string" ? payload.action : "";
-      if (input.eventName === "installation" || input.eventName === "installation_repositories") {
-        const installationId = installationIdFromPayload(payload);
-        if (installationId !== null) {
-          await options.store.applyInstallationWebhook({
-            role: input.role,
-            installationId,
-            eventName: input.eventName,
-            action,
-            added: repositoriesFromWebhook(payload.repositories_added),
-            removedIds: removedRepositoryIds(payload.repositories_removed),
-            nowMs: receivedAtMs,
-          });
-        }
-      }
+      const installationMutation =
+        installationId !== null &&
+        (input.eventName === "installation" || input.eventName === "installation_repositories")
+          ? {
+              role: input.role,
+              installationId,
+              eventName: input.eventName,
+              action,
+              added: repositoriesFromWebhook(payload.repositories_added),
+              removedIds: removedRepositoryIds(payload.repositories_removed),
+              nowMs: receivedAtMs,
+            }
+          : undefined;
+      const accepted = await options.store.acceptDelivery(
+        {
+          githubAppId: configuration.appId,
+          deliveryGuid: input.deliveryGuid,
+          eventName: input.eventName,
+          installationRole: input.role,
+          installationId,
+          payloadJson: input.body,
+          payloadSha256: payloadHash(input.body),
+          receivedAtMs,
+        },
+        installationMutation,
+      );
       return {
         status: 202 as const,
         body: { admitted: accepted.action, githubAppId: configuration.appId, deliveryGuid: input.deliveryGuid },
@@ -215,11 +217,21 @@ export const createGitHubControlService = (options: {
   };
 };
 
+const terminalIngressStatuses = new Set(["unsupported", "uncorrelated", "done", "failed"]);
+
 const deliveryIdentity = (ack: BridgeGitHubDeliveryAck): string | undefined => {
   if (ack.result.status === "duplicate" || ack.result.status === "failed") {
     const record = ack.result.record;
-    return typeof record === "object" && record !== null && "deliveryId" in record && typeof record.deliveryId === "string"
-      ? record.deliveryId
+    if (typeof record !== "object" || record === null) return undefined;
+    const candidate = record as Record<string, unknown>;
+    const statusIsTerminal =
+      ack.result.status === "failed"
+        ? candidate.status === "failed"
+        : typeof candidate.status === "string" && terminalIngressStatuses.has(candidate.status);
+    return statusIsTerminal &&
+      candidate.githubAppId === ack.githubAppId &&
+      typeof candidate.deliveryId === "string"
+      ? candidate.deliveryId
       : undefined;
   }
   return "deliveryId" in ack.result && typeof ack.result.deliveryId === "string" ? ack.result.deliveryId : undefined;

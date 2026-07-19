@@ -163,6 +163,24 @@ describe("hosted GitHub callback and repository registry", () => {
       now: () => 3,
     });
     const body = JSON.stringify({ action: "deleted", installation: { id: 700 } });
+    await databaseClient.execute(`CREATE TRIGGER reject_revocation
+      BEFORE UPDATE OF status ON github_installation
+      WHEN new.status = 'revoked'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected registry failure');
+      END`);
+    await expect(
+      service.receiveWebhook({
+        role: "planner",
+        signature: signature(apps.planner.webhookSecret, body),
+        deliveryGuid: "revocation-guid",
+        eventName: "installation",
+        body,
+      }),
+    ).rejects.toThrow(/injected registry failure/);
+    expect(await store.delivery(apps.planner.appId, "revocation-guid")).toBeUndefined();
+    expect(await store.repositories(owner.tenantId, owner.userId, "planner")).toHaveLength(1);
+    await databaseClient.execute("DROP TRIGGER reject_revocation");
     await expect(
       service.receiveWebhook({
         role: "planner",
@@ -274,7 +292,7 @@ describe("durable GitHub delivery router", () => {
     ).rejects.toMatchObject({ code: "delivery_claim" });
   });
 
-  it("survives tenant downtime, rejects a wrong runtime, and admits the delivery exactly once after recovery", async () => {
+  it("survives tenant downtime, rejects nonterminal acknowledgements, and admits exactly once after recovery", async () => {
     const databaseClient = await database();
     const owner = await seedTenant(databaseClient, "recovery");
     const store = createGitHubControlStore(databaseClient);
@@ -293,7 +311,7 @@ describe("durable GitHub delivery router", () => {
       payloadSha256: "recovery-payload",
       receivedAtMs: 1_000,
     });
-    let phase: "down" | "wrong" | "up" = "down";
+    let phase: "down" | "wrong" | "nonterminal" | "up" = "down";
     let tenantAdmissions = 0;
     let now = 1_000;
     const relay = createGitHubDeliveryRelay({
@@ -319,6 +337,22 @@ describe("durable GitHub delivery router", () => {
               result: { status: "unsupported", deliveryId: delivery.deliveryId },
             };
           }
+          if (phase === "nonterminal") {
+            return {
+              runtimeId: "runtime-correct",
+              githubAppId: delivery.githubAppId,
+              result: {
+                status: "duplicate",
+                record: {
+                  githubAppId: delivery.githubAppId,
+                  deliveryId: delivery.deliveryId,
+                  eventName: delivery.name,
+                  status: "received",
+                  receivedAt: "2026-07-18T00:00:00.000Z",
+                },
+              },
+            };
+          }
           tenantAdmissions += 1;
           return {
             runtimeId: "runtime-correct",
@@ -342,6 +376,9 @@ describe("durable GitHub delivery router", () => {
     phase = "wrong";
     now += 1;
     await expect(relay.drainOnce()).resolves.toEqual({ claimed: 1, acknowledged: 0, retried: 1 });
+    phase = "nonterminal";
+    now += 1;
+    await expect(relay.drainOnce()).resolves.toEqual({ claimed: 1, acknowledged: 0, retried: 1 });
     phase = "up";
     now += 1;
     await expect(relay.drainOnce()).resolves.toEqual({ claimed: 1, acknowledged: 1, retried: 0 });
@@ -349,7 +386,7 @@ describe("durable GitHub delivery router", () => {
     await expect(relay.drainOnce()).resolves.toEqual({ claimed: 0, acknowledged: 0, retried: 0 });
     expect(await store.delivery(apps.coder.appId, "recovery-guid")).toMatchObject({
       state: "acked",
-      attemptCount: 3,
+      attemptCount: 4,
       lastError: null,
     });
   });

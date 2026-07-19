@@ -111,6 +111,23 @@ describe("control-plane tenant bridge client", () => {
         [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(SECRET, "delivery-push"),
       },
       body: JSON.stringify(delivery),
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  it("aborts a hung tenant delivery request at the bridge boundary", async () => {
+    const bridge = tenantBridge({
+      baseUrl: "http://tenant.internal",
+      webhookSecret: SECRET,
+      deliveryTimeoutMillis: 1,
+      fetch: async (_input, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        }),
+    });
+
+    await expect(
+      bridge.deliver({ githubAppId: "app-1", deliveryId: "guid-hung", name: "issues", payload: {} }),
+    ).rejects.toMatchObject({ name: "TimeoutError" });
   });
 });

@@ -31,6 +31,16 @@ export type VerifiedGitHubDelivery = {
   readonly receivedAtMs: number;
 };
 
+export type GitHubInstallationWebhookMutation = {
+  readonly role: GitHubAppRole;
+  readonly installationId: number;
+  readonly eventName: string;
+  readonly action: string;
+  readonly added: readonly Omit<GitHubRepositoryGrant, "selected" | "isDefault">[];
+  readonly removedIds: readonly number[];
+  readonly nowMs: number;
+};
+
 export type GitHubDeliveryOutboxRecord = VerifiedGitHubDelivery & {
   readonly tenantId: string | null;
   readonly state: "pending" | "acked";
@@ -135,8 +145,72 @@ const requireCallback = (
   return callback;
 };
 
+const applyInstallationWebhookWith = async (
+  transaction: Transaction,
+  input: GitHubInstallationWebhookMutation,
+): Promise<void> => {
+  const installation = await transaction.execute({
+    sql: `SELECT tenant_id, status FROM github_installation WHERE installation_id = ?1 AND role = ?2`,
+    args: [input.installationId, input.role],
+  });
+  const tenantId = installation.rows[0]?.tenant_id;
+  if (tenantId === undefined) return;
+  if (input.eventName === "installation" && ["deleted", "suspend"].includes(input.action)) {
+    await transaction.execute({
+      sql: "DELETE FROM github_repository WHERE tenant_id = ?1 AND installation_role = ?2",
+      args: [tenantId, input.role],
+    });
+    await transaction.execute({
+      sql: `UPDATE github_installation
+              SET status = 'revoked', updated_at_ms = ?3
+            WHERE tenant_id = ?1 AND role = ?2 AND installation_id = ?4`,
+      args: [tenantId, input.role, input.nowMs, input.installationId],
+    });
+    await transaction.execute({
+      sql: `INSERT INTO delivery_route (tenant_id, status, observed_at_ms, updated_at_ms)
+            VALUES (?1, 'degraded', ?2, ?2)
+            ON CONFLICT (tenant_id) DO UPDATE SET
+              status = 'degraded', observed_at_ms = excluded.observed_at_ms,
+              updated_at_ms = excluded.updated_at_ms`,
+      args: [tenantId, input.nowMs],
+    });
+    return;
+  }
+  if (input.eventName !== "installation_repositories" || installation.rows[0]?.status !== "installed") return;
+  for (const repository of input.added) {
+    await transaction.execute({
+      sql: `INSERT INTO github_repository (
+        tenant_id, installation_role, installation_id, repository_id, owner, name,
+        selected, is_default, updated_at_ms
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7)
+      ON CONFLICT (tenant_id, installation_role, installation_id, repository_id) DO UPDATE SET
+        owner = excluded.owner, name = excluded.name, updated_at_ms = excluded.updated_at_ms`,
+      args: [
+        tenantId,
+        input.role,
+        input.installationId,
+        repository.id,
+        repository.owner,
+        repository.name,
+        input.nowMs,
+      ],
+    });
+  }
+  for (const repositoryId of input.removedIds) {
+    await transaction.execute({
+      sql: `DELETE FROM github_repository
+             WHERE tenant_id = ?1 AND installation_role = ?2
+               AND installation_id = ?3 AND repository_id = ?4`,
+      args: [tenantId, input.role, input.installationId, repositoryId],
+    });
+  }
+};
+
 export const createGitHubControlStore = (client: Client, options: { readonly claimTtlMs?: number } = {}) => {
-  const claimTtlMs = options.claimTtlMs ?? 60_000;
+  // One batch is delivered sequentially. Keep the default lease longer than
+  // 25 bounded 10-second tenant requests so another relay cannot reclaim the
+  // tail of a healthy batch while it is still being processed.
+  const claimTtlMs = options.claimTtlMs ?? 5 * 60_000;
 
   return {
     beginInstallation: async (input: {
@@ -368,6 +442,7 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
 
     acceptDelivery: async (
       delivery: VerifiedGitHubDelivery,
+      installationMutation?: GitHubInstallationWebhookMutation,
     ): Promise<{ readonly action: "inserted" | "duplicate"; readonly record: GitHubDeliveryOutboxRecord }> =>
       await withWriteTransaction(client, async (transaction) => {
         const route =
@@ -402,93 +477,42 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
             delivery.receivedAtMs,
           ],
         });
+        let outcome: { readonly action: "inserted" | "duplicate"; readonly record: GitHubDeliveryOutboxRecord };
         if (inserted.rows[0] !== undefined) {
-          return { action: "inserted", record: outboxFromRow(inserted.rows[0] as OutboxRow) };
-        }
-        const existing = await transaction.execute({
-          sql: `${selectOutbox} WHERE github_app_id = ?1 AND delivery_guid = ?2`,
-          args: [delivery.githubAppId, delivery.deliveryGuid],
-        });
-        const record = outboxFromRow(existing.rows[0] as OutboxRow);
-        if (
-          record.eventName !== delivery.eventName ||
-          record.installationRole !== delivery.installationRole ||
-          record.installationId !== delivery.installationId ||
-          record.payloadSha256 !== delivery.payloadSha256
-        ) {
-          throw new GitHubControlStoreError(
-            "delivery_collision",
-            `GitHub App delivery ${delivery.githubAppId}:${delivery.deliveryGuid} changed identity`,
-          );
-        }
-        return { action: "duplicate", record };
-      }),
-
-    applyInstallationWebhook: async (input: {
-      readonly role: GitHubAppRole;
-      readonly installationId: number;
-      readonly eventName: string;
-      readonly action: string;
-      readonly added: readonly Omit<GitHubRepositoryGrant, "selected" | "isDefault">[];
-      readonly removedIds: readonly number[];
-      readonly nowMs: number;
-    }): Promise<void> =>
-      await withWriteTransaction(client, async (transaction) => {
-        const installation = await transaction.execute({
-          sql: `SELECT tenant_id FROM github_installation WHERE installation_id = ?1 AND role = ?2`,
-          args: [input.installationId, input.role],
-        });
-        const tenantId = installation.rows[0]?.tenant_id;
-        if (tenantId === undefined) return;
-        if (input.eventName === "installation" && ["deleted", "suspend"].includes(input.action)) {
-          await transaction.execute({
-            sql: "DELETE FROM github_repository WHERE tenant_id = ?1 AND installation_role = ?2",
-            args: [tenantId, input.role],
+          outcome = { action: "inserted", record: outboxFromRow(inserted.rows[0] as OutboxRow) };
+        } else {
+          const existing = await transaction.execute({
+            sql: `${selectOutbox} WHERE github_app_id = ?1 AND delivery_guid = ?2`,
+            args: [delivery.githubAppId, delivery.deliveryGuid],
           });
-          await transaction.execute({
-            sql: `UPDATE github_installation
-                     SET status = 'revoked', updated_at_ms = ?3
-                   WHERE tenant_id = ?1 AND role = ?2 AND installation_id = ?4`,
-            args: [tenantId, input.role, input.nowMs, input.installationId],
-          });
-          await transaction.execute({
-            sql: `INSERT INTO delivery_route (tenant_id, status, observed_at_ms, updated_at_ms)
-                  VALUES (?1, 'degraded', ?2, ?2)
-                  ON CONFLICT (tenant_id) DO UPDATE SET
-                    status = 'degraded', observed_at_ms = excluded.observed_at_ms,
-                    updated_at_ms = excluded.updated_at_ms`,
-            args: [tenantId, input.nowMs],
-          });
-          return;
+          const record = outboxFromRow(existing.rows[0] as OutboxRow);
+          if (
+            record.eventName !== delivery.eventName ||
+            record.installationRole !== delivery.installationRole ||
+            record.installationId !== delivery.installationId ||
+            record.payloadSha256 !== delivery.payloadSha256
+          ) {
+            throw new GitHubControlStoreError(
+              "delivery_collision",
+              `GitHub App delivery ${delivery.githubAppId}:${delivery.deliveryGuid} changed identity`,
+            );
+          }
+          outcome = { action: "duplicate", record };
         }
-        if (input.eventName !== "installation_repositories") return;
-        for (const repository of input.added) {
-          await transaction.execute({
-            sql: `INSERT INTO github_repository (
-              tenant_id, installation_role, installation_id, repository_id, owner, name,
-              selected, is_default, updated_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7)
-            ON CONFLICT (tenant_id, installation_role, installation_id, repository_id) DO UPDATE SET
-              owner = excluded.owner, name = excluded.name, updated_at_ms = excluded.updated_at_ms`,
-            args: [
-              tenantId,
-              input.role,
-              input.installationId,
-              repository.id,
-              repository.owner,
-              repository.name,
-              input.nowMs,
-            ],
-          });
+        if (installationMutation !== undefined) {
+          if (
+            installationMutation.role !== delivery.installationRole ||
+            installationMutation.installationId !== delivery.installationId ||
+            installationMutation.eventName !== delivery.eventName
+          ) {
+            throw new GitHubControlStoreError(
+              "delivery_collision",
+              "GitHub installation mutation does not match its admitted delivery",
+            );
+          }
+          await applyInstallationWebhookWith(transaction, installationMutation);
         }
-        for (const repositoryId of input.removedIds) {
-          await transaction.execute({
-            sql: `DELETE FROM github_repository
-                   WHERE tenant_id = ?1 AND installation_role = ?2
-                     AND installation_id = ?3 AND repository_id = ?4`,
-            args: [tenantId, input.role, input.installationId, repositoryId],
-          });
-        }
+        return outcome;
       }),
 
     routePendingDeliveries: async (): Promise<number> => {
