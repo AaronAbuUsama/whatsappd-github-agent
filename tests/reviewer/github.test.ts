@@ -36,6 +36,10 @@ describe("Reviewer GitHub contract", () => {
     expect(reviewerExerciseCommand()).toContain("pnpm run --if-present typecheck");
   });
 
+  it("runs Yarn typecheck only when the repository defines it", () => {
+    expect(reviewerExerciseCommand()).toContain("scripts?.typecheck ? 0 : 1");
+  });
+
   it("submits at most once when the model invokes the effect repeatedly", async () => {
     const submit = singleSubmission<string>();
     const effect = vi.fn(async () => "formal-review");

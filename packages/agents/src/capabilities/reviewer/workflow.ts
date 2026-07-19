@@ -32,7 +32,7 @@ export const serializeReviewerSubmission = (
 export const reviewerExerciseCommand = (): string => [
   "if [ -f pnpm-lock.yaml ]; then corepack pnpm install --frozen-lockfile && corepack pnpm run --if-present typecheck && corepack pnpm test",
   "elif [ -f package-lock.json ]; then npm ci && npm run typecheck --if-present && npm test",
-  "elif [ -f yarn.lock ]; then corepack yarn install --immutable && corepack yarn run typecheck && corepack yarn test",
+  "elif [ -f yarn.lock ]; then corepack yarn install --immutable && (if node -e \"process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)\"; then corepack yarn run typecheck; fi) && corepack yarn test",
   "elif [ -f pyproject.toml ]; then python -m pip install . && python -m pytest",
   "elif [ -f go.mod ]; then go test ./...",
   "elif [ -f Cargo.toml ]; then cargo test",
