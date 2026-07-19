@@ -78,7 +78,7 @@ afterEach(async () => {
 });
 
 describe("hosted GitHub callback and repository registry", () => {
-  it("publishes only an applied Operate runtime as a GitHub delivery target", async () => {
+  it("publishes only a healthy running Operate runtime as a GitHub delivery target", async () => {
     const databaseClient = await database();
     const owner = await seedTenant(databaseClient, "runtime-target");
     const store = createGitHubControlStore(databaseClient);
@@ -96,7 +96,8 @@ describe("hosted GitHub callback and repository registry", () => {
     await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
     await databaseClient.execute({
       sql: `UPDATE agent_instance
-        SET desired_mode = 'operate', applied_mode = 'operate', runtime_base_url = 'http://operate.internal'
+        SET desired_mode = 'operate', applied_mode = 'operate', observed_state = 'healthy',
+            phase = 'running', runtime_base_url = 'http://operate.internal'
         WHERE tenant_id = ?1`,
       args: [owner.tenantId],
     });
@@ -105,6 +106,20 @@ describe("hosted GitHub callback and repository registry", () => {
       runtimeId: "runtime-target",
       baseUrl: "http://operate.internal",
     });
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance
+        SET observed_state = 'stopped', phase = 'stopped'
+        WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance
+        SET observed_state = 'healthy', phase = 'blocked_invariant'
+        WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
   });
 
   it("binds an expiring callback to one tenant and makes a duplicate callback replay-safe", async () => {

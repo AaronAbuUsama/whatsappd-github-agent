@@ -634,7 +634,10 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
         sql: `SELECT id, runtime_base_url
                 FROM agent_instance
                WHERE tenant_id = ?1
+                 AND desired_mode = 'operate'
                  AND applied_mode = 'operate'
+                 AND observed_state = 'healthy'
+                 AND phase = 'running'
                  AND runtime_base_url IS NOT NULL`,
         args: [tenantId],
       });
