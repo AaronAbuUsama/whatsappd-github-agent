@@ -31,8 +31,8 @@ exec sh -c "$3"
       executable: docker,
     }).createSessionEnv({ id: "review-42" });
 
-    await expect(env.exec("printf '%s' \"$BOUNDARY\"", { env: { BOUNDARY: "container" } })).resolves.toEqual({
-      stdout: "container",
+    await expect(env.exec("printf '%s:%s' \"$BOUNDARY\" \"$pnpm_config_store_dir\"", { env: { BOUNDARY: "container" } })).resolves.toEqual({
+      stdout: "container:/tmp/pnpm-store",
       stderr: "",
       exitCode: 0,
     });
