@@ -1002,3 +1002,74 @@ describe("GitHub ingress delivery ledger", () => {
     }
   });
 });
+
+describe("tenant-routed deliveries settle under their own GitHub App id", () => {
+  const quiet = { info: () => undefined, warn: () => undefined, error: () => undefined };
+  const review = (launches?: string[]) => ({
+    repositories: ["acme/widgets"],
+    launch: async () => {
+      launches?.push("launched");
+      return { runId: "tenant-review" };
+    },
+    command: {
+      appSlug: "tenant-reviewer",
+      permission: async () => "write",
+      pullRequest: async () => ({ state: "open", draft: false, headSha: "live-head" }),
+    },
+  });
+
+  it("settles review-command and synchronize deliveries on the routed app row, not the legacy row", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    try {
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: ["chat-42@g.us"],
+        dispatch: async () => ({ dispatchId: "speaker", acceptedAt: "2026-07-18T00:00:01.000Z" }),
+        review: review(),
+        logger: quiet,
+      });
+
+      const command = { ...reviewCommandDelivery("tenant-command"), githubAppId: "app-reviewer-1" };
+      await expect(ingress(command)).resolves.toMatchObject({ status: "review-launched", runId: "tenant-review" });
+      expect(store.get("tenant-command", "app-reviewer-1")).toMatchObject({ status: "done", dispatchId: "tenant-review" });
+      expect(store.get("tenant-command")).toBeUndefined();
+
+      const sync = pullRequestOpenedDelivery("tenant-sync") as GitHubWebhookDelivery & { payload: { action: string } };
+      sync.payload.action = "synchronize";
+      await expect(ingress({ ...sync, githubAppId: "app-reviewer-1" })).resolves.toMatchObject({ status: "review-launched" });
+      expect(store.get("tenant-sync", "app-reviewer-1")).toMatchObject({ status: "done" });
+      expect(store.get("tenant-sync")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("serves a tenant with GitHub connected but no managed chat paired", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    try {
+      const launches: string[] = [];
+      const ingress = createGitHubIngress({
+        store,
+        managedChats: [],
+        dispatch: async () => {
+          throw new Error("nothing may dispatch without a managed chat");
+        },
+        review: review(launches),
+        logger: quiet,
+      });
+
+      const command = { ...reviewCommandDelivery("chatless-command"), githubAppId: "app-reviewer-1" };
+      await expect(ingress(command)).resolves.toMatchObject({ status: "review-launched" });
+      expect(launches).toEqual(["launched"]);
+      const record = store.get("chatless-command", "app-reviewer-1");
+      expect(record).toMatchObject({ status: "done" });
+      expect(record?.chatId).toBeUndefined();
+
+      const issue = { ...issueOpenedDelivery("chatless-issue"), githubAppId: "app-coder-1" };
+      await expect(ingress(issue)).resolves.toMatchObject({ status: "unsupported" });
+      expect(store.get("chatless-issue", "app-coder-1")).toMatchObject({ status: "unsupported" });
+    } finally {
+      store.close();
+    }
+  });
+});

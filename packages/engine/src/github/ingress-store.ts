@@ -57,7 +57,8 @@ export interface GitHubIngressStore {
       | {
           readonly status: "done";
           readonly repository: string;
-          readonly chatId: string;
+          /** Absent when the tenant has GitHub connected but no managed chat paired. */
+          readonly chatId?: string;
           readonly ambience: "ambience";
           readonly dispatchId: string;
           readonly acceptedAt: string;
