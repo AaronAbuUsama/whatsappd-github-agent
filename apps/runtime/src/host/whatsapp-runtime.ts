@@ -251,7 +251,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     if (!gate.hasTarget) {
       yield* Effect.logWarning("No managed WhatsApp chat is configured; ingress remains fail-closed.");
     }
-    yield* Effect.promise(() =>
+    const authenticatedAccount = yield* Effect.promise(() =>
       account.authenticate({
         onPairing: (pairing) => {
           setRuntimeStatus({ phase: "pairing", chatTarget: gate.describe(), pairing });
@@ -266,7 +266,12 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     );
     const session = account.session();
     const botIds = botIdsOf(session, options.botLid);
-    setRuntimeStatus({ phase: "online", chatTarget: gate.describe(), botIds });
+    setRuntimeStatus({
+      phase: "online",
+      accountJid: authenticatedAccount.jid,
+      chatTarget: gate.describe(),
+      botIds,
+    });
     yield* Effect.sync(() =>
       log.info(
         {

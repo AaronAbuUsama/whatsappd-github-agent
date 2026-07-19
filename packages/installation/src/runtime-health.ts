@@ -6,6 +6,8 @@ export type AmbientRuntimeState = "stopped" | "starting" | "healthy" | "failed";
 export type WhatsAppRuntimePhase = "disabled" | "starting" | "pairing" | "online" | "failed" | "stopped";
 export interface WhatsAppRuntimeStatus {
   readonly phase: WhatsAppRuntimePhase;
+  /** Runtime-authenticated account identity; never populated from user input or pairing material. */
+  readonly accountJid?: string;
   readonly chatTarget?: string;
   readonly botIds?: readonly string[];
   readonly pairing?: PairingProgress;

@@ -850,6 +850,9 @@ describe("runtime pairing and bridge control", () => {
 
       continueStart();
       await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+      expect(getWhatsAppRuntimeStatus()).toMatchObject({
+        accountJid: "15550000000:7@s.whatsapp.net",
+      });
       expect(getWhatsAppRuntimeStatus()).not.toHaveProperty("pairing");
       await expect(runtime.synchronizedChats()).resolves.toEqual([
         { jid: "project-runtime@g.us", name: "Runtime Project", kind: "group", lastActivityAt: 3_000 },

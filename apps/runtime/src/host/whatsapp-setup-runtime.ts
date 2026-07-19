@@ -72,8 +72,8 @@ export const startWhatsAppSetupRuntime = (
           },
         }),
     )
-    .then(() => {
-      if (!stopping) status = { phase: "online" };
+    .then((account) => {
+      if (!stopping) status = { phase: "online", accountJid: account.jid };
     })
     .catch(async (cause: unknown) => {
       if (stopping) return;

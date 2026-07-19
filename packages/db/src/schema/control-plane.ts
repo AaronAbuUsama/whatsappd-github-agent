@@ -107,6 +107,9 @@ export const agentInstance = sqliteTable(
     dokployApplicationId: text("dokploy_application_id").unique(),
     dokployAppName: text("dokploy_app_name").unique(),
     appliedConfigVersion: integer("applied_config_version").default(0).notNull(),
+    appliedMode: text("applied_mode", { enum: ["stopped", "setup", "operate"] })
+      .default("stopped")
+      .notNull(),
     remoteConfigOperationId: text("remote_config_operation_id").unique(),
     remoteConfigOwnerId: text("remote_config_owner_id"),
     remoteConfigFencingToken: integer("remote_config_fencing_token"),
@@ -134,6 +137,7 @@ export const agentInstance = sqliteTable(
     updatedAtMs: integer("updated_at_ms").default(nowMs).notNull(),
   },
   (table) => [
+    unique("agent_instance_tenant_store_unique").on(table.tenantId, table.credsStoreKey),
     foreignKey({
       name: "agent_instance_tenant_store_fk",
       columns: [table.tenantId, table.credsStoreKey],
@@ -147,6 +151,7 @@ export const agentInstance = sqliteTable(
       )`,
     ),
     check("agent_instance_applied_config_version_check", sql`${table.appliedConfigVersion} >= 0`),
+    check("agent_instance_applied_mode_check", sql`${table.appliedMode} in ('stopped', 'setup', 'operate')`),
     check(
       "agent_instance_remote_config_state_check",
       sql`${table.remoteConfigState} in ('idle', 'pending', 'confirmed', 'blocked_unknown')`,
@@ -175,6 +180,39 @@ export const agentInstance = sqliteTable(
         and ${table.remoteConfigTargetVersion} is not null
         and ${table.remoteConfigTargetVersion} > 0
       )`,
+    ),
+  ],
+);
+
+export const provisionerOperatorAudit = sqliteTable(
+  "provisioner_operator_audit",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    credsStoreKey: text("creds_store_key").notNull(),
+    operationId: text("operation_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    evidenceNote: text("evidence_note").notNull(),
+    fencingToken: integer("fencing_token").notNull(),
+    outcome: text("outcome", { enum: ["accepted", "rejected"] }).notNull(),
+    resolution: text("resolution", { enum: ["quiesced_restored", "cas_rejected"] }).notNull(),
+    attemptedAtMs: integer("attempted_at_ms").default(nowMs).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "provisioner_operator_audit_agent_fk",
+      columns: [table.tenantId, table.credsStoreKey],
+      foreignColumns: [agentInstance.tenantId, agentInstance.credsStoreKey],
+    }).onDelete("cascade"),
+    index("provisioner_operator_audit_operation_idx").on(table.tenantId, table.operationId),
+    check("provisioner_operator_audit_actor_check", sql`length(trim(${table.actorId})) > 0`),
+    check("provisioner_operator_audit_evidence_check", sql`length(trim(${table.evidenceNote})) > 0`),
+    check("provisioner_operator_audit_fence_check", sql`${table.fencingToken} > 0`),
+    check("provisioner_operator_audit_outcome_check", sql`${table.outcome} in ('accepted', 'rejected')`),
+    check(
+      "provisioner_operator_audit_resolution_check",
+      sql`(${table.outcome} = 'accepted' and ${table.resolution} = 'quiesced_restored')
+        or (${table.outcome} = 'rejected' and ${table.resolution} = 'cas_rejected')`,
     ),
   ],
 );
@@ -501,6 +539,7 @@ export const tenantReadiness = sqliteView("tenant_readiness", {
       when tenant.status = 'active'
         and tenant.desired_state = 'running'
         and agent_instance.desired_mode = 'operate'
+        and agent_instance.applied_mode = 'operate'
         and agent_instance.observed_state = 'healthy'
         and agent_instance.applied_config_version = tenant.config_version
         and model_connection.status = 'ready'

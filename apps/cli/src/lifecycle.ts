@@ -3,7 +3,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { configureLogging, type LogFormat } from "@ambient-agent/engine/logging/logging.ts";
 import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
-import { installManagedRuntimeDependencies, startDeferredWhatsAppRuntime } from "@ambient-agent/installation/runtime-dependencies.ts";
+import {
+  installManagedRuntimeDependencies,
+  runtimeDeploymentIdentityFromEnvironment,
+  startDeferredWhatsAppRuntime,
+} from "@ambient-agent/installation/runtime-dependencies.ts";
 import type { ManagedPaths } from "@ambient-agent/installation/paths.ts";
 import type { ChatGptAuthentication } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 
@@ -47,11 +51,13 @@ export const startGeneratedRuntime = async (
   if (githubCredential.webhookSecret === undefined) {
     throw new Error("The app-owned GitHub webhook credential migration did not complete.");
   }
+  const deployment = runtimeDeploymentIdentityFromEnvironment();
   installManagedRuntimeDependencies({
     authentication,
     configuration,
     githubCredential: { ...githubCredential, webhookSecret: githubCredential.webhookSecret },
     paths,
+    ...(deployment === undefined ? {} : { deployment }),
   });
   process.chdir(paths.root);
   const serverEntry = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs"));

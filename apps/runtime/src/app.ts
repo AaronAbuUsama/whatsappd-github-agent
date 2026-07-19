@@ -55,6 +55,7 @@ const configureCoderRuntimeIfProvisioned = async (paths: ManagedRuntimeDependenc
 export const createAmbientAgentApp = async ({
   authentication,
   configuration,
+  deployment,
   githubCredential,
   paths,
 }: ManagedRuntimeDependencies): Promise<Hono> => {
@@ -97,7 +98,7 @@ export const createAmbientAgentApp = async ({
     health: () => {
       return {
         ...subscription,
-        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus()),
+        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus(), deployment),
       };
     },
     routes: (routes) => {

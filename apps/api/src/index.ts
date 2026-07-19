@@ -12,6 +12,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { installHostedGitHub } from "./github-hosted";
+import {
+  createHostedTenantProvisioner,
+  startTenantProvisionerReconciliation,
+} from "./provisioner-hosted";
 
 const app = new Hono();
 const appRouter = createAppRouter({ getEntitlementSnapshot });
@@ -29,14 +33,28 @@ app.use(
 
 app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
+export const hostedTenantProvisioner = createHostedTenantProvisioner({ client });
+export const hostedTenantProvisionerLoop = hostedTenantProvisioner
+  ? startTenantProvisionerReconciliation(hostedTenantProvisioner, {
+      intervalMs: hostedTenantProvisioner.reconciliationIntervalMs,
+      onError: () => console.error("[tenant-provisioner] reconciliation sweep failed"),
+    })
+  : null;
+
 if (process.env.GITHUB_APPS_JSON) {
   installHostedGitHub({
     app,
     client,
     appsJson: process.env.GITHUB_APPS_JSON,
-    ...(process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON
+    ...(hostedTenantProvisioner === null && process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON
       ? { runtimeSecretsJson: process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON }
       : {}),
+    ...(hostedTenantProvisioner === null
+      ? {}
+      : {
+          runtimeSecretForTenant: hostedTenantProvisioner.runtimeBridgeSecretForTenant,
+          runtimeIdForTenant: hostedTenantProvisioner.runtimeIdForTenant,
+        }),
   });
 }
 

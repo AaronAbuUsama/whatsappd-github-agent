@@ -66,7 +66,7 @@ async function seedReadyCapabilities(client: Client, tenantId: string, suffix: s
   await client.execute({
     sql: `UPDATE agent_instance
       SET desired_mode = 'operate', observed_state = 'healthy', observed_at_ms = 1,
-          applied_config_version = 1
+          applied_config_version = 1, applied_mode = 'operate'
       WHERE tenant_id = ?1`,
     args: [tenantId],
   });
@@ -138,6 +138,7 @@ describe("control-plane ledger migration", () => {
         "managed_chat_selection",
         "model_connection",
         "provisioner_lease",
+        "provisioner_operator_audit",
         "subscription_entitlement",
         "tenant",
         "tenant_managed_chat",
@@ -246,6 +247,7 @@ describe("control-plane ledger migration", () => {
       "tenant",
       "agent_instance",
       "provisioner_lease",
+      "provisioner_operator_audit",
       "model_connection",
       "whatsapp_connection",
       "managed_chat_selection",
@@ -328,6 +330,16 @@ describe("control-plane ledger migration", () => {
     expect(await readiness()).toBe("degraded");
     await client.execute({
       sql: "UPDATE tenant SET desired_state = 'running' WHERE id = ?1",
+      args: [seeded.tenantId],
+    });
+    expect(await readiness()).toBe("healthy");
+    await client.execute({
+      sql: "UPDATE agent_instance SET applied_mode = 'setup' WHERE tenant_id = ?1",
+      args: [seeded.tenantId],
+    });
+    expect(await readiness()).toBe("degraded");
+    await client.execute({
+      sql: "UPDATE agent_instance SET applied_mode = 'operate' WHERE tenant_id = ?1",
       args: [seeded.tenantId],
     });
     expect(await readiness()).toBe("healthy");

@@ -9,13 +9,20 @@ export interface ManagedRuntimeDependencies {
   /** The Planner App credential — the runtime's issue-filing identity and webhook-secret owner (#135). */
   readonly githubCredential: GitHubAppCredential & { readonly webhookSecret: string };
   readonly paths: ManagedPaths;
+  readonly deployment?: RuntimeDeploymentIdentity;
 }
 
 export interface TenantRuntimeEnvironment extends TenantCredentialEnvironment {
   readonly AMBIENT_AGENT_RUNTIME_PROFILE?: string;
+  readonly AMBIENT_AGENT_CONFIG_VERSION?: string;
   readonly AMBIENT_AGENT_RUNTIME_ID?: string;
   readonly AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET?: string;
   readonly PORT?: string;
+}
+
+export interface RuntimeDeploymentIdentity {
+  readonly configVersion: number;
+  readonly mode: "setup" | "operate";
 }
 
 export interface TenantRuntimeSetupBoot {
@@ -25,6 +32,7 @@ export interface TenantRuntimeSetupBoot {
   readonly port: number;
   readonly paths: ManagedPaths;
   readonly credentialEnvironment: Required<TenantCredentialEnvironment>;
+  readonly deployment: RuntimeDeploymentIdentity & { readonly mode: "setup" };
 }
 
 const RUNTIME_DEPENDENCIES = Symbol.for("ambient-agent.managed-runtime-dependencies");
@@ -63,13 +71,29 @@ const setupRuntimePort = (value: string | undefined): number => {
   return port;
 };
 
+export const runtimeDeploymentIdentityFromEnvironment = (
+  environment: TenantRuntimeEnvironment = process.env,
+): RuntimeDeploymentIdentity | undefined => {
+  const mode = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
+  const versionValue = environment.AMBIENT_AGENT_CONFIG_VERSION?.trim();
+  if (!mode && !versionValue) return undefined;
+  if (mode !== "setup" && mode !== "operate") {
+    throw new Error("AMBIENT_AGENT_RUNTIME_PROFILE must be setup or operate.");
+  }
+  const configVersion = Number(versionValue);
+  if (!Number.isSafeInteger(configVersion) || configVersion < 1) {
+    throw new Error("AMBIENT_AGENT_CONFIG_VERSION must be a positive integer.");
+  }
+  return { configVersion, mode };
+};
+
 /** Composition-root boundary for the standalone, setup-only tenant server. */
 export const resolveTenantRuntimeSetupBoot = (
   environment: TenantRuntimeEnvironment = process.env,
   paths: ManagedPaths = managedPaths(),
 ): TenantRuntimeSetupBoot => {
-  const profile = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
-  if (profile !== "setup") {
+  const deployment = runtimeDeploymentIdentityFromEnvironment(environment);
+  if (deployment?.mode !== "setup") {
     throw new Error("The tenant setup server requires AMBIENT_AGENT_RUNTIME_PROFILE=setup.");
   }
   const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
@@ -89,6 +113,7 @@ export const resolveTenantRuntimeSetupBoot = (
       TENANT_DB_URL: tenantDatabase.url,
       TENANT_DB_TOKEN: requiredSetupValue("TENANT_DB_TOKEN", tenantDatabase.authToken),
     },
+    deployment: { configVersion: deployment.configVersion, mode: "setup" },
   };
 };
 

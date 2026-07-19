@@ -88,8 +88,11 @@ describe("tenant runtime bridge", () => {
       qr: "safe-qr-challenge",
       expiresAt: 60_000,
     });
-    status = { phase: "online" };
-    await expect((await request(app, "/pairing", "pairing-read")).json()).resolves.toEqual({ status: "paired" });
+    status = { phase: "online", accountJid: "15550000001@s.whatsapp.net" };
+    await expect((await request(app, "/pairing", "pairing-read")).json()).resolves.toEqual({
+      status: "paired",
+      accountJid: "15550000001@s.whatsapp.net",
+    });
     status = { phase: "stopped" };
     await expect((await request(app, "/pairing", "pairing-read")).json()).resolves.toEqual({
       status: "not_pairing",
