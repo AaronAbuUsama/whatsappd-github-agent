@@ -261,16 +261,40 @@ report.
 
 ### Vendored methodology
 
-Vendor the **built-in Claude Code `/verify` methodology**, discovered inside the local
-Claude Code distribution at:
+Vendor the **built-in Claude Code `/verify` methodology** from Anthropic's published,
+platform-specific npm artifact. The inspected source is pinned to Claude Code `2.1.214`:
 
 ```text
-/Users/abuusama/.local/share/claude/versions/2.1.214
-SHA-256: 59796dd18e9d77f1256f367db6d28ce4bd9cd5968e402ad3a327aac36abc6dec
+package: @anthropic-ai/claude-code-darwin-arm64@2.1.214
+tarball: https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.214.tgz
+npm integrity: sha512-z99kjSImARBWdE6lGoCXSi83tbiabtIv7vtFyuwrHD56WZTFSguedBb9F8wlUncEEfUVtqHKa9nCZ55j6spiIA==
+package/claude SHA-256: 59796dd18e9d77f1256f367db6d28ce4bd9cd5968e402ad3a327aac36abc6dec
 ```
 
-The build must extract and preserve that methodology as a skill owned by the Verifier
-under the Coder capability. It is executed by the configured OpenAI Verifier model.
+The implementation ticket must fetch that exact public artifact (for example with
+`npm pack @anthropic-ai/claude-code-darwin-arm64@2.1.214`), let npm verify the pinned
+SRI, extract `package/claude`, and verify the binary SHA-256 above before locating and
+vendoring the built-in methodology. In that verified binary, `strings -a package/claude`
+emits the skill source between these stable bundle markers:
+
+```text
+start marker:
+var vPf=`---
+name: verify
+
+end marker:
+`;var EPf=
+```
+
+The same bundle maps `vPf` to exported `SKILL_MD`. Decode the emitted JavaScript escapes
+(for example `\u2014`) when writing `SKILL.md`. Fail the vendoring step if either marker is
+absent or non-unique instead of guessing at a replacement source.
+
+The hash matches the originally inspected local binary byte-for-byte; the local absolute
+path is evidence only, not an input to the build. Preserve the vendored methodology as a
+skill owned by the Verifier under the Coder capability and record its source package,
+version, and binary hash beside it so a clean checkout can repeat the provenance check.
+It is executed by the configured OpenAI Verifier model.
 
 Do **not** substitute the repository's current `.claude/skills/verify/SKILL.md`. That is
 an ambient-agent-specific live-rig recipe; it may be useful evidence input, but it is not
