@@ -50,6 +50,7 @@ const chatsSchema: z.ZodType<BridgeChats> = z.array(
 const deliveryAckSchema: z.ZodType<BridgeGitHubDeliveryAck> = z.object({
   runtimeId: z.string().min(1),
   githubAppId: z.string().min(1),
+  configVersion: z.number().int().positive().optional(),
   result: z
     .object({ status: z.enum(["duplicate", "unsupported", "uncorrelated", "failed", "done"]) })
     .passthrough(),

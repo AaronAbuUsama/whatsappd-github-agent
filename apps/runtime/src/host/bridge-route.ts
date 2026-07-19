@@ -17,6 +17,7 @@ import type { WhatsAppRuntimeControl } from "./whatsapp-runtime.ts";
 
 export interface BridgeRouteOptions {
   readonly runtimeId?: string;
+  readonly configVersion?: number;
   readonly webhookSecret: string;
   readonly status: () => WhatsAppRuntimeStatus;
   readonly control: () => Pick<WhatsAppRuntimeControl, "synchronizedChats"> | undefined;
@@ -94,7 +95,12 @@ export const installBridgeRoute = (app: Hono, options: BridgeRouteOptions): void
           ? await handleGitHubDelivery(delivery as RoutedGitHubWebhookDelivery)
           : await options.deliver(delivery);
       return context.json(
-        { runtimeId, githubAppId: delivery.githubAppId, result },
+        {
+          runtimeId,
+          githubAppId: delivery.githubAppId,
+          ...(options.configVersion === undefined ? {} : { configVersion: options.configVersion }),
+          result,
+        },
         deliveryIsDurable(result) ? 200 : 503,
       );
     } catch (cause) {

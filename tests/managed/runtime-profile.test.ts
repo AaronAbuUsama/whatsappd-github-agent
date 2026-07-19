@@ -8,6 +8,7 @@ import { managedPaths } from "../../packages/installation/src/paths.ts";
 import {
   getManagedRuntimeDependencies,
   installManagedRuntimeDependencies,
+  resolveTenantRuntimeOperateBridge,
   resolveTenantRuntimeSetupBoot,
   type TenantRuntimeSetupBoot,
 } from "../../packages/installation/src/runtime-dependencies.ts";
@@ -241,4 +242,30 @@ it("fails setup closed before starting a runtime when its environment contract i
     resolveTenantRuntimeSetupBoot({ ...setupEnvironment, AMBIENT_AGENT_RUNTIME_PROFILE: "operate" }, paths),
   ).toThrow("requires AMBIENT_AGENT_RUNTIME_PROFILE=setup");
   expect(() => resolveTenantRuntimeSetupBoot({ ...setupEnvironment, PORT: "invalid" }, paths)).toThrow("runtime port");
+});
+
+it("binds hosted delivery acknowledgements to the applied operate configuration", () => {
+  expect(
+    resolveTenantRuntimeOperateBridge({
+      AMBIENT_AGENT_RUNTIME_PROFILE: "operate",
+      AMBIENT_AGENT_RUNTIME_ID: "runtime-205",
+      AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET: "bridge-secret-205",
+      AMBIENT_AGENT_CONFIG_VERSION: "7",
+    }),
+  ).toEqual({
+    runtimeId: "runtime-205",
+    bridgeSecret: "bridge-secret-205",
+    configVersion: 7,
+  });
+  expect(resolveTenantRuntimeOperateBridge({})).toBeUndefined();
+  expect(() => resolveTenantRuntimeOperateBridge({ AMBIENT_AGENT_RUNTIME_PROFILE: "operate" })).toThrow(
+    "bridge identity and config version",
+  );
+  expect(() =>
+    resolveTenantRuntimeOperateBridge({
+      AMBIENT_AGENT_RUNTIME_PROFILE: "operate",
+      AMBIENT_AGENT_RUNTIME_ID: "runtime-205",
+      AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET: "bridge-secret-205",
+    }),
+  ).toThrow("AMBIENT_AGENT_CONFIG_VERSION");
 });

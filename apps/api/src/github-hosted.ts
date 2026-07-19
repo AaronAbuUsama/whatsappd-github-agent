@@ -28,6 +28,9 @@ export const installHostedGitHub = (options: {
   const store = createGitHubControlStore(options.client);
   installGitHubRoutes(options.app, { store, apps });
 
+  if ((options.runtimeSecretForTenant === undefined) !== (options.runtimeIdForTenant === undefined)) {
+    throw new Error("Hosted GitHub delivery requires both runtime bridge-secret and runtime-ID resolvers");
+  }
   if (options.runtimeSecretsJson === undefined && options.runtimeSecretForTenant === undefined) {
     return () => undefined;
   }

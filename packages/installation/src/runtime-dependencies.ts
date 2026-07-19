@@ -10,6 +10,7 @@ export interface ManagedRuntimeDependencies {
   readonly githubCredential: GitHubAppCredential & { readonly webhookSecret: string };
   readonly paths: ManagedPaths;
   readonly deployment?: RuntimeDeploymentIdentity;
+  readonly bridge?: TenantRuntimeOperateBridge;
 }
 
 export interface TenantRuntimeEnvironment extends TenantCredentialEnvironment {
@@ -23,6 +24,12 @@ export interface TenantRuntimeEnvironment extends TenantCredentialEnvironment {
 export interface RuntimeDeploymentIdentity {
   readonly configVersion: number;
   readonly mode: "setup" | "operate";
+}
+
+export interface TenantRuntimeOperateBridge {
+  readonly runtimeId: string;
+  readonly bridgeSecret: string;
+  readonly configVersion: number;
 }
 
 export interface TenantRuntimeSetupBoot {
@@ -57,9 +64,9 @@ export const getManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
   return dependencies;
 };
 
-const requiredSetupValue = (name: string, value: string | undefined): string => {
+const requiredRuntimeValue = (name: string, value: string | undefined): string => {
   const configured = value?.trim();
-  if (!configured) throw new Error(`${name} is required for the tenant runtime setup profile.`);
+  if (!configured) throw new Error(`${name} is required for the tenant runtime.`);
   return configured;
 };
 
@@ -87,6 +94,38 @@ export const runtimeDeploymentIdentityFromEnvironment = (
   return { configVersion, mode };
 };
 
+export const resolveTenantRuntimeOperateBridge = (
+  environment: TenantRuntimeEnvironment = process.env,
+): TenantRuntimeOperateBridge | undefined => {
+  const configured = [
+    environment.AMBIENT_AGENT_RUNTIME_ID,
+    environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
+    environment.AMBIENT_AGENT_CONFIG_VERSION,
+  ].some((value) => value?.trim());
+  const profile = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
+  if (!configured) {
+    if (profile === "operate") {
+      throw new Error("The hosted operate runtime requires its bridge identity and config version.");
+    }
+    return undefined;
+  }
+  if (profile !== "operate") {
+    throw new Error("Hosted bridge identity requires AMBIENT_AGENT_RUNTIME_PROFILE=operate.");
+  }
+  const configVersion = Number(environment.AMBIENT_AGENT_CONFIG_VERSION);
+  if (!Number.isSafeInteger(configVersion) || configVersion <= 0) {
+    throw new Error("AMBIENT_AGENT_CONFIG_VERSION must be a positive integer.");
+  }
+  return {
+    runtimeId: requiredRuntimeValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
+    bridgeSecret: requiredRuntimeValue(
+      "AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET",
+      environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
+    ),
+    configVersion,
+  };
+};
+
 /** Composition-root boundary for the standalone, setup-only tenant server. */
 export const resolveTenantRuntimeSetupBoot = (
   environment: TenantRuntimeEnvironment = process.env,
@@ -102,8 +141,8 @@ export const resolveTenantRuntimeSetupBoot = (
   }
   return {
     mode: "setup",
-    runtimeId: requiredSetupValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
-    bridgeSecret: requiredSetupValue(
+    runtimeId: requiredRuntimeValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
+    bridgeSecret: requiredRuntimeValue(
       "AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET",
       environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
     ),
@@ -111,7 +150,7 @@ export const resolveTenantRuntimeSetupBoot = (
     paths,
     credentialEnvironment: {
       TENANT_DB_URL: tenantDatabase.url,
-      TENANT_DB_TOKEN: requiredSetupValue("TENANT_DB_TOKEN", tenantDatabase.authToken),
+      TENANT_DB_TOKEN: requiredRuntimeValue("TENANT_DB_TOKEN", tenantDatabase.authToken),
     },
     deployment: { configVersion: deployment.configVersion, mode: "setup" },
   };

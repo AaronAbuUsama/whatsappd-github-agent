@@ -33,6 +33,7 @@ const appWith = (options: {
   readonly status: () => WhatsAppRuntimeStatus;
   readonly control?: () => WhatsAppRuntimeControl | undefined;
   readonly deliver?: BridgeRouteOptions["deliver"];
+  readonly configVersion?: number;
 }): Hono => {
   const app = new Hono();
   installBridgeRoute(app, {
@@ -40,6 +41,7 @@ const appWith = (options: {
     webhookSecret: SECRET,
     status: options.status,
     control: options.control ?? (() => runtimeControl()),
+    ...(options.configVersion === undefined ? {} : { configVersion: options.configVersion }),
     ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
   });
   return app;
@@ -159,7 +161,7 @@ describe("tenant runtime bridge", () => {
       status: "unsupported",
       deliveryId: delivery.deliveryId,
     }));
-    const app = appWith({ status: () => ({ phase: "online" }), deliver });
+    const app = appWith({ status: () => ({ phase: "online" }), deliver, configVersion: 7 });
     const body = { githubAppId: "app-1", deliveryId: "guid-1", name: "issues", payload: { action: "opened" } };
 
     expect((await app.request("/deliveries", { method: "POST", body: JSON.stringify(body) })).status).toBe(403);
@@ -185,6 +187,7 @@ describe("tenant runtime bridge", () => {
     await expect(response.json()).resolves.toEqual({
       runtimeId: "runtime-1",
       githubAppId: "app-1",
+      configVersion: 7,
       result: { status: "unsupported", deliveryId: "guid-1" },
     });
     expect(deliver).toHaveBeenCalledWith(body);

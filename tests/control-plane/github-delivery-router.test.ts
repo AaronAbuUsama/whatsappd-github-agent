@@ -290,6 +290,106 @@ describe("hosted GitHub callback and repository registry", () => {
     });
     expect(await store.delivery(apps.planner.appId, "post-revocation-guid")).toMatchObject({ tenantId: null });
   });
+
+  it.each(["deleted", "suspend"] as const)(
+    "invalidates the applied route when an installation is %s",
+    async (action) => {
+      const databaseClient = await database();
+      const owner = await seedTenant(databaseClient, action);
+      const store = createGitHubControlStore(databaseClient);
+      await databaseClient.batch([
+        {
+          sql: `INSERT INTO github_installation (tenant_id, role, installation_id, status, account_login)
+                VALUES (?1, 'reviewer', 720, 'installed', 'acme')`,
+          args: [owner.tenantId],
+        },
+        {
+          sql: `INSERT INTO github_repository
+                  (tenant_id, installation_role, installation_id, repository_id, owner, name, selected, is_default)
+                VALUES (?1, 'reviewer', 720, 721, 'acme', 'repo', 1, 1)`,
+          args: [owner.tenantId],
+        },
+        { sql: "INSERT INTO delivery_route (tenant_id, status) VALUES (?1, 'ready')", args: [owner.tenantId] },
+      ]);
+      const service = createGitHubControlService({
+        store,
+        apps,
+        installations: { installation: async () => ({ accountLogin: "unused", repositories: [] }) },
+        now: () => 10,
+      });
+      const body = JSON.stringify({ action, installation: { id: 720 } });
+      await service.receiveWebhook({
+        role: "reviewer",
+        signature: signature(apps.reviewer.webhookSecret, body),
+        deliveryGuid: `${action}-guid`,
+        eventName: "installation",
+        body,
+      });
+
+      expect((await databaseClient.execute("SELECT config_version FROM tenant")).rows[0]?.config_version).toBe(2);
+      expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("degraded");
+      expect(await store.repositories(owner.tenantId, owner.userId, "reviewer")).toEqual([]);
+    },
+  );
+
+  it("invalidates the applied route when GitHub removes a selected repository", async () => {
+    const databaseClient = await database();
+    const owner = await seedTenant(databaseClient, "removed");
+    const store = createGitHubControlStore(databaseClient);
+    await databaseClient.batch([
+      {
+        sql: `INSERT INTO github_installation (tenant_id, role, installation_id, status, account_login)
+              VALUES (?1, 'planner', 730, 'installed', 'acme')`,
+        args: [owner.tenantId],
+      },
+      {
+        sql: `INSERT INTO github_repository
+                (tenant_id, installation_role, installation_id, repository_id, owner, name, selected, is_default)
+              VALUES (?1, 'planner', 730, 731, 'acme', 'repo', 1, 1)`,
+        args: [owner.tenantId],
+      },
+      {
+        sql: `UPDATE tenant
+                 SET config_json = json_set(
+                       config_json,
+                       '$.github',
+                       json_object(
+                         'kind', 'github-app',
+                         'credential', 'github',
+                         'defaultRepository', 'acme/repo',
+                         'allowedRepositories', json('["acme/repo"]')
+                       )
+                     )
+               WHERE id = ?1`,
+        args: [owner.tenantId],
+      },
+      { sql: "INSERT INTO delivery_route (tenant_id, status) VALUES (?1, 'ready')", args: [owner.tenantId] },
+    ]);
+    const service = createGitHubControlService({
+      store,
+      apps,
+      installations: { installation: async () => ({ accountLogin: "unused", repositories: [] }) },
+      now: () => 11,
+    });
+    const body = JSON.stringify({
+      action: "removed",
+      installation: { id: 730 },
+      repositories_removed: [{ id: 731 }],
+    });
+    await service.receiveWebhook({
+      role: "planner",
+      signature: signature(apps.planner.webhookSecret, body),
+      deliveryGuid: "repository-removed-guid",
+      eventName: "installation_repositories",
+      body,
+    });
+
+    expect((await databaseClient.execute("SELECT config_version FROM tenant")).rows[0]?.config_version).toBe(2);
+    expect((await databaseClient.execute("SELECT json_type(config_json, '$.github') AS kind FROM tenant")).rows[0]?.kind)
+      .toBeNull();
+    expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("degraded");
+    expect(await store.repositories(owner.tenantId, owner.userId, "planner")).toEqual([]);
+  });
 });
 
 describe("durable GitHub delivery router", () => {
@@ -369,6 +469,7 @@ describe("durable GitHub delivery router", () => {
         claimId: "claim-two",
         resultJson: JSON.stringify({ status: "unsupported", deliveryId: "lease-guid" }),
         acknowledgedAtMs: 111,
+        configVersion: null,
       }),
     ).rejects.toMatchObject({ code: "delivery_claim" });
   });
@@ -470,5 +571,167 @@ describe("durable GitHub delivery router", () => {
       attemptCount: 4,
       lastError: null,
     });
+  });
+
+  it("promotes only an acknowledgement for the exact current applied configuration", async () => {
+    const databaseClient = await database();
+    const owner = await seedTenant(databaseClient, "revision");
+    const store = createGitHubControlStore(databaseClient);
+    await databaseClient.batch([
+      {
+        sql: "UPDATE tenant SET status = 'active', desired_state = 'running' WHERE id = ?1",
+        args: [owner.tenantId],
+      },
+      {
+        sql: `INSERT INTO agent_instance (
+                id, tenant_id, creds_store_key, desired_mode, applied_mode, observed_state, phase, runtime_base_url,
+                dokploy_display_name, dokploy_creation_token, applied_config_version,
+                remote_config_operation_id, remote_config_owner_id, remote_config_fencing_token,
+                remote_config_target_version, remote_config_state
+              ) VALUES (
+                ?1, ?2, ?3, 'operate', 'operate', 'healthy', 'running', 'http://runtime.internal',
+                ?4, ?5, 1, 'op-1', 'owner-1', 1, 1, 'confirmed'
+              )`,
+        args: ["instance-revision", owner.tenantId, "tenant-db-revision", "Runtime revision", "token-revision"],
+      },
+      {
+        sql: `INSERT INTO github_installation (tenant_id, role, installation_id, status, account_login)
+              VALUES (?1, 'planner', 910, 'installed', 'acme'),
+                     (?1, 'coder', 920, 'installed', 'acme'),
+                     (?1, 'reviewer', 930, 'installed', 'acme')`,
+        args: [owner.tenantId],
+      },
+      {
+        sql: `INSERT INTO github_repository
+                (tenant_id, installation_role, installation_id, repository_id, owner, name, selected, is_default)
+              VALUES (?1, 'planner', 910, 911, 'acme', 'alpha', 1, 1),
+                     (?1, 'planner', 910, 912, 'acme', 'beta', 0, 0),
+                     (?1, 'coder', 920, 921, 'acme', 'coder', 1, 1),
+                     (?1, 'reviewer', 930, 931, 'acme', 'reviewer', 1, 1)`,
+        args: [owner.tenantId],
+      },
+      {
+        sql: "INSERT INTO delivery_route (tenant_id, status) VALUES (?1, 'ready')",
+        args: [owner.tenantId],
+      },
+    ]);
+
+    await expect(
+      store.replaceRepositorySelection({
+        ...owner,
+        role: "planner",
+        repositoryIds: [912],
+        defaultRepositoryId: 912,
+        nowMs: 2,
+      }),
+    ).resolves.toEqual({
+      updated: true,
+      currentConfigVersion: 2,
+      appliedConfigVersion: 1,
+      remoteConfigState: "confirmed",
+    });
+    expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("pending");
+    expect(
+      JSON.parse(String((await databaseClient.execute("SELECT config_json FROM tenant")).rows[0]?.config_json)),
+    ).toMatchObject({
+      github: {
+        kind: "github-app",
+        credential: "github",
+        defaultRepository: "acme/beta",
+        allowedRepositories: ["acme/beta"],
+      },
+    });
+    await expect(
+      store.replaceRepositorySelection({
+        ...owner,
+        role: "planner",
+        repositoryIds: [912],
+        defaultRepositoryId: 912,
+        nowMs: 3,
+      }),
+    ).resolves.toMatchObject({ updated: false, currentConfigVersion: 2 });
+
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance
+               SET applied_config_version = 2, remote_config_target_version = 2
+             WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    for (const [guid, receivedAtMs] of [
+      ["stale-revision", 4],
+      ["current-revision", 5],
+    ] as const) {
+      await store.acceptDelivery({
+        githubAppId: apps.planner.appId,
+        deliveryGuid: guid,
+        eventName: "issues",
+        installationRole: "planner",
+        installationId: 910,
+        payloadJson: JSON.stringify({ action: "opened", installation: { id: 910 } }),
+        payloadSha256: `${guid}-hash`,
+        receivedAtMs,
+      });
+    }
+    let configVersion = 1;
+    const relay = createGitHubDeliveryRelay({
+      store,
+      now: () => 6,
+      claimId: () => `claim-${configVersion}`,
+      targets: {
+        resolve: async (tenantId) => ({
+          tenantId,
+          runtimeId: "runtime-revision",
+          baseUrl: "http://runtime.internal",
+          webhookSecret: "runtime-secret",
+        }),
+      },
+      deliveries: {
+        deliver: async (_target, delivery) => ({
+          runtimeId: "runtime-revision",
+          githubAppId: delivery.githubAppId,
+          configVersion,
+          result: { status: "unsupported", deliveryId: delivery.deliveryId },
+        }),
+      },
+    });
+
+    await expect(relay.drainOnce(1)).resolves.toEqual({ claimed: 1, acknowledged: 1, retried: 0 });
+    expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("pending");
+    configVersion = 2;
+    await expect(relay.drainOnce(1)).resolves.toEqual({ claimed: 1, acknowledged: 1, retried: 0 });
+    expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("ready");
+    await expect(relay.drainOnce()).resolves.toEqual({ claimed: 0, acknowledged: 0, retried: 0 });
+
+    await store.acceptDelivery({
+      githubAppId: apps.planner.appId,
+      deliveryGuid: "stopped-before-ack",
+      eventName: "issues",
+      installationRole: "planner",
+      installationId: 910,
+      payloadJson: JSON.stringify({ action: "opened", installation: { id: 910 } }),
+      payloadSha256: "stopped-before-ack-hash",
+      receivedAtMs: 7,
+    });
+    await databaseClient.execute({
+      sql: "UPDATE delivery_route SET status = 'pending' WHERE tenant_id = ?1",
+      args: [owner.tenantId],
+    });
+    await expect(store.claimDueDeliveries(7, "claim-stopped", 1)).resolves.toHaveLength(1);
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance SET observed_state = 'stopped', phase = 'stopped' WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(
+      store.acknowledgeDelivery({
+        githubAppId: apps.planner.appId,
+        deliveryGuid: "stopped-before-ack",
+        tenantId: owner.tenantId,
+        claimId: "claim-stopped",
+        resultJson: JSON.stringify({ status: "unsupported" }),
+        acknowledgedAtMs: 8,
+        configVersion: 2,
+      }),
+    ).resolves.toEqual({ routeReady: false });
+    expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("pending");
   });
 });

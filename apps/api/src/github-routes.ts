@@ -136,7 +136,7 @@ export const installGitHubRoutes = (
       return context.json({ error: "repository selection is malformed" }, 400);
     }
     try {
-      await options.store.replaceRepositorySelection({
+      const application = await options.store.replaceRepositorySelection({
         tenantId: body.tenantId,
         userId: session.user.id,
         role,
@@ -144,7 +144,7 @@ export const installGitHubRoutes = (
         defaultRepositoryId: body.defaultRepositoryId,
         nowMs: Date.now(),
       });
-      return context.json({ updated: true });
+      return context.json(application);
     } catch (cause) {
       return context.json({ error: errorMessage(cause) }, errorStatus(cause));
     }

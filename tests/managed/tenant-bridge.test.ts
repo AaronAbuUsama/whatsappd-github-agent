@@ -93,6 +93,7 @@ describe("control-plane tenant bridge client", () => {
       Response.json({
         runtimeId: "runtime-1",
         githubAppId: "app-1",
+        configVersion: 7,
         result: { status: "unsupported", deliveryId: "guid-1" },
       }),
     );
@@ -102,6 +103,7 @@ describe("control-plane tenant bridge client", () => {
     await expect(bridge.deliver(delivery)).resolves.toMatchObject({
       runtimeId: "runtime-1",
       githubAppId: "app-1",
+      configVersion: 7,
       result: { status: "unsupported", deliveryId: "guid-1" },
     });
     expect(fetch).toHaveBeenCalledWith("http://tenant.internal/deliveries", {

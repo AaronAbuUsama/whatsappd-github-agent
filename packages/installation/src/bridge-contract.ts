@@ -32,6 +32,7 @@ export interface BridgeGitHubDelivery {
 export interface BridgeGitHubDeliveryAck {
   readonly runtimeId: string;
   readonly githubAppId: string;
+  readonly configVersion?: number;
   readonly result: Record<string, unknown> & { readonly status: string };
 }
 

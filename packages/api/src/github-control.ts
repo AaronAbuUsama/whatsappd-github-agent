@@ -277,6 +277,7 @@ export const createGitHubDeliveryRelay = (options: GitHubDeliveryRelayOptions) =
             claimId: claim,
             resultJson: JSON.stringify(acknowledgement.result),
             acknowledgedAtMs: now(),
+            configVersion: acknowledgement.configVersion ?? null,
           });
           acknowledged += 1;
         } catch (cause) {

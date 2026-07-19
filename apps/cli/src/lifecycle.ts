@@ -5,6 +5,7 @@ import { configureLogging, type LogFormat } from "@ambient-agent/engine/logging/
 import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import {
   installManagedRuntimeDependencies,
+  resolveTenantRuntimeOperateBridge,
   runtimeDeploymentIdentityFromEnvironment,
   startDeferredWhatsAppRuntime,
 } from "@ambient-agent/installation/runtime-dependencies.ts";
@@ -52,12 +53,14 @@ export const startGeneratedRuntime = async (
     throw new Error("The app-owned GitHub webhook credential migration did not complete.");
   }
   const deployment = runtimeDeploymentIdentityFromEnvironment();
+  const bridge = resolveTenantRuntimeOperateBridge();
   installManagedRuntimeDependencies({
     authentication,
     configuration,
     githubCredential: { ...githubCredential, webhookSecret: githubCredential.webhookSecret },
     paths,
     ...(deployment === undefined ? {} : { deployment }),
+    ...(bridge === undefined ? {} : { bridge }),
   });
   process.chdir(paths.root);
   const serverEntry = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs"));

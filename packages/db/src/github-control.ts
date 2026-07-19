@@ -59,6 +59,12 @@ export type GitHubRuntimeTarget = {
   readonly baseUrl: string;
 };
 
+export type GitHubConfigurationApplication = {
+  readonly currentConfigVersion: number;
+  readonly appliedConfigVersion: number;
+  readonly remoteConfigState: "idle" | "pending" | "confirmed" | "blocked_unknown";
+};
+
 export type GitHubControlStoreErrorCode =
   | "tenant_scope"
   | "installation_state"
@@ -145,6 +151,108 @@ const requireCallback = (
   return callback;
 };
 
+const configurationApplicationWith = async (
+  transaction: Transaction,
+  tenantId: string,
+): Promise<GitHubConfigurationApplication> => {
+  const result = await transaction.execute({
+    sql: `SELECT tenant.config_version,
+                 COALESCE(agent_instance.applied_config_version, 0) AS applied_config_version,
+                 COALESCE(agent_instance.remote_config_state, 'idle') AS remote_config_state
+            FROM tenant
+            LEFT JOIN agent_instance ON agent_instance.tenant_id = tenant.id
+           WHERE tenant.id = ?1`,
+    args: [tenantId],
+  });
+  const row = result.rows[0];
+  if (row === undefined) {
+    throw new GitHubControlStoreError("tenant_scope", "GitHub configuration tenant no longer exists");
+  }
+  return {
+    currentConfigVersion: Number(row.config_version),
+    appliedConfigVersion: Number(row.applied_config_version),
+    remoteConfigState: String(row.remote_config_state) as GitHubConfigurationApplication["remoteConfigState"],
+  };
+};
+
+const advanceTenantConfigurationWith = async (
+  transaction: Transaction,
+  input: {
+    readonly tenantId: string;
+    readonly role: GitHubAppRole;
+    readonly routeStatus: "pending" | "degraded";
+    readonly nowMs: number;
+  },
+): Promise<GitHubConfigurationApplication> => {
+  const planner =
+    input.role === "planner"
+      ? await transaction.execute({
+          sql: `SELECT owner, name, is_default
+                  FROM github_repository
+                 WHERE tenant_id = ?1 AND installation_role = 'planner' AND selected = 1
+                 ORDER BY repository_id`,
+          args: [input.tenantId],
+        })
+      : undefined;
+  const defaultRepository = planner?.rows.find((row) => Number(row.is_default) === 1);
+  if (planner !== undefined && planner.rows.length > 0 && defaultRepository !== undefined) {
+    await transaction.execute({
+      sql: `UPDATE tenant
+               SET config_json = CASE
+                     WHEN json_type(config_json, '$.github') = 'object' THEN
+                       json_set(
+                         config_json,
+                         '$.github.defaultRepository', ?2,
+                         '$.github.allowedRepositories', json(?3)
+                       )
+                     WHEN json_type(config_json, '$.github') IS NULL THEN
+                       json_set(
+                         config_json,
+                         '$.github',
+                         json_object(
+                           'kind', 'github-app',
+                           'credential', 'github',
+                           'defaultRepository', ?2,
+                           'allowedRepositories', json(?3)
+                         )
+                       )
+                     ELSE config_json
+                   END,
+                   config_version = config_version + 1,
+                   updated_at_ms = ?4
+             WHERE id = ?1`,
+      args: [
+        input.tenantId,
+        `${String(defaultRepository.owner)}/${String(defaultRepository.name)}`,
+        JSON.stringify(planner.rows.map((row) => `${String(row.owner)}/${String(row.name)}`)),
+        input.nowMs,
+      ],
+    });
+  } else {
+    await transaction.execute({
+      sql: `UPDATE tenant
+               SET config_json = CASE
+                     WHEN ?3 = 'planner' THEN json_remove(config_json, '$.github')
+                     ELSE config_json
+                   END,
+                   config_version = config_version + 1,
+                   updated_at_ms = ?2
+             WHERE id = ?1`,
+      args: [input.tenantId, input.nowMs, input.role],
+    });
+  }
+  await transaction.execute({
+    sql: `INSERT INTO delivery_route (tenant_id, status, observed_at_ms, updated_at_ms)
+          VALUES (?1, ?2, ?3, ?3)
+          ON CONFLICT (tenant_id) DO UPDATE SET
+            status = excluded.status,
+            observed_at_ms = excluded.observed_at_ms,
+            updated_at_ms = excluded.updated_at_ms`,
+    args: [input.tenantId, input.routeStatus, input.nowMs],
+  });
+  return await configurationApplicationWith(transaction, input.tenantId);
+};
+
 const applyInstallationWebhookWith = async (
   transaction: Transaction,
   input: GitHubInstallationWebhookMutation,
@@ -156,6 +264,7 @@ const applyInstallationWebhookWith = async (
   const tenantId = installation.rows[0]?.tenant_id;
   if (tenantId === undefined) return;
   if (input.eventName === "installation" && ["deleted", "suspend"].includes(input.action)) {
+    const configurationChanged = installation.rows[0]?.status === "installed";
     await transaction.execute({
       sql: "DELETE FROM github_repository WHERE tenant_id = ?1 AND installation_role = ?2",
       args: [tenantId, input.role],
@@ -166,14 +275,14 @@ const applyInstallationWebhookWith = async (
             WHERE tenant_id = ?1 AND role = ?2 AND installation_id = ?4`,
       args: [tenantId, input.role, input.nowMs, input.installationId],
     });
-    await transaction.execute({
-      sql: `INSERT INTO delivery_route (tenant_id, status, observed_at_ms, updated_at_ms)
-            VALUES (?1, 'degraded', ?2, ?2)
-            ON CONFLICT (tenant_id) DO UPDATE SET
-              status = 'degraded', observed_at_ms = excluded.observed_at_ms,
-              updated_at_ms = excluded.updated_at_ms`,
-      args: [tenantId, input.nowMs],
-    });
+    if (configurationChanged) {
+      await advanceTenantConfigurationWith(transaction, {
+        tenantId: String(tenantId),
+        role: input.role,
+        routeStatus: "degraded",
+        nowMs: input.nowMs,
+      });
+    }
     return;
   }
   if (input.eventName !== "installation_repositories" || installation.rows[0]?.status !== "installed") return;
@@ -196,12 +305,35 @@ const applyInstallationWebhookWith = async (
       ],
     });
   }
-  for (const repositoryId of input.removedIds) {
+  const removedIds = [...new Set(input.removedIds)];
+  const selectedRemoval =
+    removedIds.length === 0
+      ? false
+      : (
+          await transaction.execute({
+            sql: `SELECT 1
+                    FROM github_repository
+                   WHERE tenant_id = ?1 AND installation_role = ?2 AND installation_id = ?3
+                     AND selected = 1
+                     AND repository_id IN (${removedIds.map(() => "?").join(", ")})
+                   LIMIT 1`,
+            args: [tenantId, input.role, input.installationId, ...removedIds],
+          })
+        ).rows.length > 0;
+  for (const repositoryId of removedIds) {
     await transaction.execute({
       sql: `DELETE FROM github_repository
              WHERE tenant_id = ?1 AND installation_role = ?2
                AND installation_id = ?3 AND repository_id = ?4`,
       args: [tenantId, input.role, input.installationId, repositoryId],
+    });
+  }
+  if (selectedRemoval) {
+    await advanceTenantConfigurationWith(transaction, {
+      tenantId: String(tenantId),
+      role: input.role,
+      routeStatus: "degraded",
+      nowMs: input.nowMs,
     });
   }
 };
@@ -338,6 +470,12 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
                  WHERE tenant_id IS NULL AND installation_id = ?2 AND installation_role = ?3`,
           args: [callback.tenantId, input.installationId, input.role],
         });
+        await advanceTenantConfigurationWith(transaction, {
+          tenantId: callback.tenantId,
+          role: input.role,
+          routeStatus: "pending",
+          nowMs: input.nowMs,
+        });
         return "installed";
       }),
 
@@ -377,7 +515,7 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
       readonly repositoryIds: readonly number[];
       readonly defaultRepositoryId: number;
       readonly nowMs: number;
-    }): Promise<void> =>
+    }): Promise<GitHubConfigurationApplication & { readonly updated: boolean }> =>
       await withWriteTransaction(client, async (transaction) => {
         const repositoryIds = [...new Set(input.repositoryIds)];
         if (repositoryIds.length === 0 || !repositoryIds.includes(input.defaultRepositoryId)) {
@@ -400,21 +538,33 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
         if (installationId === undefined || installationId === null) {
           throw new GitHubControlStoreError("tenant_scope", "GitHub installation is not owned by this user");
         }
-        const placeholders = repositoryIds.map(() => "?").join(", ");
         const granted = await transaction.execute({
-          sql: `SELECT repository_id
+          sql: `SELECT repository_id, selected, is_default
                   FROM github_repository
-                 WHERE tenant_id = ?
-                   AND installation_role = ?
-                   AND installation_id = ?
-                   AND repository_id IN (${placeholders})`,
-          args: [input.tenantId, input.role, installationId, ...repositoryIds],
+                 WHERE tenant_id = ?1
+                   AND installation_role = ?2
+                   AND installation_id = ?3`,
+          args: [input.tenantId, input.role, installationId],
         });
-        if (granted.rows.length !== repositoryIds.length) {
+        const grants = new Map(granted.rows.map((row) => [Number(row.repository_id), row]));
+        if (repositoryIds.some((repositoryId) => !grants.has(repositoryId))) {
           throw new GitHubControlStoreError(
             "repository_scope",
             "Repository selection contains a grant from another tenant or installation",
           );
+        }
+        const currentSelected = granted.rows
+          .filter((row) => Number(row.selected) === 1)
+          .map((row) => Number(row.repository_id))
+          .sort((left, right) => left - right);
+        const nextSelected = [...repositoryIds].sort((left, right) => left - right);
+        const currentDefault = granted.rows.find((row) => Number(row.is_default) === 1)?.repository_id;
+        const changed =
+          Number(currentDefault) !== input.defaultRepositoryId ||
+          currentSelected.length !== nextSelected.length ||
+          currentSelected.some((repositoryId, index) => repositoryId !== nextSelected[index]);
+        if (!changed) {
+          return { ...(await configurationApplicationWith(transaction, input.tenantId)), updated: false };
         }
         await transaction.execute({
           sql: `UPDATE github_repository
@@ -438,6 +588,15 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
             ],
           });
         }
+        return {
+          ...(await advanceTenantConfigurationWith(transaction, {
+            tenantId: input.tenantId,
+            role: input.role,
+            routeStatus: "pending",
+            nowMs: input.nowMs,
+          })),
+          updated: true,
+        };
       }),
 
     acceptDelivery: async (
@@ -572,26 +731,75 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
       readonly claimId: string;
       readonly resultJson: string;
       readonly acknowledgedAtMs: number;
-    }): Promise<void> => {
-      const result = await client.execute({
-        sql: `UPDATE github_delivery_outbox
-                 SET state = 'acked', tenant_result_json = ?5, acknowledged_at_ms = ?6,
-                     claim_id = NULL, claim_expires_at_ms = NULL, last_error = NULL
-               WHERE github_app_id = ?1 AND delivery_guid = ?2 AND tenant_id = ?3
-                 AND state = 'pending' AND claim_id = ?4`,
-        args: [
-          input.githubAppId,
-          input.deliveryGuid,
-          input.tenantId,
-          input.claimId,
-          input.resultJson,
-          input.acknowledgedAtMs,
-        ],
-      });
-      if (result.rowsAffected !== 1) {
-        throw new GitHubControlStoreError("delivery_claim", "GitHub delivery acknowledgement lost its claim");
-      }
-    },
+      readonly configVersion: number | null;
+    }): Promise<{ readonly routeReady: boolean }> =>
+      await withWriteTransaction(client, async (transaction) => {
+        const result = await transaction.execute({
+          sql: `UPDATE github_delivery_outbox
+                   SET state = 'acked', tenant_result_json = ?5, acknowledged_at_ms = ?6,
+                       claim_id = NULL, claim_expires_at_ms = NULL, last_error = NULL
+                 WHERE github_app_id = ?1 AND delivery_guid = ?2 AND tenant_id = ?3
+                   AND state = 'pending' AND claim_id = ?4`,
+          args: [
+            input.githubAppId,
+            input.deliveryGuid,
+            input.tenantId,
+            input.claimId,
+            input.resultJson,
+            input.acknowledgedAtMs,
+          ],
+        });
+        if (result.rowsAffected !== 1) {
+          throw new GitHubControlStoreError("delivery_claim", "GitHub delivery acknowledgement lost its claim");
+        }
+        const route = await transaction.execute({
+          sql: `INSERT INTO delivery_route (tenant_id, status, observed_at_ms, updated_at_ms)
+                SELECT tenant.id, 'ready', ?5, ?5
+                  FROM tenant
+                  JOIN agent_instance ON agent_instance.tenant_id = tenant.id
+                  JOIN subscription_entitlement
+                    ON subscription_entitlement.id = tenant.subscription_entitlement_id
+                 WHERE tenant.id = ?1
+                   AND ?2 IS NOT NULL
+                   AND tenant.status = 'active'
+                   AND tenant.desired_state = 'running'
+                   AND subscription_entitlement.status IN ('active', 'trialing')
+                   AND tenant.config_version = ?2
+                   AND agent_instance.applied_config_version = ?2
+                   AND agent_instance.remote_config_target_version = ?2
+                   AND agent_instance.desired_mode = 'operate'
+                   AND agent_instance.applied_mode = 'operate'
+                   AND agent_instance.observed_state = 'healthy'
+                   AND agent_instance.phase = 'running'
+                   AND agent_instance.runtime_base_url IS NOT NULL
+                   AND agent_instance.remote_config_state = 'confirmed'
+                   AND (
+                     SELECT count(*)
+                       FROM github_installation
+                      WHERE github_installation.tenant_id = tenant.id
+                        AND github_installation.status = 'installed'
+                        AND github_installation.role IN ('coder', 'reviewer', 'planner')
+                   ) = 3
+                   AND (
+                     SELECT count(DISTINCT github_repository.installation_role)
+                       FROM github_installation
+                       JOIN github_repository
+                         ON github_repository.tenant_id = github_installation.tenant_id
+                        AND github_repository.installation_role = github_installation.role
+                        AND github_repository.installation_id = github_installation.installation_id
+                      WHERE github_installation.tenant_id = tenant.id
+                        AND github_installation.status = 'installed'
+                        AND github_installation.role IN ('coder', 'reviewer', 'planner')
+                        AND github_repository.selected = 1
+                        AND github_repository.is_default = 1
+                   ) = 3
+                ON CONFLICT (tenant_id) DO UPDATE SET
+                  status = 'ready', observed_at_ms = excluded.observed_at_ms,
+                  updated_at_ms = excluded.updated_at_ms`,
+          args: [input.tenantId, input.configVersion, input.githubAppId, input.deliveryGuid, input.acknowledgedAtMs],
+        });
+        return { routeReady: route.rowsAffected === 1 };
+      }),
 
     retryDelivery: async (input: {
       readonly githubAppId: string;
