@@ -1,4 +1,5 @@
 import { ambientRuntimeHealth, type AmbientRuntimeState, type WhatsAppRuntimeStatus } from "./runtime-health.ts";
+import type { RuntimeDeploymentIdentity } from "./runtime-dependencies.ts";
 import type { ChatCandidate, PairingProgress } from "./whatsapp-account.ts";
 
 export const BRIDGE_AUTH_HEADER = "x-ambient-agent-bridge";
@@ -11,6 +12,7 @@ export interface BridgeHealth {
     readonly state: AmbientRuntimeState;
     readonly whatsapp: { readonly phase: WhatsAppRuntimeStatus["phase"] };
   };
+  readonly deployment?: RuntimeDeploymentIdentity;
 }
 
 export type BridgePairing =
@@ -33,18 +35,27 @@ export interface BridgeGitHubDeliveryAck {
   readonly result: Record<string, unknown> & { readonly status: string };
 }
 
-export const bridgeHealth = (runtimeId: string, status: WhatsAppRuntimeStatus): BridgeHealth => {
+export const bridgeHealth = (
+  runtimeId: string,
+  status: WhatsAppRuntimeStatus,
+  deployment?: RuntimeDeploymentIdentity,
+): BridgeHealth => {
   const runtime = ambientRuntimeHealth(status);
   return {
     ok: runtime.state === "healthy",
     runtimeId,
     runtime: { state: runtime.state, whatsapp: { phase: runtime.whatsapp.phase } },
+    ...(deployment === undefined ? {} : { deployment }),
   };
 };
 
 /** Setup liveness is the serving profile; WhatsApp pairing is a later capability fact. */
-export const setupBridgeHealth = (runtimeId: string, status: WhatsAppRuntimeStatus): BridgeHealth => {
-  const health = bridgeHealth(runtimeId, status);
+export const setupBridgeHealth = (
+  runtimeId: string,
+  status: WhatsAppRuntimeStatus,
+  deployment?: RuntimeDeploymentIdentity,
+): BridgeHealth => {
+  const health = bridgeHealth(runtimeId, status, deployment);
   if (status.phase === "failed" || status.phase === "stopped") return health;
   return { ...health, ok: true, runtime: { ...health.runtime, state: "healthy" } };
 };

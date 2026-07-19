@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 
 import { describe, expect, test } from "vitest";
 
-import type { DokployManifest } from "../../apps/api/src/provisioner";
+import type { DokployApplication, DokployManifest } from "../../apps/api/src/provisioner";
 import {
   createDokployProvider,
   createTenantSecretCodec,
@@ -73,7 +73,7 @@ describe("tenant provisioner provider adapters", () => {
   test("writes and reads back the complete safe Dokploy manifest and repeats lifecycle calls", async () => {
     const calls: Array<{ readonly path: string; readonly method: string; readonly body?: unknown }> = [];
     const mounts: Record<string, unknown>[] = [];
-    const application: Record<string, unknown> = {
+    const application: DokployApplication & Record<string, unknown> = {
       applicationId: "app-1",
       appName: "ambient-one-random",
       name: "Ambient One",
@@ -81,6 +81,9 @@ describe("tenant provisioner provider adapters", () => {
       env: "",
     };
     let replicas = "0/0";
+    let serviceVisible = true;
+    let deploymentPolls = 0;
+    const deployments: Record<string, unknown>[] = [];
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const url = new URL(String(input));
       const method = init?.method ?? "GET";
@@ -131,14 +134,31 @@ describe("tenant provisioner provider adapters", () => {
         replicas = "0/0";
         return json(true);
       }
-      if (url.pathname.endsWith("/application.deploy") || url.pathname.endsWith("/application.delete")) {
+      if (url.pathname.endsWith("/application.deploy")) {
+        deployments.push({
+          deploymentId: "deployment-1",
+          title: body?.title,
+          status: "running",
+        });
+        return json(true);
+      }
+      if (url.pathname.endsWith("/deployment.all")) {
+        deploymentPolls += 1;
+        if (deploymentPolls >= 2 && deployments[0]) deployments[0].status = "done";
+        return json(deployments);
+      }
+      if (url.pathname.endsWith("/application.delete")) {
         return json(true);
       }
       if (url.pathname.endsWith("/swarm.getNodeApps")) {
-        return json([{ Name: "ambient-one-random", Replicas: replicas }]);
+        return json(serviceVisible ? [{ Name: "ambient-one-random", Replicas: replicas }] : []);
       }
       if (url.hostname === "ambient-one-random" && url.pathname === "/health") {
-        return json({ ok: true, runtimeId: "runtime-one" });
+        return json({
+          ok: true,
+          runtimeId: "runtime-one",
+          deployment: { configVersion: 1, mode: "setup" },
+        });
       }
       return json({ error: "unexpected request" }, 500);
     };
@@ -150,6 +170,7 @@ describe("tenant provisioner provider adapters", () => {
       fetch,
       pollIntervalMs: 1,
       observationTimeoutMs: 20,
+      deploymentHeartbeatIntervalMs: 0,
     });
     let mutations = 0;
     const beforeMutation = async () => {
@@ -240,21 +261,45 @@ describe("tenant provisioner provider adapters", () => {
     await dokploy.prepareApplication(setupManifest, beforeMutation);
     expect(await dokploy.manifestMatches(setupManifest)).toBe(true);
     expect(mounts.filter((mount) => String(mount.mountPath).includes("/credentials/github-"))).toEqual([]);
+    serviceVisible = false;
+    expect(await dokploy.waitForTaskCount(application, 0, "if-never-deployed")).toBe(0);
+    deploymentPolls = 0;
+    serviceVisible = true;
+    await dokploy.deployApplication("app-1", "remote-config:test", beforeMutation);
+    expect(deploymentPolls).toBe(2);
     await dokploy.startApplication("app-1", beforeMutation);
     await dokploy.startApplication("app-1", beforeMutation);
-    expect(await dokploy.waitForTaskCount("ambient-one-random", 1)).toBe(1);
-    expect(await dokploy.health("http://ambient-one-random:3000", "runtime-one")).toBe(true);
+    expect(await dokploy.waitForTaskCount(application, 1, "reject")).toBe(1);
+    expect(
+      await dokploy.health("http://ambient-one-random:3000", {
+        runtimeId: "runtime-one",
+        configVersion: 1,
+        mode: "setup",
+      }),
+    ).toBe(true);
+    expect(
+      await dokploy.health("http://ambient-one-random:3000", {
+        runtimeId: "runtime-one",
+        configVersion: 2,
+        mode: "setup",
+      }),
+    ).toBe(false);
     replicas = "0/1";
-    await expect(dokploy.waitForTaskCount("ambient-one-random", 0)).rejects.toMatchObject({
+    await expect(dokploy.waitForTaskCount(application, 0, "reject")).rejects.toMatchObject({
       provider: "dokploy",
       status: 504,
     });
+    serviceVisible = false;
+    await expect(
+      dokploy.waitForTaskCount(application, 0, "if-never-deployed"),
+    ).rejects.toMatchObject({ provider: "dokploy", status: 504 });
+    serviceVisible = true;
     replicas = "1/1";
     await dokploy.stopApplication("app-1", beforeMutation);
     await dokploy.stopApplication("app-1", beforeMutation);
-    expect(await dokploy.waitForTaskCount("ambient-one-random", 0)).toBe(0);
+    expect(await dokploy.waitForTaskCount(application, 0, "reject")).toBe(0);
 
-    expect(mutations).toBe(23);
+    expect(mutations).toBe(26);
     const update = calls.find((call) => call.path.endsWith("/application.update"));
     expect(update?.body).toMatchObject({
       replicas: 1,

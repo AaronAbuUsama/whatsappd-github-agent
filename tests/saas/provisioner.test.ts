@@ -97,6 +97,12 @@ class FakeDokploy implements DokployProvider {
   readonly manifests = new Map<string, DokployManifest>();
   readonly taskCounts = new Map<string, number>();
   readonly healthRuntimeIds: string[] = [];
+  readonly healthExpectations: Array<{
+    readonly runtimeId: string;
+    readonly configVersion: number;
+    readonly mode: "setup" | "operate";
+  }> = [];
+  readonly deployedApplications = new Set<string>();
   readonly calls: string[] = [];
   failCreateAfterInsert = false;
   failPrepare = false;
@@ -160,9 +166,15 @@ class FakeDokploy implements DokployProvider {
     return JSON.stringify(this.manifests.get(manifest.applicationId)) === JSON.stringify(manifest);
   }
 
-  async deployApplication(applicationId: string, beforeMutation: () => Promise<void>) {
-    await beforeMutation();
+  async deployApplication(
+    applicationId: string,
+    deploymentMarker: string,
+    heartbeat: () => Promise<void>,
+  ) {
+    await heartbeat();
+    this.deployedApplications.add(applicationId);
     this.calls.push(`deploy:${applicationId}`);
+    this.calls.push(`deployment:${deploymentMarker}`);
   }
 
   async startApplication(applicationId: string, beforeMutation: () => Promise<void>) {
@@ -185,14 +197,31 @@ class FakeDokploy implements DokployProvider {
     this.calls.push(`stop:${applicationId}`);
   }
 
-  async waitForTaskCount(appName: string, expected: 0 | 1) {
-    this.calls.push(`tasks:${appName}:${expected}`);
-    return this.taskCounts.get(appName) ?? 0;
+  async waitForTaskCount(
+    application: Pick<DokployApplication, "applicationId" | "appName">,
+    expected: 0 | 1,
+    absent: "reject" | "if-never-deployed",
+  ) {
+    this.calls.push(`tasks:${application.appName}:${expected}:${absent}`);
+    const count = this.taskCounts.get(application.appName);
+    if (count !== undefined) return count;
+    if (absent === "if-never-deployed" && !this.deployedApplications.has(application.applicationId)) {
+      return 0;
+    }
+    throw new Error("service observation unavailable");
   }
 
-  async health(_baseUrl: string, runtimeId: string) {
+  async health(
+    _baseUrl: string,
+    expected: {
+      readonly runtimeId: string;
+      readonly configVersion: number;
+      readonly mode: "setup" | "operate";
+    },
+  ) {
     this.calls.push("health");
-    this.healthRuntimeIds.push(runtimeId);
+    this.healthRuntimeIds.push(expected.runtimeId);
+    this.healthExpectations.push(expected);
     const beforeHealth = this.beforeHealth;
     this.beforeHealth = null;
     await beforeHealth?.();
@@ -321,6 +350,31 @@ describe("tenant provisioner", () => {
     expect([...dokploy.taskCounts.values()]).toEqual([0]);
   });
 
+  test("does not treat a missing bound record or absent Swarm service as quiescence", async () => {
+    const client = await migrate();
+    const tenantId = await seed(client, "missing-bound");
+    const turso = new FakeTurso();
+    const dokploy = new FakeDokploy();
+    const provisioner = provisionerFor(client, turso, dokploy);
+
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({ status: "running" });
+    const application = [...dokploy.applications.values()][0];
+    if (!application) throw new Error("bound application missing");
+    dokploy.applications.delete(application.applicationId);
+    dokploy.taskCounts.delete(application.appName);
+    await client.execute({
+      sql: "UPDATE tenant SET status = 'suspended' WHERE id = ?1",
+      args: [tenantId],
+    });
+
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({ status: "retryable_error" });
+    dokploy.taskCounts.set(application.appName, 0);
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({
+      status: "blocked",
+      errorCode: "dokploy_bound_application_missing",
+    });
+  });
+
   test("gates onboarding operate mode on an activation for the current revision", async () => {
     const client = await migrate();
     const tenantId = await seed(client, "activation");
@@ -358,6 +412,11 @@ describe("tenant provisioner", () => {
       expect.objectContaining({ tenantId, status: "running", taskCount: 1 }),
     ]);
     expect(dokploy.healthRuntimeIds.at(-1)).toBe(`runtime:${tenantId}`);
+    expect(dokploy.healthExpectations.at(-1)).toEqual({
+      runtimeId: `runtime:${tenantId}`,
+      configVersion: 2,
+      mode: "operate",
+    });
     expect([...dokploy.manifests.values()][0]?.environment.AMBIENT_AGENT_RUNTIME_ID).toBe(
       `runtime:${tenantId}`,
     );
@@ -634,6 +693,17 @@ describe("tenant provisioner", () => {
       ...application,
       description: "operator-mutated-marker",
     });
+    expect(
+      await provisioner.acknowledgeQuiescence({
+        tenantId,
+        operationId,
+        actorId: "operator-aaron",
+        evidenceNote: "Dokploy was drained and the bound service was observed at zero tasks.",
+      }),
+    ).toBe(false);
+    dokploy.applications.set(application.applicationId, application);
+    dokploy.applications.delete(application.applicationId);
+    dokploy.taskCounts.delete(application.appName);
     expect(
       await provisioner.acknowledgeQuiescence({
         tenantId,

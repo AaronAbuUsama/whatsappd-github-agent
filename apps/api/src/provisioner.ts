@@ -75,11 +75,26 @@ export interface DokployProvider {
   deleteApplication(applicationId: string, beforeMutation: () => Promise<void>): Promise<void>;
   prepareApplication(manifest: DokployManifest, beforeMutation: () => Promise<void>): Promise<void>;
   manifestMatches(manifest: DokployManifest): Promise<boolean>;
-  deployApplication(applicationId: string, beforeMutation: () => Promise<void>): Promise<void>;
+  deployApplication(
+    applicationId: string,
+    deploymentMarker: string,
+    heartbeat: () => Promise<void>,
+  ): Promise<void>;
   startApplication(applicationId: string, beforeMutation: () => Promise<void>): Promise<void>;
   stopApplication(applicationId: string, beforeMutation: () => Promise<void>): Promise<void>;
-  waitForTaskCount(appName: string, expected: 0 | 1): Promise<number>;
-  health(baseUrl: string, runtimeId: string): Promise<boolean>;
+  waitForTaskCount(
+    application: Pick<DokployApplication, "applicationId" | "appName">,
+    expected: 0 | 1,
+    absent: "reject" | "if-never-deployed",
+  ): Promise<number>;
+  health(
+    baseUrl: string,
+    expected: {
+      readonly runtimeId: string;
+      readonly configVersion: number;
+      readonly mode: "setup" | "operate";
+    },
+  ): Promise<boolean>;
 }
 
 export interface TenantSecretCodec {
@@ -279,13 +294,18 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       }
     };
 
-    const stopAndObserve = async (application: DokployApplication): Promise<number> => {
+    const stopAndObserve = async (
+      application: DokployApplication,
+      absent: "reject" | "if-never-deployed" = "if-never-deployed",
+    ): Promise<number> => {
       try {
         await options.dokploy.stopApplication(application.applicationId, assertLease);
       } catch (error) {
         if (error instanceof LeaseLostError) throw error;
       }
-      const taskCount = await options.dokploy.waitForTaskCount(application.appName, 0);
+      await assertLease();
+      const taskCount = await options.dokploy.waitForTaskCount(application, 0, absent);
+      await assertLease();
       if (taskCount !== 0) throw new RetryableProvisioningError("dokploy_zero_tasks_not_observed");
       return taskCount;
     };
@@ -296,7 +316,9 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       } catch (error) {
         if (error instanceof LeaseLostError) throw error;
       }
-      const taskCount = await options.dokploy.waitForTaskCount(application.appName, 1);
+      await assertLease();
+      const taskCount = await options.dokploy.waitForTaskCount(application, 1, "reject");
+      await assertLease();
       if (taskCount > 1) throw new ProvisioningInvariantError("dokploy_multiple_tasks_observed");
       if (taskCount !== 1) throw new RetryableProvisioningError("dokploy_one_task_not_observed");
       return taskCount;
@@ -313,15 +335,44 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       }
     };
 
+    const boundApplicationForRecovery = async (): Promise<{
+      readonly application: DokployApplication | null;
+      readonly recordMissing: boolean;
+    }> => {
+      if (!target.dokployApplicationId) return { application: null, recordMissing: false };
+      const inspected = await options.dokploy.inspectApplication(target.dokployApplicationId);
+      if (inspected) return { application: inspected, recordMissing: false };
+      const listed = (await options.dokploy.listApplications()).find(
+        (candidate) =>
+          applicationMatchesTarget(candidate, target) &&
+          (target.dokployAppName === null || candidate.appName === target.dokployAppName),
+      );
+      if (listed) return { application: listed, recordMissing: true };
+      if (target.dokployAppName === null) return { application: null, recordMissing: true };
+      return {
+        application: {
+          applicationId: target.dokployApplicationId,
+          appName: target.dokployAppName,
+          name: target.dokployDisplayName,
+          description: creationMarker(target),
+        },
+        recordMissing: true,
+      };
+    };
+
     const ensureApplication = async (): Promise<DokployApplication> => {
       let marked = (await options.dokploy.listApplications())
         .filter((application) => applicationMatchesTarget(application, target))
         .sort((left, right) => left.applicationId.localeCompare(right.applicationId));
 
       if (target.dokployApplicationId) {
-        const bound = await options.dokploy.inspectApplication(target.dokployApplicationId);
+        const recovered = await boundApplicationForRecovery();
+        const bound = recovered.application;
+        if (!bound) throw new RetryableProvisioningError("dokploy_bound_identity_incomplete");
+        if (recovered.recordMissing) {
+          throw new ProvisioningInvariantError("dokploy_bound_application_missing", bound);
+        }
         if (
-          !bound ||
           !applicationMatchesTarget(bound, target) ||
           (target.dokployAppName !== null && bound.appName !== target.dokployAppName)
         ) {
@@ -377,10 +428,11 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
     const recordInvariant = async (
       application: DokployApplication | null,
       errorCode: string,
+      absent: "reject" | "if-never-deployed" = "if-never-deployed",
     ): Promise<ReconcileResult> => {
       if (application) {
         try {
-          await stopAndObserve(application);
+          await stopAndObserve(application, absent);
         } catch (error) {
           if (error instanceof LeaseLostError) throw error;
           const quiescenceErrorCode = "dokploy_quiescence_not_observed";
@@ -403,8 +455,10 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
 
       if (target.remoteConfigState === "pending" && target.remoteConfigOperationId) {
         if (target.dokployApplicationId) {
-          application = await options.dokploy.inspectApplication(target.dokployApplicationId);
-          if (application) await stopAndObserve(application);
+          const recovered = await boundApplicationForRecovery();
+          application = recovered.application;
+          if (!application) return await recordRetryable("dokploy_bound_identity_incomplete");
+          await stopAndObserve(application, "reject");
         }
         if (
           !(await blockRemoteConfig(
@@ -436,9 +490,16 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       if (!wantsRunning(target)) {
         let taskCount = 0;
         if (target.dokployApplicationId) {
-          application = await options.dokploy.inspectApplication(target.dokployApplicationId);
-          if (!application) return await recordInvariant(null, "dokploy_bound_application_missing");
-          taskCount = await stopAndObserve(application);
+          const recovered = await boundApplicationForRecovery();
+          application = recovered.application;
+          if (!application) return await recordRetryable("dokploy_bound_identity_incomplete");
+          taskCount = await stopAndObserve(
+            application,
+            recovered.recordMissing ? "reject" : "if-never-deployed",
+          );
+          if (recovered.recordMissing) {
+            return await recordInvariant(application, "dokploy_bound_application_missing", "reject");
+          }
         }
         await observe("stopped", "stopped", null, application ? runtimeBaseUrl(application.appName, options.configuration.port) : null);
         return {
@@ -450,6 +511,7 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       }
 
       await observe("provisioning", "provisioning", null);
+      const desiredRuntimeMode = target.desiredMode === "setup" ? "setup" : "operate";
 
       let token: string;
       if (target.tenantDbUrl === null && target.tenantDbTokenCiphertext === null) {
@@ -477,8 +539,12 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
           token = options.secrets.decrypt(target.tenantDbTokenCiphertext);
         } catch {
           if (target.dokployApplicationId) {
-            application = await options.dokploy.inspectApplication(target.dokployApplicationId);
-            if (!application) return await recordInvariant(null, "dokploy_bound_application_missing");
+            const recovered = await boundApplicationForRecovery();
+            application = recovered.application;
+            if (!application) return await recordRetryable("dokploy_bound_identity_incomplete");
+            if (recovered.recordMissing) {
+              return await recordInvariant(application, "tenant_token_decryption_failed", "reject");
+            }
           }
           return await recordInvariant(application, "tenant_token_decryption_failed");
         }
@@ -519,6 +585,7 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       ) {
         await stopAndObserve(application);
         const operationId = `remote-config:${createId()}`;
+        let deploymentAttempted = false;
         if (
           !(await beginRemoteConfig(
             options.client,
@@ -533,20 +600,33 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
         }
         try {
           await options.dokploy.prepareApplication(manifest, assertLease);
+          await assertLease();
           if (!(await options.dokploy.manifestMatches(manifest))) {
             throw new Error("manifest read-back mismatch");
           }
-          await options.dokploy.deployApplication(application.applicationId, assertLease);
+          await assertLease();
+          deploymentAttempted = true;
+          await options.dokploy.deployApplication(application.applicationId, operationId, assertLease);
           await options.dokploy.startApplication(application.applicationId, assertLease);
-          const startedTasks = await options.dokploy.waitForTaskCount(application.appName, 1);
+          await assertLease();
+          const startedTasks = await options.dokploy.waitForTaskCount(application, 1, "reject");
+          await assertLease();
           if (startedTasks > 1) throw new Error("multiple tasks after pending start");
           if (startedTasks !== 1) throw new Error("one task not observed after pending start");
-          if (!(await options.dokploy.health(baseUrl, expectedRuntimeId))) {
+          if (
+            !(await options.dokploy.health(baseUrl, {
+              runtimeId: expectedRuntimeId,
+              configVersion: target.configVersion,
+              mode: desiredRuntimeMode,
+            }))
+          ) {
             throw new Error("runtime health mismatch");
           }
+          await assertLease();
           if (!(await options.dokploy.manifestMatches(manifest))) {
             throw new Error("final manifest read-back mismatch");
           }
+          await assertLease();
           if (
             !(await confirmRemoteConfig(
               options.client,
@@ -562,7 +642,10 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
         } catch (error) {
           if (error instanceof LeaseLostError) throw error;
           try {
-            await stopAndObserve(application);
+            await stopAndObserve(
+              application,
+              deploymentAttempted ? "reject" : "if-never-deployed",
+            );
           } catch (stopError) {
             if (stopError instanceof LeaseLostError) throw stopError;
             const quiescenceErrorCode = "dokploy_quiescence_not_observed";
@@ -589,9 +672,16 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
           return await recordInvariant(application, "dokploy_manifest_drift");
         }
         await startAndObserve(application);
-        if (!(await options.dokploy.health(baseUrl, expectedRuntimeId))) {
+        if (
+          !(await options.dokploy.health(baseUrl, {
+            runtimeId: expectedRuntimeId,
+            configVersion: target.configVersion,
+            mode: desiredRuntimeMode,
+          }))
+        ) {
           return await recordRetryable("tenant_runtime_unhealthy");
         }
+        await assertLease();
       }
 
       await observe("healthy", "running", null, baseUrl);
@@ -600,7 +690,11 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
       if (error instanceof LeaseLostError) return { tenantId, status: "lease_lost" };
       if (error instanceof ProvisioningInvariantError) {
         try {
-          return await recordInvariant(error.application ?? application, error.code);
+          return await recordInvariant(
+            error.application ?? application,
+            error.code,
+            error.code === "dokploy_bound_application_missing" ? "reject" : "if-never-deployed",
+          );
         } catch (writeError) {
           if (writeError instanceof LeaseLostError) return { tenantId, status: "lease_lost" };
           throw writeError;
@@ -676,15 +770,39 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
         if (bound && !marked.some((application) => application.applicationId === bound.applicationId)) {
           marked.push(bound);
         }
+        if (!bound) {
+          const recovered = marked.find(
+            (application) =>
+              target.dokployAppName !== null && application.appName === target.dokployAppName,
+          );
+          if (!recovered) {
+            if (target.dokployAppName === null) return false;
+            marked.push({
+              applicationId: target.dokployApplicationId,
+              appName: target.dokployAppName,
+              name: target.dokployDisplayName,
+              description: creationMarker(target),
+            });
+          }
+        }
       }
+      if (marked.length === 0) return false;
       for (const application of marked) {
         try {
           await options.dokploy.stopApplication(application.applicationId, renew);
         } catch (error) {
           if (error instanceof LeaseLostError) throw error;
         }
-        if ((await options.dokploy.waitForTaskCount(application.appName, 0)) !== 0) return false;
+        try {
+          await renew();
+          if ((await options.dokploy.waitForTaskCount(application, 0, "reject")) !== 0) return false;
+          await renew();
+        } catch (error) {
+          if (error instanceof LeaseLostError) throw error;
+          return false;
+        }
       }
+      await renew();
       return await acknowledgeRemoteQuiescence(options.client, target.credsStoreKey, lease, {
         operationId: input.operationId,
         actorId: input.actorId,

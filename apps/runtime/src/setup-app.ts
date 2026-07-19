@@ -30,7 +30,9 @@ export const createAmbientAgentSetupApp = (
     startOnce();
     await next();
   });
-  app.get("/health", (context) => context.json(setupBridgeHealth(boot.runtimeId, status())));
+  app.get("/health", (context) =>
+    context.json(setupBridgeHealth(boot.runtimeId, status(), boot.deployment)),
+  );
   installBridgeRoute(app, {
     webhookSecret: boot.bridgeSecret,
     status,

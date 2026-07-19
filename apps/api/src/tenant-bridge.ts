@@ -18,6 +18,12 @@ const healthSchema: z.ZodType<BridgeHealth> = z.object({
       phase: z.enum(["disabled", "starting", "pairing", "online", "failed", "stopped"]),
     }),
   }),
+  deployment: z
+    .object({
+      configVersion: z.number().int().positive(),
+      mode: z.enum(["setup", "operate"]),
+    })
+    .optional(),
 });
 
 const pairingSchema: z.ZodType<BridgePairing> = z.discriminatedUnion("status", [

@@ -17,6 +17,7 @@ import type { ManagedWhatsAppAccount } from "../../packages/installation/src/wha
 
 const setupEnvironment = {
   AMBIENT_AGENT_RUNTIME_PROFILE: "setup",
+  AMBIENT_AGENT_CONFIG_VERSION: "7",
   AMBIENT_AGENT_RUNTIME_ID: "runtime-202",
   AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET: "bridge-secret-202",
   TENANT_DB_URL: "libsql://tenant-202.example",
@@ -36,6 +37,7 @@ it("boots setup with only health, pairing, and chat enumeration around one Whats
       TENANT_DB_URL: "libsql://tenant-202.example",
       TENANT_DB_TOKEN: "tenant-token-202",
     },
+    deployment: { configVersion: 7, mode: "setup" },
   };
   const synchronizedChats = vi.fn(async () => [{ jid: "project@g.us", name: "Project", kind: "group" as const }]);
   const setupRuntime = {
@@ -55,6 +57,7 @@ it("boots setup with only health, pairing, and chat enumeration around one Whats
     ok: true,
     runtimeId: "runtime-202",
     runtime: { state: "healthy", whatsapp: { phase: "pairing" } },
+    deployment: { configVersion: 7, mode: "setup" },
   });
   expect(JSON.stringify(await (await app.request("/health")).json())).not.toContain("fake-qr-challenge");
 
@@ -138,6 +141,7 @@ it("keeps pairing material in the authenticated bridge instead of runtime output
         TENANT_DB_URL: "libsql://tenant-202.example",
         TENANT_DB_TOKEN: "tenant-token-202",
       },
+      deployment: { configVersion: 7, mode: "setup" },
     },
     { startWhatsApp: () => runtime },
   );

@@ -177,6 +177,12 @@ const mountSchema = z
 
 type DokployMount = z.infer<typeof mountSchema>;
 
+const deploymentSchema = z.object({
+  deploymentId: z.string().min(1),
+  title: z.string(),
+  status: z.enum(["running", "done", "error", "cancelled"]),
+});
+
 const sameJson = (left: unknown, right: unknown): boolean => isDeepStrictEqual(left, right);
 
 const sameEnvironment = (encoded: unknown, expected: Readonly<Record<string, string>>): boolean => {
@@ -201,6 +207,8 @@ export const createDokployProvider = (options: {
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
   readonly observationTimeoutMs?: number;
+  readonly deploymentTimeoutMs?: number;
+  readonly deploymentHeartbeatIntervalMs?: number;
   readonly pollIntervalMs?: number;
 }): DokployProvider => {
   const fetch = options.fetch ?? globalThis.fetch;
@@ -227,6 +235,10 @@ export const createDokployProvider = (options: {
       await get(
         `/mounts.listByServiceId?serviceId=${encodeURIComponent(applicationId)}&serviceType=application`,
       ),
+    );
+  const deploymentsFor = async (applicationId: string) =>
+    z.array(deploymentSchema).parse(
+      await get(`/deployment.all?applicationId=${encodeURIComponent(applicationId)}`),
     );
   const upsertMount = async (
     applicationId: string,
@@ -392,9 +404,38 @@ export const createDokployProvider = (options: {
         managedFilesMatch
       );
     },
-    deployApplication: async (applicationId, beforeMutation) => {
-      await beforeMutation();
-      await post("/application.deploy", { applicationId });
+    deployApplication: async (applicationId, deploymentMarker, heartbeat) => {
+      let lastHeartbeatAt = 0;
+      const maintainLease = async (force = false): Promise<void> => {
+        const now = Date.now();
+        if (
+          !force &&
+          now - lastHeartbeatAt < (options.deploymentHeartbeatIntervalMs ?? 5_000)
+        ) {
+          return;
+        }
+        await heartbeat();
+        lastHeartbeatAt = Date.now();
+      };
+      await maintainLease(true);
+      await post("/application.deploy", {
+        applicationId,
+        title: deploymentMarker,
+        description: "Ambient Agent lease-fenced tenant deployment",
+      });
+      const deadline = Date.now() + (options.deploymentTimeoutMs ?? 300_000);
+      do {
+        await maintainLease();
+        const deployment = (await deploymentsFor(applicationId)).find(
+          (candidate) => candidate.title === deploymentMarker,
+        );
+        if (deployment?.status === "done") return;
+        if (deployment?.status === "error" || deployment?.status === "cancelled") {
+          throw new ProvisionerProviderError("dokploy", 502);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, options.pollIntervalMs ?? 250));
+      } while (Date.now() < deadline);
+      throw new ProvisionerProviderError("dokploy", 504);
     },
     startApplication: async (applicationId, beforeMutation) => {
       await beforeMutation();
@@ -404,14 +445,22 @@ export const createDokployProvider = (options: {
       await beforeMutation();
       await post("/application.stop", { applicationId });
     },
-    waitForTaskCount: async (appName, expected) => {
+    waitForTaskCount: async (application, expected, absent) => {
       const deadline = Date.now() + (options.observationTimeoutMs ?? 8_000);
       do {
         const services = z
           .array(z.object({ Name: z.string(), Replicas: z.string() }).passthrough())
           .parse(await get(`/swarm.getNodeApps?serverId=${encodeURIComponent(options.serverId)}`));
-        const service = services.find((candidate) => candidate.Name === appName);
-        const [actualValue, desiredValue] = service?.Replicas.split("/") ?? ["0", "0"];
+        const service = services.find((candidate) => candidate.Name === application.appName);
+        if (
+          service === undefined &&
+          expected === 0 &&
+          absent === "if-never-deployed" &&
+          (await deploymentsFor(application.applicationId)).length === 0
+        ) {
+          return 0;
+        }
+        const [actualValue, desiredValue] = service?.Replicas.split("/") ?? [];
         const actual = Number.parseInt(actualValue ?? "", 10);
         const desired = Number.parseInt(desiredValue ?? "", 10);
         if (actual > 1 || desired > 1) return Math.max(actual, desired);
@@ -420,15 +469,26 @@ export const createDokployProvider = (options: {
       } while (Date.now() < deadline);
       throw new ProvisionerProviderError("dokploy", 504);
     },
-    health: async (runtimeUrl, runtimeId) => {
+    health: async (runtimeUrl, expected) => {
       try {
         const response = await fetch(`${runtimeUrl.replace(/\/+$/u, "")}/health`, {
           signal: AbortSignal.timeout(options.timeoutMs ?? 8_000),
         });
-        const value = z.object({ ok: z.literal(true), runtimeId: z.string() }).parse(
-          await responseJson(response, "runtime"),
+        const value = z
+          .object({
+            ok: z.literal(true),
+            runtimeId: z.string(),
+            deployment: z.object({
+              configVersion: z.number().int().positive(),
+              mode: z.enum(["setup", "operate"]),
+            }),
+          })
+          .parse(await responseJson(response, "runtime"));
+        return (
+          value.runtimeId === expected.runtimeId &&
+          value.deployment.configVersion === expected.configVersion &&
+          value.deployment.mode === expected.mode
         );
-        return value.runtimeId === runtimeId;
       } catch {
         return false;
       }
