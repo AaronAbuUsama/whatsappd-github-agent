@@ -95,9 +95,14 @@ describe("hosted GitHub callback and repository registry", () => {
 
     await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
     await databaseClient.execute({
+      sql: `UPDATE tenant SET status = 'active', desired_state = 'running' WHERE id = ?1`,
+      args: [owner.tenantId],
+    });
+    await databaseClient.execute({
       sql: `UPDATE agent_instance
         SET desired_mode = 'operate', applied_mode = 'operate', observed_state = 'healthy',
-            phase = 'running', runtime_base_url = 'http://operate.internal'
+            phase = 'running', applied_config_version = 1,
+            runtime_base_url = 'http://operate.internal'
         WHERE tenant_id = ?1`,
       args: [owner.tenantId],
     });
@@ -105,6 +110,38 @@ describe("hosted GitHub callback and repository registry", () => {
       tenantId: owner.tenantId,
       runtimeId: "runtime-target",
       baseUrl: "http://operate.internal",
+    });
+    await databaseClient.execute({
+      sql: `UPDATE tenant SET config_version = 2 WHERE id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance SET applied_config_version = 2 WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toEqual({
+      tenantId: owner.tenantId,
+      runtimeId: "runtime-target",
+      baseUrl: "http://operate.internal",
+    });
+    await databaseClient.execute({
+      sql: `UPDATE tenant SET status = 'suspended' WHERE id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
+    await databaseClient.execute({
+      sql: `UPDATE tenant SET status = 'active' WHERE id = ?1`,
+      args: [owner.tenantId],
+    });
+    await databaseClient.execute({
+      sql: `UPDATE subscription_entitlement SET status = 'canceled' WHERE user_id = ?1`,
+      args: [owner.userId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
+    await databaseClient.execute({
+      sql: `UPDATE subscription_entitlement SET status = 'active' WHERE user_id = ?1`,
+      args: [owner.userId],
     });
     await databaseClient.execute({
       sql: `UPDATE agent_instance

@@ -631,14 +631,21 @@ export const createGitHubControlStore = (client: Client, options: { readonly cla
 
     runtimeTarget: async (tenantId: string): Promise<GitHubRuntimeTarget | null> => {
       const result = await client.execute({
-        sql: `SELECT id, runtime_base_url
+        sql: `SELECT agent_instance.id, agent_instance.runtime_base_url
                 FROM agent_instance
-               WHERE tenant_id = ?1
-                 AND desired_mode = 'operate'
-                 AND applied_mode = 'operate'
-                 AND observed_state = 'healthy'
-                 AND phase = 'running'
-                 AND runtime_base_url IS NOT NULL`,
+                JOIN tenant ON tenant.id = agent_instance.tenant_id
+                JOIN subscription_entitlement
+                  ON subscription_entitlement.id = tenant.subscription_entitlement_id
+               WHERE agent_instance.tenant_id = ?1
+                 AND tenant.status = 'active'
+                 AND tenant.desired_state = 'running'
+                 AND subscription_entitlement.status IN ('active', 'trialing')
+                 AND agent_instance.desired_mode = 'operate'
+                 AND agent_instance.applied_mode = 'operate'
+                 AND agent_instance.applied_config_version = tenant.config_version
+                 AND agent_instance.observed_state = 'healthy'
+                 AND agent_instance.phase = 'running'
+                 AND agent_instance.runtime_base_url IS NOT NULL`,
         args: [tenantId],
       });
       const row = result.rows[0];
