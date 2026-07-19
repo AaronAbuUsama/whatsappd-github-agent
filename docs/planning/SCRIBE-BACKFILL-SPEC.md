@@ -389,7 +389,10 @@ if (scribeEvents.length === 0) {
   continue;
 }
 
-await session.prompt(renderScribeBatch(scribeEvents));
+await client.agents.prompt("scribe", chatId, {
+  message: renderScribeBatch(scribeEvents),
+  signal,
+});
 checkpoint(through);
 ```
 
@@ -399,34 +402,51 @@ immediately. Do not add `kind <> 'receipt'` to the pagination SQL: advancing ove
 rows is what guarantees progress through receipt-only history.
 
 Decode the remaining arrivals and updates into the existing `ConversationWindow`
-shape, then present the existing Scribe vocabulary:
+shape. Build ordering from the decoded objects' IDs, not uniformly from archive
+`event_id`: `decodeIncoming()` assigns an arrival's `provider_message_id` to
+`message.id`, while `decodeUpdate()` assigns an update's `event_id` to `update.id`
+(`packages/engine/src/intake/managed-chat-inbox.ts:103-149`). Then present the existing
+Scribe vocabulary:
 
 ```ts
+const ordered = scribeEvents.map((row) =>
+  row.kind === "arrival"
+    ? { message: decodeIncoming(row), update: undefined }
+    : { message: undefined, update: decodeUpdate(row) }
+);
+const messages = ordered.flatMap(({ message }) =>
+  message === undefined ? [] : [message]
+);
+const updates = ordered.flatMap(({ update }) =>
+  update === undefined ? [] : [update]
+);
+
 scribeBatchInput([
   whatsappWindowInput({
     id: stableWindowId(chatId, cursor),
     chatId,
     messages,
     updates,
-    eventOrder: scribeEvents.map(({ id }) => id),
+    eventOrder: ordered.map(({ message, update }) => (message ?? update!).id),
     reason: "capacity",
   }),
 ]);
 ```
 
 Minimally extend the shared WhatsApp input schema with optional `eventOrder: string[]`.
-When present, it lists every message/update ID exactly once in raw page order. The
-Scribe renderer interleaves the existing `messages` and `updates` arrays by that list
-before rendering. Live callers may omit it; backfill must supply it. Do not expose
-archive row IDs to the model and do not replace the existing Window shape with a second
-payload language.
+When present, it lists every decoded `message.id` or `update.id` exactly once in raw page
+order. For arrivals this is the provider message ID; for edits, reactions, and
+revocations it is the archive event ID. The Scribe renderer interleaves the existing
+`messages` and `updates` arrays by that list before rendering. Live callers may omit it;
+backfill must supply it. Do not expose archive row IDs to the model and do not replace
+the existing Window shape with a second payload language.
 
 The implementation may add an internal backfill reason if the existing reason union
 cannot represent the window honestly, but it must not invent a second extraction
 input language.
 
-No overlap is added between adjacent windows. The persistent Scribe session supplies
-cross-window context.
+No overlap is added between adjacent windows. The persistent Scribe agent conversation
+supplies cross-window context.
 
 ## 7. Per-window transaction semantics
 
@@ -434,7 +454,7 @@ For every raw page that contains at least one Scribe-visible event:
 
 1. Check that the chat remains managed.
 2. Emit `scribe_backfill.window.started`.
-3. Await the Scribe prompt on the one persistent session.
+3. Await the Scribe prompt on the chat's persistent agent instance.
 4. When the prompt resolves successfully, advance the appropriate cursor.
 5. Emit `scribe_backfill.window.completed`.
 
