@@ -12,7 +12,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { installHostedGitHub } from "./github-hosted";
-import { createHostedTenantProvisioner } from "./provisioner-hosted";
+import {
+  createHostedTenantProvisioner,
+  startTenantProvisionerReconciliation,
+} from "./provisioner-hosted";
 
 const app = new Hono();
 const appRouter = createAppRouter({ getEntitlementSnapshot });
@@ -42,11 +45,12 @@ if (process.env.GITHUB_APPS_JSON) {
 }
 
 export const hostedTenantProvisioner = createHostedTenantProvisioner({ client });
-if (hostedTenantProvisioner) {
-  void hostedTenantProvisioner.reconcilePendingTenants().catch(() => {
-    console.error("[tenant-provisioner] startup reconciliation failed");
-  });
-}
+export const hostedTenantProvisionerLoop = hostedTenantProvisioner
+  ? startTenantProvisionerReconciliation(hostedTenantProvisioner, {
+      intervalMs: hostedTenantProvisioner.reconciliationIntervalMs,
+      onError: () => console.error("[tenant-provisioner] reconciliation sweep failed"),
+    })
+  : null;
 
 export const apiHandler = new OpenAPIHandler(appRouter, {
   plugins: [

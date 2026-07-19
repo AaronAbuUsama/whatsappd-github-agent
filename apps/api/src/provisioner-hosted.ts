@@ -33,6 +33,12 @@ const configurationSchema = z.object({
     .regex(/^\/[^\s]*\/\.ambient-agent$/u, "must be an absolute .ambient-agent directory")
     .default("/root/.ambient-agent"),
   TENANT_RUNTIME_PORT: z.coerce.number().int().positive().max(65_535).default(3000),
+  TENANT_PROVISIONER_RECONCILE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .default(5_000),
   TURSO_ORG: z.string().min(1),
   TURSO_GROUP: z.string().min(1).default("default"),
   TURSO_PLATFORM_TOKEN: z.string().min(1),
@@ -74,7 +80,41 @@ export const createHostedTenantProvisioner = (options: {
   });
   return {
     ...provisioner,
+    reconciliationIntervalMs: configuration.TENANT_PROVISIONER_RECONCILE_INTERVAL_MS,
     runtimeBridgeSecretForTenant: secrets.bridgeSecret,
     runtimeIdForTenant: secrets.runtimeId,
+  };
+};
+
+export const startTenantProvisionerReconciliation = (
+  provisioner: { readonly reconcilePendingTenants: () => Promise<unknown> },
+  options: {
+    readonly intervalMs: number;
+    readonly onError?: (error: unknown) => void;
+  },
+) => {
+  let inFlight = false;
+  let stopped = false;
+  const reconcile = async (): Promise<void> => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      await provisioner.reconcilePendingTenants();
+    } catch (error) {
+      options.onError?.(error);
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void reconcile();
+  const timer = setInterval(() => void reconcile(), options.intervalMs);
+  timer.unref();
+  return {
+    reconcileNow: reconcile,
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+    },
   };
 };

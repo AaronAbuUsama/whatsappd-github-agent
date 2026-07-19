@@ -1,9 +1,14 @@
 import { Buffer } from "node:buffer";
 
 import type { Client } from "@libsql/client";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createHostedTenantProvisioner } from "../../apps/api/src/provisioner-hosted";
+import {
+  createHostedTenantProvisioner,
+  startTenantProvisionerReconciliation,
+} from "../../apps/api/src/provisioner-hosted";
+
+afterEach(() => vi.useRealTimers());
 
 describe("hosted tenant provisioner composition", () => {
   test("is disabled when no provider configuration is present", () => {
@@ -39,8 +44,37 @@ describe("hosted tenant provisioner composition", () => {
       reconcileTenant: expect.any(Function),
       reconcilePendingTenants: expect.any(Function),
       acknowledgeQuiescence: expect.any(Function),
+      reconciliationIntervalMs: 5_000,
       runtimeBridgeSecretForTenant: expect.any(Function),
       runtimeIdForTenant: expect.any(Function),
     });
+  });
+
+  test("keeps sweeping later transitions without overlapping a slow sweep", async () => {
+    vi.useFakeTimers();
+    let releaseFirst: (() => void) | undefined;
+    const firstSweep = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const reconcilePendingTenants = vi
+      .fn<() => Promise<unknown>>()
+      .mockReturnValueOnce(firstSweep)
+      .mockResolvedValue([]);
+    const loop = startTenantProvisionerReconciliation(
+      { reconcilePendingTenants },
+      { intervalMs: 1_000 },
+    );
+
+    expect(reconcilePendingTenants).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(reconcilePendingTenants).toHaveBeenCalledTimes(1);
+    releaseFirst?.();
+    await firstSweep;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reconcilePendingTenants).toHaveBeenCalledTimes(2);
+
+    loop.stop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(reconcilePendingTenants).toHaveBeenCalledTimes(2);
   });
 });

@@ -21,6 +21,12 @@ export const env = createEnv({
     TENANT_RUNTIME_IMAGE: z.string().min(1).optional(),
     TENANT_RUNTIME_DATA_DIRECTORY: z.string().min(1).optional(),
     TENANT_RUNTIME_PORT: z.coerce.number().int().positive().max(65_535).optional(),
+    TENANT_PROVISIONER_RECONCILE_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .max(300_000)
+      .optional(),
     TURSO_ORG: z.string().min(1).optional(),
     TURSO_GROUP: z.string().min(1).optional(),
     TURSO_PLATFORM_TOKEN: z.string().min(1).optional(),
