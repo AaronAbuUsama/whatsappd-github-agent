@@ -1,6 +1,7 @@
 import type { ChatGptAuthentication } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
-import type { ManagedPaths } from "./paths.ts";
+import { managedPaths, type ManagedPaths } from "./paths.ts";
 import type { GitHubAppCredential, ManagedConfig } from "./schema.ts";
+import { tenantCredentialDatabaseFromEnvironment, type TenantCredentialEnvironment } from "./tenant-credentials.ts";
 
 export interface ManagedRuntimeDependencies {
   readonly authentication: ChatGptAuthentication;
@@ -9,6 +10,47 @@ export interface ManagedRuntimeDependencies {
   readonly githubCredential: GitHubAppCredential & { readonly webhookSecret: string };
   readonly paths: ManagedPaths;
 }
+
+export interface TenantRuntimeEnvironment extends TenantCredentialEnvironment {
+  readonly AMBIENT_AGENT_RUNTIME_PROFILE?: string;
+  readonly AMBIENT_AGENT_RUNTIME_ID?: string;
+  readonly AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET?: string;
+}
+
+export interface TenantRuntimeSetupBoot {
+  readonly mode: "setup";
+  readonly runtimeId: string;
+  readonly bridgeSecret: string;
+  readonly paths: ManagedPaths;
+  readonly credentialEnvironment: Required<TenantCredentialEnvironment>;
+}
+
+export type TenantRuntimeOperateBoot = ManagedRuntimeDependencies & { readonly mode: "operate" };
+export type TenantRuntimeBoot = TenantRuntimeSetupBoot | TenantRuntimeOperateBoot;
+
+export interface TenantRuntimeProfileState {
+  readonly applicationId: string;
+  readonly mode: TenantRuntimeBoot["mode"];
+  readonly managedChats: readonly string[];
+}
+
+export type TenantRuntimeProfileEvent =
+  | "activation.succeeded"
+  | "activation.failed"
+  | "repair.started"
+  | "repair.completed";
+
+const profileAfter = {
+  "activation.succeeded": "operate",
+  "activation.failed": "setup",
+  "repair.started": "setup",
+  "repair.completed": "operate",
+} as const satisfies Record<TenantRuntimeProfileEvent, TenantRuntimeBoot["mode"]>;
+
+export const transitionTenantRuntimeProfile = (
+  current: TenantRuntimeProfileState,
+  event: TenantRuntimeProfileEvent,
+): TenantRuntimeProfileState => ({ ...current, mode: profileAfter[event] });
 
 const RUNTIME_DEPENDENCIES = Symbol.for("ambient-agent.managed-runtime-dependencies");
 const WHATSAPP_RUNTIME_START = Symbol.for("ambient-agent.deferred-whatsapp-runtime-start");
@@ -30,6 +72,42 @@ export const getManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
     throw new Error("Managed runtime dependencies were not configured by the Ambient Agent CLI.");
   }
   return dependencies;
+};
+
+const requiredSetupValue = (name: string, value: string | undefined): string => {
+  const configured = value?.trim();
+  if (!configured) throw new Error(`${name} is required for the tenant runtime setup profile.`);
+  return configured;
+};
+
+export const resolveTenantRuntimeBoot = (
+  environment: TenantRuntimeEnvironment = process.env,
+  paths: ManagedPaths = managedPaths(),
+): TenantRuntimeBoot => {
+  const profile = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
+  if (profile === "setup") {
+    const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
+    if (tenantDatabase === undefined) {
+      throw new Error("TENANT_DB_URL and TENANT_DB_TOKEN are required for the tenant runtime setup profile.");
+    }
+    return {
+      mode: "setup",
+      runtimeId: requiredSetupValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
+      bridgeSecret: requiredSetupValue(
+        "AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET",
+        environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
+      ),
+      paths,
+      credentialEnvironment: {
+        TENANT_DB_URL: tenantDatabase.url,
+        TENANT_DB_TOKEN: requiredSetupValue("TENANT_DB_TOKEN", tenantDatabase.authToken),
+      },
+    };
+  }
+  if (profile !== undefined && profile !== "operate") {
+    throw new Error(`Unsupported AMBIENT_AGENT_RUNTIME_PROFILE: ${profile}`);
+  }
+  return { mode: "operate", ...getManagedRuntimeDependencies() };
 };
 
 // The generated server and the CLI are separate bundles, so this handoff crosses

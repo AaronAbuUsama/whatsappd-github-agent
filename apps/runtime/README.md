@@ -1,6 +1,6 @@
-# apps/runtime — the Speaker server
+# apps/runtime — the tenant runtime server
 
-The Flue build root: the deployable that hosts Speaker. `vp build --root apps/runtime`
+The Flue build root: the deployable that hosts tenant setup or Speaker operation. `vp build --root apps/runtime`
 bundles the internal `@ambient-agent/*` packages into the published artifact and
 externalizes the dependencies declared in this `package.json` — which is why that
 dependency list includes packages this app never imports directly (they are the
@@ -11,7 +11,7 @@ externals manifest for the bundled internal packages; fallow knows via
 
 | File | Convention |
 |---|---|
-| `src/app.ts` | The app: `createAmbientAgentApp` wires `composeSpeaker` + dispatch + stores + the Octokit repository, reading its dependencies from the `globalThis` slot the CLI installed (`export default await createAmbientAgentApp(getManagedRuntimeDependencies())`). |
+| `src/app.ts` | The profile-aware app. `setup` starts only one WhatsApp owner plus health, pairing, and chat enumeration on the tenant database contract. `operate` keeps the CLI-installed managed dependencies and wires `composeSpeaker` + dispatch + stores + the Octokit repository. |
 | `src/db.ts` | Flue database convention: `export default sqlite(flueDatabasePath())`. |
 | `src/agents/speaker.ts` | Flue agent-discovery convention: a deliberate 3-line re-export of `@ambient-agent/agents/speaker/agent.ts` (the real definition lives beside its dispatch — decision T8). Not a duplicate; do not "fix". |
 | `src/channels/github.ts` | Flue channel convention (`channel/github@1`): webhook verification, delegates to engine's `handleGitHubDelivery`. |
@@ -21,9 +21,11 @@ externals manifest for the bundled internal packages; fallow knows via
 ## Dependency arrows
 
 Imports all three packages (engine, agents, installation) — the composition root.
-Nothing imports it; `apps/cli/src/lifecycle.ts` boots its packed artifact.
+Nothing imports it. `apps/cli/src/lifecycle.ts` boots the packed artifact in
+`operate`; the SaaS provisioner starts that same artifact with the `setup`
+environment contract.
 
 ## Tested by
 
-`tests/speaker/{db,whatsapp-runtime}.test.ts`, `tests/managed/smoke-route.test.ts`, and
-the fixture app `tests/fixtures/speaker/` mirroring this layout.
+`tests/speaker/{db,whatsapp-runtime}.test.ts`, `tests/managed/{runtime-profile,smoke-route}.test.ts`,
+and the fixture app `tests/fixtures/speaker/` mirroring this layout.

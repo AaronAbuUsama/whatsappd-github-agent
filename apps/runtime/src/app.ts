@@ -1,6 +1,5 @@
-import type { Hono } from "hono";
+import { Hono } from "hono";
 
-import "@ambient-agent/engine/braintrust.ts";
 import { composeSpeaker } from "@ambient-agent/agents/speaker/compose.ts";
 import { dispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
 import { createIssueManagementPolicy } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
@@ -23,8 +22,10 @@ import { installSmokeRoute } from "./host/smoke-route.ts";
 import { installBridgeRoute } from "./host/bridge-route.ts";
 import {
   deferWhatsAppRuntimeStart,
-  getManagedRuntimeDependencies,
+  resolveTenantRuntimeBoot,
   type ManagedRuntimeDependencies,
+  type TenantRuntimeBoot,
+  type TenantRuntimeSetupBoot,
 } from "@ambient-agent/installation/runtime-dependencies.ts";
 import { bridgeHealth } from "@ambient-agent/installation/bridge-contract.ts";
 import { runtimeInstallationId } from "@ambient-agent/installation/runtime-health.ts";
@@ -51,12 +52,62 @@ const configureCoderRuntimeIfProvisioned = async (paths: ManagedRuntimeDependenc
   });
 };
 
+const stopWhatsAppOnSignal = (whatsapp: WhatsAppRuntimeControl): void => {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const shutdown = () => {
+      void whatsapp.stop().finally(() => {
+        process.removeListener(signal, shutdown);
+        process.kill(process.pid, signal);
+      });
+    };
+    process.once(signal, shutdown);
+  }
+};
+
+interface SetupRuntimeServices {
+  readonly startWhatsApp: typeof startWhatsAppRuntime;
+  readonly status: typeof getWhatsAppRuntimeStatus;
+}
+
+export const createAmbientAgentSetupApp = (
+  boot: TenantRuntimeSetupBoot,
+  services: SetupRuntimeServices = {
+    startWhatsApp: startWhatsAppRuntime,
+    status: getWhatsAppRuntimeStatus,
+  },
+): Hono => {
+  let whatsappControl: WhatsAppRuntimeControl | undefined;
+  const startOnce = (): void => {
+    if (whatsappControl !== undefined) return;
+    whatsappControl = services.startWhatsApp({
+      storeDirectory: boot.paths.whatsapp,
+      applicationDatabase: boot.paths.applicationDatabase,
+      managedChats: [],
+      environment: boot.credentialEnvironment,
+    });
+    stopWhatsAppOnSignal(whatsappControl);
+  };
+  const app = new Hono();
+  app.use("*", async (_context, next) => {
+    startOnce();
+    await next();
+  });
+  app.get("/health", (context) => context.json(bridgeHealth(boot.runtimeId, services.status())));
+  installBridgeRoute(app, {
+    webhookSecret: boot.bridgeSecret,
+    status: services.status,
+    control: () => whatsappControl,
+  });
+  return app;
+};
+
 export const createAmbientAgentApp = async ({
   authentication,
   configuration,
   githubCredential,
   paths,
 }: ManagedRuntimeDependencies): Promise<Hono> => {
+  await import("@ambient-agent/engine/braintrust.ts");
   const subscription = await connectPiChatGptSubscription({ authentication });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
   const runtimeId = runtimeInstallationId(githubCredential.webhookSecret);
@@ -133,18 +184,13 @@ export const createAmbientAgentApp = async ({
       ...(configuration.smoke === undefined ? {} : { canaryChat: configuration.smoke.canaryChat }),
     });
     whatsappControl = whatsapp;
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      const shutdown = () => {
-        void whatsapp.stop().finally(() => {
-          process.removeListener(signal, shutdown);
-          process.kill(process.pid, signal);
-        });
-      };
-      process.once(signal, shutdown);
-    }
+    stopWhatsAppOnSignal(whatsapp);
   });
 
   return app;
 };
 
-export default await createAmbientAgentApp(getManagedRuntimeDependencies());
+export const createTenantRuntimeApp = async (boot: TenantRuntimeBoot): Promise<Hono> =>
+  boot.mode === "setup" ? createAmbientAgentSetupApp(boot) : await createAmbientAgentApp(boot);
+
+export default await createTenantRuntimeApp(resolveTenantRuntimeBoot());

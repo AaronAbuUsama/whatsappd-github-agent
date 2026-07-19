@@ -23,6 +23,7 @@ import {
 } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { speakerActivity } from "@ambient-agent/agents/speaker/activity-reporter.ts";
 import { effectLoggerLayer, getLogger, upstreamWhatsAppLogger } from "@ambient-agent/engine/logging/logging.ts";
+import type { TenantCredentialEnvironment } from "@ambient-agent/installation/tenant-credentials.ts";
 import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-health.ts";
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
@@ -211,6 +212,7 @@ export interface WhatsAppRuntimeOptions {
   readonly storeDirectory: string;
   readonly applicationDatabase: string;
   readonly managedChats: readonly string[];
+  readonly environment?: TenantCredentialEnvironment;
   readonly canaryChat?: string;
   readonly botLid?: string;
   /** Test seams only: a fake session and a captured exit instead of process.exit. */
@@ -239,6 +241,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     storeDirectory: storeDir,
     archive: inbox.recorder,
     logger: upstreamWhatsAppLogger(),
+    ...(options.environment === undefined ? {} : { environment: options.environment }),
     ...(options.sessionFactory === undefined ? {} : { sessionFactory: options.sessionFactory }),
   });
   const log = getLogger("whatsapp");
