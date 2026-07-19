@@ -82,6 +82,7 @@ class DockerSandboxApi implements SandboxApi {
       ...Object.entries(options.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
       // Keep pnpm's content-addressed store inside the disposable container instead
       // of leaking a per-review cache into the persistent workspace bind mount.
+      "--env", "npm_config_store_dir=/tmp/pnpm-store",
       "--env", "pnpm_config_store_dir=/tmp/pnpm-store",
       this.image,
       "sh", "-c", command, "sh", ...args,
