@@ -311,7 +311,7 @@ export const createGitHubIngress = (options: {
           repo: payload.repository.name,
           username: payload.comment.user.login,
         });
-        if (!["read", "write", "maintain", "admin"].includes(providerPermission.toLowerCase())) {
+        if (!["write", "maintain", "admin"].includes(providerPermission.toLowerCase())) {
           options.store.settle(delivery.deliveryId, { status: "unsupported", repository, settledAt: now().toISOString() });
           return { status: "unsupported", deliveryId: delivery.deliveryId };
         }
