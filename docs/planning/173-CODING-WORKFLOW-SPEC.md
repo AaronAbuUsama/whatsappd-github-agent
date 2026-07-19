@@ -10,8 +10,8 @@ Research: [`173-flue-runtime-research.md`](./173-flue-runtime-research.md), [`17
 
 This is the build contract for the multi-agent coding workflow that replaces the
 single-model work step inside the shipped #172 Coder. It is intentionally the minimum
-code-factory floor: a deterministic TypeScript coordinator, one continuing Coder
-conversation per run, two bounded specialist tasks, and GitHub as the durable boundary
+code-factory floor: a deterministic TypeScript coordinator, fresh bounded role tasks
+sharing one worktree, explicit hand-off artifacts, and GitHub as the durable boundary
 between runs.
 
 The issue's original “PR agent” is superseded by this spec. **Coder owns its PR.** The
@@ -24,10 +24,10 @@ One coding workflow invocation does the following:
 
 1. Resolve a new issue or an existing Coder-owned PR from live GitHub state.
 2. Ask Planner for one ordered implementation and verification plan.
-3. Keep one root Coder conversation alive while it implements and repairs.
+3. Run a fresh Coder task for each implementation or repair round.
 4. Ask a fresh Verifier task to drive the shared worktree using the vendored built-in
    `/verify` methodology.
-5. Feed the Verifier's complete report back to the same root Coder conversation and
+5. Feed the plan and Verifier's complete report explicitly into the next Coder task and
    repeat within a bounded internal verification budget.
 6. Have Coder author and open or update one rich PR at the end, using #172's idempotent
    `open_pull_request` tool.
@@ -90,26 +90,32 @@ There is **no supervising model** inside the workflow. TypeScript owns stage ord
 budgets, result validation, logging, and publication. Models own the judgment-rich work
 inside each stage.
 
-### Why Coder is the root session
+### Why the coordinator is the root session
 
-The same Coder conversation must see its original implementation, every complete
-Verifier report, its repairs, and final PR-authoring prompt. Planner and Verifier remain
-independent child conversations so their outputs cross an explicit structured boundary.
+Flue exposes every configured subagent to a root model through its built-in `task`
+capability. Making Coder the root would therefore let it launch Planner or Verifier
+outside the TypeScript-owned budget. The root coordinator is never prompted. Planner,
+Coder, and Verifier are self-contained profiles without `subagents`; every model turn is
+a programmatic child task, so stage order and round limits remain application-enforced.
+Continuity crosses explicit artifacts plus the shared worktree, not hidden transcript
+state.
 
 The implementation shape is:
 
 ```ts
-const coder = await harness.session("coder");
+const coordinator = await harness.session("coordinator");
 
-const plan = await coder.task(plannerPrompt, {
+const plan = await coordinator.task(plannerPrompt, {
   agent: "planner",
   result: planArtifactSchema,
 });
 
 for (let round = 1; round <= maxVerificationRounds; round += 1) {
-  await coder.prompt(coderPrompt({ plan: plan.data, priorVerification, round }));
+  await coordinator.task(coderPrompt({ plan: plan.data, priorVerification, round }), {
+    agent: "coder",
+  });
 
-  const verification = await coder.task(verifierPrompt({ plan: plan.data, round }), {
+  const verification = await coordinator.task(verifierPrompt({ plan: plan.data, round }), {
     agent: "verifier",
     result: verificationReceiptSchema,
   });
@@ -122,7 +128,8 @@ const verifiedWorkspace = await snapshotAfter();
 const verifiedBranchHead = (await getBranchHead(github, repo, branch)) ?? baseSha;
 const openPullRequest = createOpenPullRequestTool({ verifiedWorkspace, verifiedBranchHead });
 
-await coder.prompt(publicationPrompt({ plan: plan.data, priorVerification }), {
+await coordinator.task(publicationPrompt({ plan: plan.data, priorVerification }), {
+  agent: "coder",
   tools: [openPullRequest],
 });
 ```
@@ -332,7 +339,7 @@ Control policy:
 |---|---:|---|
 | `PASS` | any | Stop looping; publish ready. |
 | `SKIP` | any | Stop looping; publish ready with the report's justification. |
-| `FAIL` | yes | Feed the full report to the same Coder conversation; next round. |
+| `FAIL` | yes | Feed the full report to the next Coder task; next round. |
 | `BLOCKED` | yes | Feed the full report to Coder; next round may remove the blocker. |
 | `FAIL` / `BLOCKED` | no | Publish or update a rich draft PR containing the unresolved evidence. |
 
@@ -342,8 +349,9 @@ and therefore starts with Planner again.
 
 ## 9. Publication and PR evidence
 
-Coder performs the final publication turn in the same root conversation and calls the
-existing idempotent `open_pull_request` tool. The tool converges on the issue branch and
+Coder performs a fresh final publication task and calls the existing idempotent
+`open_pull_request` tool. The task receives the plan and final verification report
+explicitly. The tool converges on the issue branch and
 one open head→base PR; it is extended only as required to update the existing PR's draft
 lifecycle and evidence.
 
@@ -403,9 +411,11 @@ pull_request_review.submitted
   → approved or commented: no repair run
 ```
 
-GitHub's read payloads do not use the write-action literals: webhook and `listReviews`
-records expose lowercase states (`changes_requested`, `approved`, `commented`). Normalize
-once at the GitHub adapter boundary to that internal union. Only a formal
+GitHub's read surfaces are inconsistent: webhook payloads use lowercase states while
+REST `listReviews` may return uppercase strings such as `CHANGES_REQUESTED`. At the
+GitHub adapter boundary, trim and lowercase the raw value, map
+`changes_requested | approved | commented` to that internal union, and reject unknown
+states. Only a formal
 `changes_requested` review by the configured Reviewer App can launch an automatic repair.
 Loose PR conversation comments and individual inline-comment events are not automatic
 completion signals.
@@ -596,7 +606,8 @@ The build is complete when automated tests and evals prove:
 1. Both input modes validate; the shipped no-`mode` issue shape normalizes to
    `mode: "new_issue"`.
 2. Planner produces the exact `PlanArtifact`; malformed structured results fail the run.
-3. One root Coder session persists across implementation, repair, and publication turns.
+3. Coder tasks have no subagents; each round receives the plan and prior verification
+   report explicitly and continues through the shared worktree.
 4. Planner and each Verifier invocation are fresh child tasks sharing the same worktree.
 5. `PASS`/`SKIP` stop the loop; `FAIL`/`BLOCKED` feed the full report back until the
    configured bound.
@@ -658,7 +669,7 @@ flowchart LR
 | Ticket | Blocked by | Complete behavior delivered |
 |---|---|---|
 | [#208 — Configure OpenAI model and effort by agent role](https://github.com/AaronAbuUsama/ambient-agent/issues/208) | None | Installation-managed OpenAI role profiles and a model-generic subscription connector, preserving current Speaker/Scribe defaults. |
-| [#210 — Run new issues through Planner, continuing Coder, and Verifier](https://github.com/AaronAbuUsama/ambient-agent/issues/210) | #208 | One new issue traverses the bounded internal multi-agent loop and produces one rich ready/draft Coder PR with live waypoints. |
+| [#210 — New-issue coding workflow](https://github.com/AaronAbuUsama/ambient-agent/issues/210) | #208 | One new issue traverses the bounded internal multi-agent loop and produces one rich ready/draft Coder PR with live waypoints. |
 | [#209 — Implement the standalone external Reviewer workflow](https://github.com/AaronAbuUsama/ambient-agent/issues/209) | #208 | The separately authenticated Reviewer exercises every eligible PR head and submits one formal GitHub verdict. |
 | [#211 — Repair Coder-owned PRs after formal Reviewer feedback](https://github.com/AaronAbuUsama/ambient-agent/issues/211) | #210, #209 | A formal `REQUEST_CHANGES` starts a bounded repair continuation from live GitHub state without mutating external contributors' PRs. |
 | [#212 — Prove the complete issue-to-reviewed-PR coding loop live](https://github.com/AaronAbuUsama/ambient-agent/issues/212) | #211, #174 | The real authorized rig proves issue → internal verification → PR → external rejection → repair → re-review with durable evidence. |
