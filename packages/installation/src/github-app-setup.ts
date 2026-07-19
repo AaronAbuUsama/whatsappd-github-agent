@@ -16,7 +16,7 @@ const PERMISSIONS: Readonly<Record<GitHubAppReference, readonly string[]>> = {
   coder: ["Contents: read & write", "Pull requests: read & write", "Issues: read", "Metadata: read"],
   reviewer: ["Pull requests: read & write", "Contents: read", "Metadata: read"],
   // The Planner file is also the Speaker's issue-filing identity.
-  planner: ["Issues: read & write", "Metadata: read"],
+  planner: ["Issues: read & write", "Pull requests: read", "Metadata: read"],
 };
 
 export const recommendedGitHubAppName = (reference: GitHubAppReference): string => RECOMMENDED_NAME[reference];

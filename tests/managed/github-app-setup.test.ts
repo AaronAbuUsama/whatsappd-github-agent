@@ -9,6 +9,7 @@ describe("GitHub App setup checklist", () => {
     expect(checklist).toContain(
       "Enable the webhook and subscribe to exactly these events: Issues, Issue comment, Pull request, Pull request review.",
     );
+    expect(checklist).toContain("Pull requests: read");
     expect(checklist).toContain("  4. Generate a private key");
   });
 
