@@ -46,7 +46,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="mt-auto flex items-center gap-2 border-t border-separator p-3 max-md:mt-0 max-md:border-t-0 max-md:p-2">
-        <div className="min-w-0 flex-1 max-md:hidden">
+        <div className="min-w-0 flex-1 max-md:flex-none">
           <UserMenu />
         </div>
         <ThemeToggle />

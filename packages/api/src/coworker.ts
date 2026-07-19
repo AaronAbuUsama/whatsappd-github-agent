@@ -1002,7 +1002,7 @@ export const createCoworkerService = (options: {
       throw cause;
     }
     const entitlement = await options.client.execute({
-      sql: `SELECT 1
+      sql: `SELECT tenant.desired_state
               FROM tenant
               JOIN subscription_entitlement
                 ON subscription_entitlement.id = tenant.subscription_entitlement_id
@@ -1013,6 +1013,53 @@ export const createCoworkerService = (options: {
     });
     const isEntitled = Boolean(entitlement.rows[0]);
     const operation = await unsettledOperation(tenant.id);
+    if (
+      isEntitled &&
+      entitlement.rows[0]?.desired_state === "stopped" &&
+      (tenant.status === "active" || tenant.status === "onboarding")
+    ) {
+      const timestamp = now();
+      const desiredMode =
+        operation?.kind === "repair" || operation?.kind === "provision_setup"
+          ? "setup"
+          : operation?.kind === "activate" || operation?.kind === "restart"
+            ? "operate"
+            : tenant.status === "active"
+              ? "operate"
+              : "setup";
+      await options.client.batch(
+        [
+          {
+            sql: `UPDATE tenant
+                     SET desired_state = 'running', updated_at_ms = ?3
+                   WHERE id = ?1 AND status = ?2 AND desired_state = 'stopped'
+                     AND EXISTS (
+                       SELECT 1 FROM subscription_entitlement
+                        WHERE id = tenant.subscription_entitlement_id
+                          AND user_id = tenant.user_id
+                          AND status IN ('active', 'trialing')
+                     )`,
+            args: [tenant.id, tenant.status, timestamp],
+          },
+          {
+            sql: `UPDATE agent_instance
+                     SET desired_mode = ?2, updated_at_ms = ?3
+                   WHERE tenant_id = ?1
+                     AND EXISTS (
+                       SELECT 1 FROM tenant
+                       JOIN subscription_entitlement
+                         ON subscription_entitlement.id = tenant.subscription_entitlement_id
+                        AND subscription_entitlement.user_id = tenant.user_id
+                        AND subscription_entitlement.status IN ('active', 'trialing')
+                        WHERE tenant.id = ?1 AND tenant.status = ?4
+                          AND tenant.desired_state = 'running'
+                     )`,
+            args: [tenant.id, desiredMode, timestamp, tenant.status],
+          },
+        ],
+        "write",
+      );
+    }
     if (options.lifecycle) {
       if (isEntitled && operation) await reconcileLifecycle(userId, operation);
       else await options.lifecycle.reconcileTenant(tenant.id);

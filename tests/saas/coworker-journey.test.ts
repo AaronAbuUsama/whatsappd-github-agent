@@ -1061,7 +1061,8 @@ describe("hosted coworker journey", () => {
       sql: "UPDATE subscription_entitlement SET status = 'active' WHERE user_id = ?1",
       args: [userId],
     });
-    await service.restartRuntime(userId, { operationIdentity: "resume-after-billing" });
+    await service.refresh(userId);
+    expect(reconciledStates.at(-1)).toBe("running");
     expect((await service.snapshot(userId)).tenant?.id).toBe(created.tenant?.id);
     expect((await service.snapshot(userId)).nextAction).toBe("operate");
     expect(
@@ -1072,5 +1073,89 @@ describe("hosted coworker journey", () => {
         args: [created.tenant?.id ?? ""],
       }),
     ).toMatchObject({ rows: [expect.objectContaining({ desired_state: "running", desired_mode: "operate" })] });
+  });
+
+  test("restores the operate profile for an activation interrupted by billing suspension", async () => {
+    const client = await migrate();
+    const userId = await seedUser(client, "billing-activation");
+    const service = createCoworkerService({
+      client,
+      now: () => now,
+      runtime: runtimeSource(),
+      lifecycle: { reconcileTenant: async () => ({ status: "lease_busy" }) },
+    });
+    const tenantId = await createReadyOnboarding(client, service, userId, "51");
+    const revision = (await service.snapshot(userId)).configurationRevision;
+    if (!revision) throw new Error("activation revision was not projected");
+    await service.activate(userId, {
+      expectedConfigVersion: revision.configVersion,
+      expectedBasisFingerprint: revision.basisFingerprint,
+      operationIdentity: "billing-activation",
+    });
+    await client.batch(
+      [
+        {
+          sql: "UPDATE subscription_entitlement SET status = 'canceled' WHERE user_id = ?1",
+          args: [userId],
+        },
+        { sql: "UPDATE tenant SET desired_state = 'stopped' WHERE id = ?1", args: [tenantId] },
+        { sql: "UPDATE agent_instance SET desired_mode = 'stopped' WHERE tenant_id = ?1", args: [tenantId] },
+      ],
+      "write",
+    );
+    await client.execute({
+      sql: "UPDATE subscription_entitlement SET status = 'active' WHERE user_id = ?1",
+      args: [userId],
+    });
+
+    await service.refresh(userId);
+
+    expect(
+      await client.execute({
+        sql: "SELECT desired_mode FROM agent_instance WHERE tenant_id = ?1",
+        args: [tenantId],
+      }),
+    ).toMatchObject({ rows: [expect.objectContaining({ desired_mode: "operate" })] });
+  });
+
+  test("restores the setup profile for a WhatsApp repair interrupted by billing suspension", async () => {
+    const client = await migrate();
+    const userId = await seedUser(client, "billing-repair");
+    const service = createCoworkerService({
+      client,
+      now: () => now,
+      runtime: runtimeSource(),
+      lifecycle: { reconcileTenant: async () => ({ status: "lease_busy" }) },
+    });
+    const tenantId = await createReadyOnboarding(client, service, userId, "52");
+    await client.execute({
+      sql: "UPDATE tenant SET status = 'active' WHERE id = ?1",
+      args: [tenantId],
+    });
+    await service.beginWhatsappRepair(userId, { operationIdentity: "billing-repair" });
+    await client.batch(
+      [
+        {
+          sql: "UPDATE subscription_entitlement SET status = 'canceled' WHERE user_id = ?1",
+          args: [userId],
+        },
+        { sql: "UPDATE tenant SET desired_state = 'stopped' WHERE id = ?1", args: [tenantId] },
+        { sql: "UPDATE agent_instance SET desired_mode = 'stopped' WHERE tenant_id = ?1", args: [tenantId] },
+      ],
+      "write",
+    );
+    await client.execute({
+      sql: "UPDATE subscription_entitlement SET status = 'active' WHERE user_id = ?1",
+      args: [userId],
+    });
+
+    await service.refresh(userId);
+
+    expect(
+      await client.execute({
+        sql: "SELECT desired_mode FROM agent_instance WHERE tenant_id = ?1",
+        args: [tenantId],
+      }),
+    ).toMatchObject({ rows: [expect.objectContaining({ desired_mode: "setup" })] });
   });
 });
