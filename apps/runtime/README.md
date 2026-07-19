@@ -19,7 +19,7 @@ externals manifest for the bundled internal packages; fallow knows via
 | `src/db.ts` | Flue database convention: `export default sqlite(flueDatabasePath())`. |
 | `src/agents/speaker.ts` | Flue agent-discovery convention: a deliberate 3-line re-export of `@ambient-agent/agents/speaker/agent.ts` (the real definition lives beside its dispatch — decision T8). Not a duplicate; do not "fix". |
 | `src/channels/github.ts` | Flue channel convention (`channel/github@1`): webhook verification, delegates to engine's `handleGitHubDelivery`. |
-| `src/host/whatsapp-setup-runtime.ts` | One setup-only WhatsApp account, with no archive, Coalescer, Speaker, GitHub, model, or stdout pairing material. |
+| `src/host/whatsapp-setup-runtime.ts` | One setup-only WhatsApp account that still journals observed events, with no Managed Chat inbox, Coalescer, Speaker, GitHub, model, or stdout pairing material. |
 | `src/host/whatsapp-runtime.ts` | The WhatsApp runtime host: session lifecycle, backoff, the production `WhatsAppOutboundPort` adapter (`createWhatsAppHost` — typing lead, quote lookup, delivery classification), and the smoke canary. |
 | `src/host/smoke-route.ts` | The authorized `/smoke` HTTP route. |
 

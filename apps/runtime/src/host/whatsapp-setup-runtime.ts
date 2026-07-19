@@ -1,11 +1,16 @@
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { upstreamWhatsAppLogger } from "@ambient-agent/engine/logging/logging.ts";
+import {
+  createConversationArchive,
+  type ConversationArchive,
+} from "@ambient-agent/engine/intake/conversation-archive.ts";
 import type { TenantCredentialEnvironment } from "@ambient-agent/installation/tenant-credentials.ts";
 import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-health.ts";
 import { createWhatsAppAccount, type ManagedWhatsAppAccount } from "@ambient-agent/installation/whatsapp-account.ts";
 
 export interface WhatsAppSetupRuntimeOptions {
   readonly storeDirectory: string;
+  readonly applicationDatabase: string;
   readonly credentialEnvironment: Required<TenantCredentialEnvironment>;
 }
 
@@ -17,24 +22,36 @@ export interface WhatsAppSetupRuntime {
 
 interface WhatsAppSetupRuntimeServices {
   readonly createAccount: typeof createWhatsAppAccount;
+  readonly createArchive: typeof createConversationArchive;
 }
 
 /**
- * Own one WhatsApp account for setup only. This host intentionally has no
- * Conversation Archive, Managed Chat inbox, Coalescer, Speaker, or stdout pairing UI.
+ * Own one WhatsApp account for setup only. Observed events still reach the
+ * Conversation Archive, but there is no Managed Chat inbox, Coalescer, Speaker,
+ * GitHub/model composition, or stdout pairing UI.
  */
 export const startWhatsAppSetupRuntime = (
   options: WhatsAppSetupRuntimeOptions,
-  services: WhatsAppSetupRuntimeServices = { createAccount: createWhatsAppAccount },
+  services: WhatsAppSetupRuntimeServices = {
+    createAccount: createWhatsAppAccount,
+    createArchive: createConversationArchive,
+  },
 ): WhatsAppSetupRuntime => {
   let status: WhatsAppRuntimeStatus = { phase: "starting" };
   let stopping = false;
-  const account = services.createAccount({
-    storeDirectory: options.storeDirectory,
-    environment: options.credentialEnvironment,
-    logger: upstreamWhatsAppLogger(),
-    archive: { append: () => false },
-  });
+  const archive: ConversationArchive = services.createArchive(options.applicationDatabase);
+  let account: ManagedWhatsAppAccount;
+  try {
+    account = services.createAccount({
+      storeDirectory: options.storeDirectory,
+      environment: options.credentialEnvironment,
+      logger: upstreamWhatsAppLogger(),
+      archive,
+    });
+  } catch (cause) {
+    archive.close();
+    throw cause;
+  }
   const authentication = Promise.resolve()
     .then(
       async () =>
@@ -57,8 +74,12 @@ export const startWhatsAppSetupRuntime = (
     synchronizedChats: async (signal) => await account.synchronizedChats(signal),
     stop: async () => {
       stopping = true;
-      await account.stop();
-      status = { phase: "stopped" };
+      try {
+        await account.stop();
+      } finally {
+        archive.close();
+        status = { phase: "stopped" };
+      }
     },
   };
 };

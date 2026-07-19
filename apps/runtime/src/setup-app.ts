@@ -3,23 +3,12 @@ import { Hono } from "hono";
 import { bridgeHealth } from "@ambient-agent/installation/bridge-contract.ts";
 import type { TenantRuntimeSetupBoot } from "@ambient-agent/installation/runtime-dependencies.ts";
 import { installBridgeRoute } from "./host/bridge-route.ts";
+import { stopRuntimeOnSignal } from "./host/runtime-signals.ts";
 import { startWhatsAppSetupRuntime, type WhatsAppSetupRuntime } from "./host/whatsapp-setup-runtime.ts";
 
 interface SetupRuntimeServices {
   readonly startWhatsApp: typeof startWhatsAppSetupRuntime;
 }
-
-const stopWhatsAppOnSignal = (whatsapp: WhatsAppSetupRuntime): void => {
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    const shutdown = () => {
-      void whatsapp.stop().finally(() => {
-        process.removeListener(signal, shutdown);
-        process.kill(process.pid, signal);
-      });
-    };
-    process.once(signal, shutdown);
-  }
-};
 
 export const createAmbientAgentSetupApp = (
   boot: TenantRuntimeSetupBoot,
@@ -30,9 +19,10 @@ export const createAmbientAgentSetupApp = (
     if (whatsapp !== undefined) return;
     whatsapp = services.startWhatsApp({
       storeDirectory: boot.paths.whatsapp,
+      applicationDatabase: boot.paths.applicationDatabase,
       credentialEnvironment: boot.credentialEnvironment,
     });
-    stopWhatsAppOnSignal(whatsapp);
+    stopRuntimeOnSignal(whatsapp);
   };
   const status = () => whatsapp?.status() ?? { phase: "disabled" as const };
   const app = new Hono();

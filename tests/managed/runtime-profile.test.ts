@@ -79,6 +79,7 @@ it("boots setup with only health, pairing, and chat enumeration around one Whats
   expect(startWhatsApp).toHaveBeenCalledTimes(1);
   expect(startWhatsApp).toHaveBeenCalledWith({
     storeDirectory: paths.whatsapp,
+    applicationDatabase: paths.applicationDatabase,
     credentialEnvironment: boot.credentialEnvironment,
   });
   expect(synchronizedChats).toHaveBeenCalledTimes(1);
@@ -102,15 +103,17 @@ it("keeps pairing material in the authenticated bridge instead of runtime output
   };
   const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   const writeError = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const archive = { append: vi.fn(() => true), close: vi.fn() };
   const runtime = startWhatsAppSetupRuntime(
     {
       storeDirectory: "/private/tenant-202/whatsapp",
+      applicationDatabase: "/private/tenant-202/application.sqlite",
       credentialEnvironment: {
         TENANT_DB_URL: "libsql://tenant-202.example",
         TENANT_DB_TOKEN: "tenant-token-202",
       },
     },
-    { createAccount: () => account },
+    { createAccount: () => account, createArchive: () => archive as never },
   );
 
   await vi.waitFor(() => expect(runtime.status()).toMatchObject({ phase: "pairing" }));
@@ -119,6 +122,7 @@ it("keeps pairing material in the authenticated bridge instead of runtime output
   finishAuthentication({ jid: "15550000202@s.whatsapp.net" });
   await vi.waitFor(() => expect(runtime.status()).toMatchObject({ phase: "online" }));
   await runtime.stop();
+  expect(archive.close).toHaveBeenCalledTimes(1);
 });
 
 it("shares storage across setup, activation rollback, and repair without weakening operate configuration", () => {
