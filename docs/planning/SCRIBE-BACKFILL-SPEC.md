@@ -1,0 +1,820 @@
+# Scribe backfill — ratified implementation spec (#175)
+
+**Status:** ratified on 2026-07-18; ready for an implementation session
+**Source:** [GitHub issue #175](https://github.com/AaronAbuUsama/ambient-agent/issues/175)
+**Scope:** design only. This document contains no product implementation.
+
+## 1. Outcome
+
+When a WhatsApp chat becomes managed, Ambient Agent starts a background Scribe
+workflow that reads the chat's existing Conversation Archive and builds its shared
+graph history. The Speaker remains live throughout. The workflow processes bounded
+archive windows sequentially on the chat's persistent Scribe agent conversation, checkpoints each
+successful window, catches up with traffic that arrived while it was working, and
+atomically hands the chat to the ordinary live Scribe coalescer.
+
+The same product path covers:
+
+- the chat selected during first-run setup;
+- a chat added later through Settings or configuration management; and
+- recovery of a workflow interrupted by a process restart.
+
+A thin CLI entry may exercise or retry this path for development and operations, but
+the CLI is not the product trigger.
+
+## 2. Ratified boundaries
+
+### In scope
+
+- Automatic background admission when a chat becomes managed.
+- One active backfill per chat.
+- Provider-online eligibility, archive-backed processing, durable checkpoints, and a
+  race-free catch-up-to-live transition.
+- Chronological processing of the initial archive snapshot followed by insertion-order
+  processing of messages that arrive during catch-up.
+- Fixed windows of at most 50 archive events.
+- One persistent Scribe agent instance for every window and live turn for a chat.
+- Shared-store enforcement of the already-ratified exact-phrase convergence rule for
+  keyless graph entities.
+- Structured `ctx.log` progress events.
+- Retry, crash recovery, managed-chat removal, and explicit retry after terminal
+  failure.
+- Raising the Scribe role's reasoning effort from `minimal` to `medium`; live and
+  historical extraction continue to share one role configuration.
+
+### Out of scope
+
+- No Speaker pause and no replay through the Speaker.
+- No second backfill-specific ontology or graph-writing path.
+- No confidence-decrease semantics. Existing confidence accumulation remains intact.
+- No destructive graph reset or deletion-by-provenance command.
+- No multi-source provenance redesign.
+- No semantic time-gap or token-budget windowing until real runs demonstrate a need.
+- No bulk "all chats" command; reconciliation admits chats independently.
+- No keyless-entity consolidation pass beyond exact-phrase convergence.
+- No real or private WhatsApp transcript committed as a test fixture.
+- The `SCRIBE_FIXTURE_READY` eval battery remains deferred until real backfill output
+  has been inspected and the right eval corpus and assertions are understood.
+
+The last item deliberately supersedes the original issue's fixture-unskip Definition
+of Done. Implementation must produce inspectable real-run output first; fixture and
+eval calibration should become a follow-up ticket after that evidence exists.
+
+## 3. Existing foundation
+
+### 3.1 Archive precedes agent delivery
+
+`packages/installation/src/whatsapp-account.ts:154-170` archives both history-sync
+messages and live messages before notifying subscribers. The managed inbox wraps this
+in the archive transaction at
+`packages/engine/src/intake/managed-chat-inbox.ts:366-378`.
+
+This gives backfill one durable source of truth. It does not need a second message
+buffer.
+
+### 3.2 Provider sync eligibility
+
+whatsappd emits history as one or more `conversationSync` batches. Its installed
+adapter produces `conversation_sync_complete` only after the final history batch
+(`node_modules/whatsappd/dist/adapter-19V5lRxH.mjs:1038-1055`), but that completion
+event is not exposed on the current public `WhatsAppSession`. The local wrapper's
+`waitForInitialSync()` at `packages/installation/src/whatsapp-account.ts:196-225`
+settles after the first batch, which is sufficient for chat discovery but not for
+freezing a complete chronological snapshot.
+
+#175 must expose the provider's explicit initial-sync-complete signal through the
+WhatsApp session/account boundary. Do not infer it from `online`, the first batch, or a
+quiet-period timer. Feed batch archive writes and the completion barrier through the
+same serial queue; resolve readiness only when the completion barrier reaches the head:
+
+```ts
+session.onConversationSync((batch) => archiveQueue.add(() => archive(batch)));
+session.onConversationSyncComplete(() =>
+  archiveQueue.add(() => initialArchiveReady.resolve())
+);
+
+await Promise.all([account.authenticate(), account.initialArchiveReady()]);
+const snapshotHighWater = captureHighWater(chatId);
+```
+
+The barrier guarantees that every batch associated with the initial sync has completed
+its archive writes, regardless of whether the account wrapper observed `online` before
+or after those callbacks. `synchronizedChats()` and backfill reuse
+`initialArchiveReady()`; the former may still return its accumulated chat candidates.
+If authentication or archive readiness times out or fails, do not capture high-water or
+advance to tail/live.
+
+The product rule is:
+
+```text
+chat becomes managed             => admit the detached workflow
+initial sync complete + drained  => capture high-water and start snapshot
+archive tail reached             => backfill is complete and live Scribe may resume
+```
+
+### 3.3 Live Scribe seam
+
+All Speaker inputs converge at
+`packages/agents/src/speaker/dispatch.ts:21-29`. The current funnel dispatches the
+Speaker, records its receipt, then offers the original input to the detached Scribe
+coalescer.
+
+The managed coalescer can buffer a Window before the Speaker dispatches it
+(`packages/engine/src/coalescer/coalescer.ts:72-95`). A mode-only gate is therefore
+insufficient: a pre-handoff event may be consumed by backfill, then reach this funnel
+after the mode has become `live`.
+
+Backfill adds a WhatsApp-only, event-level gate around the final Scribe offer:
+
+```ts
+const receipt = await dispatch(speaker, { id, input: enriched });
+speakerActivity.accepted(receipt, enriched);
+
+const liveInput = isWhatsAppInput(input)
+  ? scribeBackfill.liveSlice(input)
+  : input;
+
+if (liveInput !== undefined) {
+  scribeCoalescer.offer({ id, input: liveInput });
+}
+
+return receipt;
+```
+
+`liveSlice()` reads the chat's state and resolves every Window event ID to its archive
+`rowid` in one archive transaction:
+
+- `catching_up`, `failed`, or `disabled`: return no live Scribe input;
+- `live`: retain only messages and updates whose `rowid > after_sequence`;
+- no retained events: return `undefined` and do not offer an empty input.
+
+The filter is per event because one buffered Window may straddle the handoff cutoff.
+The Speaker path is unchanged and always receives the full Window. GitHub and
+specialist-result inputs are unchanged. No second buffer or delivery ledger is added;
+the existing archive sequence and durable backfill cursor decide ownership.
+
+### 3.4 Scribe role and persistent agent instance
+
+`packages/agents/src/scribe/agent.ts:13-25` already mounts the graph-extraction skill
+and the four graph tools. The workflow reuses that agent definition and changes its
+role-wide `thinkingLevel` from `minimal` to `medium`.
+
+Do not use `harness.session(name)` for backfill continuity. Flue workflow harness
+conversations are scoped to one workflow execution; retrying the workflow creates a new
+run and cannot continue those sessions. Scribe is already a discovered continuing agent,
+and the live coalescer already dispatches to its per-chat instance with
+`dispatch(scribe, { id: chatId, ... })` (`packages/agents/src/scribe/coalescer.ts:44-45`).
+Backfill must address that same `scribe` agent instance by the same raw `chatId` and await
+each durable direct prompt through the Flue SDK:
+
+```ts
+for (;;) {
+  const window = await nextWindow();
+  if (window === undefined) break;
+  await client.agents.prompt("scribe", chatId, {
+    message: renderScribeBatch(window),
+    signal,
+  });
+  checkpoint(window);
+}
+```
+
+`client.agents.prompt()` waits for that agent submission's terminal result, so the
+workflow checkpoints only after the graph-tool turn settles. The continuing agent's
+canonical conversation—not the finite workflow run—preserves prior messages and tool
+results across backfill windows, later live turns, and boot recovery. The existing
+`apps/server/src/db.ts:1-7` file-backed Flue SQLite adapter persists that conversation
+across replacement of the local process. Concurrent chats remain isolated because each
+raw chat ID selects a different Scribe agent instance. Flue's model-aware automatic
+compaction handles long histories; #175 adds no parallel summary mechanism.
+
+The synchronous wait is process-scoped even though the accepted agent submission is
+durable. If the workflow process disappears after submission but before checkpointing,
+boot reconciliation starts a replacement workflow from the last durable archive cursor.
+That workflow may replay the window into the same Scribe conversation; the shared
+exact-phrase convergence rule in section 8 makes that replay safe.
+
+## 4. Product admission and reconciliation
+
+### 4.1 One reconciliation seam
+
+First-run and Settings/configuration do not directly own workflow behavior. One
+reconciliation function compares the next managed-chat set with durable Scribe state:
+
+```ts
+reconcileScribeBackfills({ managedChats, state, invoke });
+```
+
+Configuration promotion and Scribe reconciliation are one ordered operation. Commit
+all removals to `disabled` before the changed managed-chat set becomes visible to
+intake; commit additions to `catching_up` before making them visible. On boot, reconcile
+the loaded set before starting intake or admitting replacement runs. This ordering
+makes the durable `mode` row the membership latch used by the final handoff transaction.
+
+For each managed chat:
+
+- no state row: atomically create `catching_up` and admit one workflow;
+- `catching_up` with no surviving process after boot: admit one replacement run from
+  the stored cursor;
+- `live`: no-op;
+- `failed`: remain failed until an explicit retry;
+- `disabled`: transition back to `catching_up` and resume from its cursor.
+
+For each state row whose chat is no longer managed, transition any current mode to
+`disabled` in the reconciliation transaction. When disabling a `live` row, first set
+`after_sequence` to the chat's current `COALESCE(MAX(conversation_events.rowid), 0)`;
+this removal cutoff prevents re-addition from replaying the chat's prior live tenure.
+For `catching_up` or `failed`, preserve the existing checkpoint. The running workflow
+also checks between windows and exits when it observes disabled state. Do not delete
+its graph.
+
+### 4.2 Admission is detached
+
+The caller receives the workflow admission/run identity and does not await the
+backfill:
+
+```ts
+type StartScribeBackfillResult =
+  | { admitted: true; runId: string }
+  | {
+      admitted: false;
+      reason: "already-catching-up" | "already-live" | "failed";
+    };
+```
+
+The uniqueness boundary is the chat's durable state row, not an in-memory mutex.
+Concurrent reconciliation attempts must not create two runs.
+
+### 4.3 CLI boundary
+
+A thin CLI command may call the same reconciliation/retry service for development and
+operator proof. It must not contain a second implementation of pagination, graph
+extraction, or state transitions.
+
+## 5. Durable state
+
+Store one row per chat in the existing application SQLite database:
+
+```sql
+CREATE TABLE scribe_backfills (
+  chat_id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL
+    CHECK (mode IN ('catching_up', 'live', 'failed', 'disabled')),
+  phase TEXT NOT NULL
+    CHECK (phase IN ('snapshot', 'tail')),
+  snapshot_high_water INTEGER,
+  snapshot_unknown_time INTEGER,
+  snapshot_occurred_at_ms INTEGER,
+  snapshot_sequence INTEGER,
+  after_sequence INTEGER NOT NULL DEFAULT 0,
+  run_id TEXT,
+  last_error TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+```
+
+The exact column names are implementation detail, but the stored information is not:
+
+- mode;
+- nullable initial snapshot high-water (`NULL` means not ready/captured; `0` means a
+  captured empty archive);
+- resumable chronological snapshot cursor;
+- resumable insertion-order tail cursor;
+- most recent workflow run ID;
+- terminal error summary suitable for an operator surface.
+
+Do not create a second run ledger. Flue owns workflow run records and run events;
+`scribe_backfills` owns the product state needed to gate Scribe and resume the chat.
+
+## 6. Ordering and pagination
+
+### 6.1 Initial snapshot
+
+Admission creates the state row with `snapshot_high_water = NULL`. After the explicit
+initial-sync-complete archive barrier, capture the chat's archive high-water once in the
+state transaction:
+
+```sql
+UPDATE scribe_backfills
+   SET snapshot_high_water = (
+         SELECT COALESCE(MAX(rowid), 0)
+           FROM conversation_events
+          WHERE chat_id = :chat_id
+       ),
+       updated_at_ms = :now
+ WHERE chat_id = :chat_id
+   AND mode = 'catching_up'
+   AND snapshot_high_water IS NULL;
+```
+
+After capture, an empty chat has high-water `0`; `NULL` remains reserved for “not yet
+ready.” A resumed workflow reuses a non-null boundary rather than recapturing it. Never
+start the snapshot query or transition to tail while the boundary is `NULL`. Read only
+events at or below the captured sequence, ordered chronologically:
+
+```sql
+SELECT rowid AS archive_sequence, *
+  FROM conversation_events
+ WHERE chat_id = :chat_id
+   AND rowid <= :snapshot_high_water
+   AND (
+     :snapshot_sequence IS NULL
+     OR (
+       CASE WHEN occurred_at_ms = 0 THEN 1 ELSE 0 END,
+       occurred_at_ms,
+       rowid
+     ) > (
+       :snapshot_unknown_time,
+       :snapshot_occurred_at_ms,
+       :snapshot_sequence
+     )
+   )
+ ORDER BY
+   CASE WHEN occurred_at_ms = 0 THEN 1 ELSE 0 END,
+   occurred_at_ms,
+   rowid
+ LIMIT 50;
+```
+
+Admission initializes all three snapshot cursor fields to `NULL`. The
+`:snapshot_sequence IS NULL` branch admits the first page without comparing a row
+tuple to `NULL`; after each checkpoint, all three fields become non-null atomically.
+
+Treat unknown timestamps as a deterministic final bucket. Within the same timestamp,
+`rowid` preserves archive insertion order, matching the existing archive reader. The
+tuple cursor makes the snapshot resumable without assuming that the provider delivered
+history batches in conversation order.
+
+### 6.2 Tail
+
+After the snapshot is complete, set `after_sequence = snapshot_high_water` and consume
+new events in archive insertion order. For an empty initial snapshot this keeps the
+non-null tail cursor at `0`:
+
+```sql
+SELECT rowid AS archive_sequence, *
+  FROM conversation_events
+ WHERE chat_id = :chat_id
+   AND rowid > :after_sequence
+ ORDER BY rowid
+ LIMIT 50;
+```
+
+Tail traffic is live arrival order. This cursor cannot skip a late write merely
+because its provider timestamp is old.
+
+### 6.3 Window shape
+
+Each raw page contains at most 50 archive rows. Keep receipts in that raw scan so a
+receipt-only region cannot pin the durable cursor, but never decode or send them to
+Scribe. This matches the live path: `acceptedUpdate()` excludes receipts at
+`packages/engine/src/intake/managed-chat-inbox.ts:160-164`, and `decodeUpdate()` rejects
+them at lines 121-146.
+
+Checkpoint the terminal raw-page cursor, not the last Scribe-visible event:
+
+```ts
+const page = await readArchivePage(cursor, 50);
+const through = cursorOf(page.at(-1)!);
+const scribeEvents = page.filter((event) => event.kind !== "receipt");
+
+if (scribeEvents.length === 0) {
+  checkpoint(through);
+  log.info("scribe_backfill.window.skipped", {
+    chatId,
+    phase,
+    throughSequence: through.sequence,
+    receiptCount: page.length,
+  });
+  continue;
+}
+
+await client.agents.prompt("scribe", chatId, {
+  message: renderScribeBatch(scribeEvents),
+  signal,
+});
+checkpoint(through);
+```
+
+For a mixed page, cursor advancement still waits for the Scribe turn to succeed. For a
+receipt-only page, there is no model or graph work to retry, so checkpoint it
+immediately. Do not add `kind <> 'receipt'` to the pagination SQL: advancing over raw
+rows is what guarantees progress through receipt-only history.
+
+Decode the remaining arrivals and updates into the existing `ConversationWindow`
+shape. Build ordering from the decoded objects' IDs, not uniformly from archive
+`event_id`: `decodeIncoming()` assigns an arrival's `provider_message_id` to
+`message.id`, while `decodeUpdate()` assigns an update's `event_id` to `update.id`
+(`packages/engine/src/intake/managed-chat-inbox.ts:103-149`). Then present the existing
+Scribe vocabulary:
+
+```ts
+const ordered = scribeEvents.map((row) =>
+  row.kind === "arrival"
+    ? { message: decodeIncoming(row), update: undefined }
+    : { message: undefined, update: decodeUpdate(row) }
+);
+const messages = ordered.flatMap(({ message }) =>
+  message === undefined ? [] : [message]
+);
+const updates = ordered.flatMap(({ update }) =>
+  update === undefined ? [] : [update]
+);
+
+scribeBatchInput([
+  whatsappWindowInput({
+    id: stableWindowId(chatId, cursor),
+    chatId,
+    messages,
+    updates,
+    eventOrder: ordered.map(({ message, update }) => (message ?? update!).id),
+    reason: "capacity",
+  }),
+]);
+```
+
+Minimally extend the shared WhatsApp input schema with optional `eventOrder: string[]`.
+When present, it lists every decoded `message.id` or `update.id` exactly once in raw page
+order. For arrivals this is the provider message ID; for edits, reactions, and
+revocations it is the archive event ID. The Scribe renderer interleaves the existing
+`messages` and `updates` arrays by that list before rendering. Live callers may omit it;
+backfill must supply it. Do not expose archive row IDs to the model and do not replace
+the existing Window shape with a second payload language.
+
+The implementation may add an internal backfill reason if the existing reason union
+cannot represent the window honestly, but it must not invent a second extraction
+input language.
+
+No overlap is added between adjacent windows. The persistent Scribe agent conversation
+supplies cross-window context.
+
+## 7. Per-window transaction semantics
+
+For every raw page that contains at least one Scribe-visible event:
+
+1. Check that the chat remains managed.
+2. Emit `scribe_backfill.window.started`.
+3. Await the Scribe prompt on the chat's persistent agent instance.
+4. When the prompt resolves successfully, advance the appropriate cursor.
+5. Emit `scribe_backfill.window.completed`.
+
+Cursor advancement happens only after the model turn and its graph tool calls finish.
+If the process dies after graph writes but before checkpointing, the same window may
+run again. Section 8 makes that replay convergent. A receipt-only page is the sole
+exception: it advances without a model turn because it has no Scribe-visible work.
+
+## 8. Idempotency
+
+### 8.1 Existing convergence retained
+
+- People, agents, threads, and GitHub objects converge on existing natural identities.
+- Relations converge on `(fromId, relation, toId)`.
+- Existing noisy-OR confidence accumulation remains unchanged.
+
+### 8.2 Enforce existing exact-phrase keyless convergence
+
+The graph-extraction skill already says that keyless entities reuse an existing node
+only for the same exact phrasing. Enforce that policy in the shared GraphStore rather
+than trusting every caller to look up and supply the ID:
+
+```text
+topic      => exact label
+commitment => exact description
+goal       => exact description
+```
+
+When an upsert supplies no explicit ID and an exact-phrase node exists, update that
+node and combine confidence. Different phrasing remains a distinct low-confidence
+node; #175 does not add fuzzy consolidation.
+
+This shared enforcement covers both live Scribe and backfill and makes a replayed
+partial window mechanically convergent.
+
+### 8.3 Completed reruns
+
+Reconciliation of a chat already in `live` is a no-op. Explicit retry resumes from its
+stored cursor. No destructive reset path is part of the product or CLI surface.
+
+## 9. Catch-up-to-live handoff
+
+When a tail query returns no events, perform the final check and state transition in
+one immediate SQLite transaction:
+
+```sql
+BEGIN IMMEDIATE;
+
+SELECT rowid
+  FROM conversation_events
+ WHERE chat_id = :chat_id
+   AND rowid > :after_sequence
+ ORDER BY rowid
+ LIMIT 1;
+
+-- Only if the query returned no row:
+UPDATE scribe_backfills
+   SET mode = 'live', run_id = NULL, last_error = NULL, updated_at_ms = :now
+ WHERE chat_id = :chat_id
+   AND mode = 'catching_up';
+
+-- Require exactly one changed row. If mode is now 'disabled', return the disabled
+-- workflow outcome; never report a successful live handoff.
+
+COMMIT;
+```
+
+This resolves both races:
+
+```text
+archive append commits first
+  => final check sees it and the workflow processes another tail window
+
+live transition commits first
+  => the later append observes live mode and ordinary Scribe receives the input
+
+removal commits first
+  => the conditional live update changes no row and the workflow exits disabled
+
+live transition commits first, then removal
+  => removal overwrites live with disabled before the new managed set is published
+```
+
+In `live` mode, the retained `after_sequence` is the stable handoff cutoff used by
+`liveSlice()`. A Window dispatched after handoff may contain events from both sides:
+rows at or below the cutoff belonged to backfill, while rows above it belong to live
+Scribe. If `liveSlice()` reads before the handoff transaction commits, it sees
+`catching_up` and withholds the whole input; backfill must consume those rows before it
+can complete the handoff.
+
+No quiet-period timer participates in correctness.
+
+## 10. Failure, retry, interruption, and removal
+
+### Window failure
+
+Retry the current window up to three times in the current workflow. Emit a structured
+retry event for attempts two and three. Do not advance the cursor between attempts.
+
+After the third failure:
+
+- record `mode = 'failed'` and a redacted error summary;
+- terminalize the workflow with a failed business result;
+- keep WhatsApp-to-Scribe live fanout gated for that chat;
+- leave the Speaker live;
+- continue archiving new events; and
+- require explicit retry to return to `catching_up` from the stored cursor.
+
+### Process interruption
+
+A process crash cannot execute the failure transition, so the row remains
+`catching_up`. Runtime boot reconciliation treats it as interrupted work and admits
+one replacement workflow from the checkpoint. It must not create one replacement per
+old Flue run record.
+
+### Managed-chat removal
+
+Removal reconciliation changes the row from any mode to `disabled` before the removed
+set is published to intake. For a live chat, the same transaction replaces the old
+handoff cutoff with the archive high-water at removal; rows committed after that cutoff
+while disabled are the only rows backfilled after re-addition. For catching-up or
+failed work, preserve the last successful cursor. Check durable mode between windows
+and stop before the next prompt. The final handoff's conditional update provides the
+same guard if removal races the tail-empty transition. Do not delete historical graph
+facts. Re-adding the chat changes `disabled` to `catching_up` and resumes from the
+stored cursor.
+
+```sql
+BEGIN IMMEDIATE;
+
+UPDATE scribe_backfills
+   SET after_sequence = CASE
+         WHEN mode = 'live' THEN (
+           SELECT COALESCE(MAX(rowid), 0)
+             FROM conversation_events
+            WHERE chat_id = :chat_id
+         )
+         ELSE after_sequence
+       END,
+       mode = 'disabled',
+       run_id = NULL,
+       updated_at_ms = :now
+ WHERE chat_id = :chat_id;
+
+COMMIT;
+```
+
+## 11. Observability contract
+
+Use `ctx.log` so Flue persists the events in the workflow's live run stream. Event
+names are stable; attributes contain counters and cursors, never chat content,
+participant names, or media.
+
+```ts
+log.info("scribe_backfill.started", {
+  chatId,
+  phase,
+  startingSequence,
+});
+
+log.info("scribe_backfill.window.started", {
+  chatId,
+  phase,
+  window,
+  fromSequence,
+  throughSequence,
+  archiveEventCount,
+  scribeEventCount,
+  receiptCount,
+});
+
+log.info("scribe_backfill.window.completed", {
+  chatId,
+  phase,
+  window,
+  throughSequence,
+  eventsProcessed,
+});
+
+log.info("scribe_backfill.window.skipped", {
+  chatId,
+  phase,
+  throughSequence,
+  receiptCount,
+});
+
+log.warn("scribe_backfill.window.retrying", {
+  chatId,
+  window,
+  attempt,
+  errorCode,
+});
+
+log.error("scribe_backfill.failed", {
+  chatId,
+  window,
+  attempts: 3,
+  errorCode,
+});
+
+log.info("scribe_backfill.live", {
+  chatId,
+  windowsProcessed,
+  eventsProcessed,
+  finalSequence,
+});
+```
+
+Flue already emits model usage and run lifecycle events. Do not duplicate those in a
+new progress database.
+
+## 12. Workflow contract
+
+### Input
+
+```ts
+interface ScribeBackfillInput {
+  readonly chatId: string;
+}
+```
+
+Window size, retry count, model, and effort are role/workflow policy, not caller
+choices in the product admission schema.
+
+### Output
+
+```ts
+type ScribeBackfillResult =
+  | {
+      outcome: "live";
+      chatId: string;
+      windowsProcessed: number;
+      eventsProcessed: number;
+      finalSequence: number;
+    }
+  | {
+      outcome: "failed";
+      chatId: string;
+      cursor: number;
+      errorCode: string;
+    }
+  | {
+      outcome: "disabled";
+      chatId: string;
+      cursor: number;
+    };
+```
+
+Do not return message contents in results.
+
+## 13. Minimum build slices
+
+The implementation session should work in this dependency order:
+
+1. **Archive pagination and state store**
+
+   - sequence-aware snapshot/tail reads;
+   - receipt filtering with raw-page cursor advancement;
+   - `scribe_backfills` state transitions;
+   - transactional final handoff;
+   - focused empty/first-page/order, race/checkpoint, and receipt-only-page tests.
+
+2. **Shared keyless convergence**
+
+   - enforce exact-phrase reuse in GraphStore;
+   - one regression test covering topic, commitment, goal, and confidence increase.
+
+3. **Backfill workflow**
+
+   - reuse the Scribe agent;
+   - target the existing persistent Scribe agent instance keyed by raw chat ID;
+   - await each direct agent prompt before checkpointing, with 50-event windows and three attempts;
+   - optional `eventOrder` metadata rendered in archive order;
+   - medium Scribe thinking level;
+   - structured run logs.
+
+4. **Runtime reconciliation and live gate**
+
+   - boot and managed-chat-change reconciliation;
+   - expose initial-sync completion and drain all batch archive writes before snapshot;
+   - one active run per chat;
+   - WhatsApp-only, event-level live-Scribe cutoff gate;
+   - one regression test for a Window that straddles the handoff cutoff;
+   - one regression test for managed-chat removal racing final handoff;
+   - one regression test for removing and re-adding a formerly live chat;
+   - disabled/failed/retry behavior.
+
+5. **Developer proof surface**
+   - thin CLI admission/status/retry command over the same service;
+   - no CLI-owned backfill logic.
+
+These are build-order slices, not separate product abstractions. A worker may combine
+adjacent slices when they share the same central files.
+
+## 14. Acceptance proof for #175
+
+The implementation is complete when all of the following are proven:
+
+- Selecting a new managed chat admits exactly one background workflow and returns
+  without waiting for completion.
+- If `online` arrives before a multi-batch initial sync finishes, snapshot high-water is
+  not captured until explicit sync completion and every batch archive write have
+  drained.
+- The Speaker handles a live message while that chat is still backfilling.
+- The same message is archived but not offered to live Scribe during catch-up.
+- Initial history is presented chronologically in windows of at most 50 events.
+- Arrivals, edits, reactions, and revocations within a mixed page reach Scribe in one
+  archive-ordered sequence rather than grouped message/update order.
+- A newly admitted chat reads its first snapshot page, and equal-timestamp events retain
+  archive insertion order.
+- An empty newly managed chat captures high-water `0`, reaches tail, and can transition
+  to live without violating its non-null cursor.
+- Mixed and receipt-only archive pages never send receipts to Scribe and still advance
+  the durable raw archive cursor.
+- Windows run sequentially on the same persistent Scribe agent instance used by that
+  chat's live path and update the graph after each turn.
+- Concurrent chat backfills use distinct Scribe agent instances; boot recovery for the
+  same chat reuses the instance's durable canonical conversation rather than a new
+  workflow-local session.
+- A process interruption resumes from the last successful checkpoint.
+- Replaying a partial window does not increase entity or relation counts for identical
+  facts; confidence may increase under the existing policy.
+- An event inserted at the final handoff is processed exactly once by either backfill
+  or live Scribe.
+- A buffered Window dispatched after handoff is sliced at the durable archive cutoff;
+  pre-cutoff events are not replayed and post-cutoff events still reach live Scribe.
+- Three failures produce durable `failed` state without stopping the Speaker or losing
+  later archive events.
+- Removing a managed chat stops at the next window boundary and marks it disabled.
+- Removing and re-adding a formerly live chat starts after its removal high-water and
+  does not replay the prior live tenure.
+- Removal racing the tail-empty handoff cannot leave the chat `live`; re-adding it
+  resumes from the stored cursor.
+- Run-stream consumers can observe started, per-window, retry, failure, and live events
+  without receiving message content.
+- The development CLI can admit, inspect, and explicitly retry the same workflow path.
+- A real local archive can be backfilled and inspected, with private data kept local.
+
+### Deferred proof
+
+`SCRIBE_FIXTURE_READY` remains unset. After at least one real backfill has been
+inspected, create a follow-up design/build ticket that selects a sanitized or synthetic
+corpus, defines extraction-quality assertions grounded in observed failure modes, and
+then un-skips the eval battery.
+
+## 15. Decision ledger
+
+| Decision      | Ratified choice                                                                                                |
+| ------------- | -------------------------------------------------------------------------------------------------------------- |
+| Invocation    | Automatic background workflow on managed-chat selection; CLI only as dev/operator surface                      |
+| Awaiting      | Caller does not await; workflow awaits each Scribe window internally                                           |
+| Live behavior | Speaker remains live; WhatsApp live-Scribe fanout is gated during catch-up                                     |
+| Readiness     | Admission is immediate; explicit sync completion plus archive drain gates snapshot                             |
+| Handoff       | Transactional sequence tail check and mode switch                                                              |
+| Conversation  | Existing persistent Scribe agent instance keyed by raw chat ID, reused by backfill, live traffic, and recovery |
+| Ordering      | Chronological initial snapshot, then insertion-order tail                                                      |
+| Windowing     | Fixed maximum of 50 archive events                                                                             |
+| Idempotency   | Shared exact-phrase convergence plus post-success checkpoints                                                  |
+| Lifecycle     | One durable per-chat state machine; three attempts; boot resume; disabled on removal                           |
+| Provenance    | Existing optional singular provenance; no reset or provenance redesign                                         |
+| Observability | Structured `ctx.log` lifecycle events, no message content                                                      |
+| Model policy  | Reuse the Scribe role; raise role effort from `minimal` to `medium`                                            |
+| Evals         | Defer fixture unskip until real output informs corpus and assertions                                           |
