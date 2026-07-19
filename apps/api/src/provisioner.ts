@@ -504,6 +504,14 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
             await stopAndObserve(application);
           } catch (stopError) {
             if (stopError instanceof LeaseLostError) throw stopError;
+            const quiescenceErrorCode = "dokploy_quiescence_not_observed";
+            await observe("uncertain", "retryable_error", quiescenceErrorCode);
+            return {
+              tenantId,
+              status: "retryable_error",
+              applicationId: application.applicationId,
+              errorCode: quiescenceErrorCode,
+            };
           }
           if (!(await blockRemoteConfig(options.client, target.credsStoreKey, lease, operationId))) {
             throw new LeaseLostError("lease_lost");

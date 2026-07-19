@@ -311,19 +311,33 @@ describe("tenant provisioner", () => {
     expect([...dokploy.manifests.values()][0]?.command).toContain("dist/cli/main.js");
   });
 
-  test("blocks a response-lost start while configuration is still pending", async () => {
+  test("keeps a response-lost start pending until zero tasks are observed", async () => {
     const client = await migrate();
     const tenantId = await seed(client, "start-unknown");
     const turso = new FakeTurso();
     const dokploy = new FakeDokploy();
     dokploy.failStartAfterScale = true;
+    dokploy.failStopBeforeScale = true;
     const provisioner = provisionerFor(client, turso, dokploy);
 
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({
+      status: "retryable_error",
+      errorCode: "dokploy_quiescence_not_observed",
+    });
+    let state = await client.execute({
+      sql: `SELECT applied_config_version, remote_config_state
+        FROM agent_instance WHERE tenant_id = ?1`,
+      args: [tenantId],
+    });
+    expect(state.rows[0]).toMatchObject({ applied_config_version: 0, remote_config_state: "pending" });
+    expect([...dokploy.taskCounts.values()]).toEqual([1]);
+
+    dokploy.failStopBeforeScale = false;
     expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({
       status: "blocked",
       errorCode: "dokploy_config_outcome_unknown",
     });
-    const state = await client.execute({
+    state = await client.execute({
       sql: `SELECT applied_config_version, remote_config_state
         FROM agent_instance WHERE tenant_id = ?1`,
       args: [tenantId],
