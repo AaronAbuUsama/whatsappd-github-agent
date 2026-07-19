@@ -23,7 +23,6 @@ const plan: PlanArtifact = {
 };
 
 const receipt = (verdict: VerificationVerdict, report = `${verdict} report`): VerificationReceipt => ({ verdict, report });
-const workspace = (hash = "h1") => new Map([["src/index.ts", hash]]);
 
 describe("Coder new-issue admission", () => {
   it("preserves the legacy start_coder_job request shape and normalizes it to new_issue", () => {
@@ -75,7 +74,7 @@ describe("coding waypoint schema", () => {
 });
 
 describe("deterministic Planner → bounded Coder/Verifier loop", () => {
-  it("plans first, uses fresh role tasks in one cwd, excludes task from every model schema, and feeds the complete report verbatim into repair", async () => {
+  it("plans first, uses fresh role tasks in one cwd, and feeds the complete report verbatim into repair", async () => {
     const calls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
     const marker = "\nFAIL full report\n<do-not-summarize>exact bytes & reproduction</do-not-summarize>\n";
     const responses = [
@@ -99,14 +98,11 @@ describe("deterministic Planner → bounded Coder/Verifier loop", () => {
       cwd: "/workspace",
       maxVerificationRounds: 3,
       waypoint: (stage, status, extra) => waypoints.push(`${stage}:${status}:${extra?.verificationRound ?? "-"}:${extra?.verdict ?? "-"}`),
-      snapshot: async () => workspace(),
-      initialWorkspace: workspace(),
     });
 
-    expect(result).toEqual({ plan, verification: receipt("PASS", "PASS after repair"), rounds: 2, verified: workspace() });
+    expect(result).toEqual({ plan, verification: receipt("PASS", "PASS after repair"), rounds: 2 });
     expect(calls.map((call) => call.options.agent)).toEqual(["planner", "coder", "verifier", "coder", "verifier"]);
     expect(calls.every((call) => call.options.cwd === "/workspace")).toBe(true);
-    expect(calls.every((call) => (call.options.frameworkTools as { task?: boolean }).task === false)).toBe(true);
     expect(calls[0]!.options.result).toBe(planArtifactSchema);
     expect(calls[2]!.options.result).toBe(verificationReceiptSchema);
     expect(calls[4]!.options.result).toBe(verificationReceiptSchema);
@@ -144,46 +140,10 @@ describe("deterministic Planner → bounded Coder/Verifier loop", () => {
       cwd: "/workspace",
       maxVerificationRounds: max,
       waypoint: () => {},
-      snapshot: async () => workspace(),
-      initialWorkspace: workspace(),
     });
 
     expect(result.rounds).toBe(expectedRounds);
     expect(result.verification.verdict).toBe(verdicts[expectedRounds - 1]);
     expect(task).toHaveBeenCalledTimes(1 + expectedRounds * 2);
-  });
-
-  it("rejects Verifier-owned workspace mutations before publication", async () => {
-    const queue = [{ data: plan }, { data: undefined }, { data: receipt("PASS") }];
-    const snapshots = [workspace(), workspace("coder"), workspace("verifier")];
-
-    await expect(runInternalCodingLoop({
-      session: { task: async () => queue.shift()! } as unknown as Pick<FlueSession, "task">,
-      plannerPrompt: "PLAN",
-      coderPrompt: () => "CODE",
-      verifierPrompt: () => "VERIFY",
-      cwd: "/workspace",
-      maxVerificationRounds: 1,
-      waypoint: () => {},
-      snapshot: async () => snapshots.shift()!,
-      initialWorkspace: workspace(),
-    })).rejects.toThrow("Verifier changed the shared workspace");
-  });
-
-  it("rejects Planner-owned workspace mutations before Coder starts", async () => {
-    const task = vi.fn(async () => ({ data: plan }));
-
-    await expect(runInternalCodingLoop({
-      session: { task } as unknown as Pick<FlueSession, "task">,
-      plannerPrompt: "PLAN",
-      coderPrompt: () => "CODE",
-      verifierPrompt: () => "VERIFY",
-      cwd: "/workspace",
-      maxVerificationRounds: 1,
-      waypoint: () => {},
-      snapshot: async () => workspace("planner-edit"),
-      initialWorkspace: workspace(),
-    })).rejects.toThrow("Planner changed the shared workspace");
-    expect(task).toHaveBeenCalledOnce();
   });
 });

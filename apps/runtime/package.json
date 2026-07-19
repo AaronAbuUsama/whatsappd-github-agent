@@ -7,7 +7,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.80.2",
     "@flue/github": "1.0.0-beta.1",
-    "@flue/runtime": "file:../../vendor/flue-runtime",
+    "@flue/runtime": "1.0.0-beta.9",
     "@flue/sdk": "1.0.0-beta.9",
     "@libsql/client": "0.17.4",
     "@octokit/rest": "^22.0.0",

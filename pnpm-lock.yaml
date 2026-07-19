@@ -86,8 +86,8 @@ importers:
         specifier: 1.0.0-beta.1
         version: 1.0.0-beta.1
       '@flue/runtime':
-        specifier: file:vendor/flue-runtime
-        version: file:vendor/flue-runtime
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@flue/sdk':
         specifier: 1.0.0-beta.9
         version: 1.0.0-beta.9
@@ -292,8 +292,8 @@ importers:
         specifier: 1.0.0-beta.1
         version: 1.0.0-beta.1
       '@flue/runtime':
-        specifier: file:../../vendor/flue-runtime
-        version: file:vendor/flue-runtime
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@flue/sdk':
         specifier: 1.0.0-beta.9
         version: 1.0.0-beta.9
@@ -422,8 +422,8 @@ importers:
   packages/agents:
     dependencies:
       '@flue/runtime':
-        specifier: file:../../vendor/flue-runtime
-        version: file:vendor/flue-runtime
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       effect:
         specifier: 4.0.0-beta.98
         version: 4.0.0-beta.98
@@ -560,8 +560,8 @@ importers:
         specifier: 1.0.0-beta.1
         version: 1.0.0-beta.1
       '@flue/runtime':
-        specifier: file:../../vendor/flue-runtime
-        version: file:vendor/flue-runtime
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       braintrust:
         specifier: 3.17.0
         version: 3.17.0(@aws-sdk/credential-provider-web-identity@3.972.63)(zod@4.4.3)
@@ -609,8 +609,8 @@ importers:
   packages/installation:
     dependencies:
       '@flue/runtime':
-        specifier: file:../../vendor/flue-runtime
-        version: file:vendor/flue-runtime
+        specifier: 1.0.0-beta.9
+        version: 1.0.0-beta.9(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@4.0.0-beta.98)(typebox@1.1.38)(typescript@5.9.3)(ws@8.21.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
       '@libsql/client':
         specifier: 0.17.4
         version: 0.17.4
@@ -1715,10 +1715,6 @@ packages:
 
   '@flue/runtime@1.0.0-beta.9':
     resolution: {integrity: sha512-ksh0ZkTVyqQnGvU3OnbVX6luAJwe6tt8q7O0vn99b7Cx6XcPTXzY/YEkXrOtCHzV6ZwfSdO9ZfaWbhTD1tdQuQ==}
-    engines: {node: '>=22.19.0'}
-
-  '@flue/runtime@file:vendor/flue-runtime':
-    resolution: {directory: vendor/flue-runtime, type: directory}
     engines: {node: '>=22.19.0'}
 
   '@flue/sdk@1.0.0-beta.9':
@@ -7060,8 +7056,6 @@ snapshots:
       - zod
       - zod-openapi
       - zod-to-json-schema
-
-  '@flue/runtime@file:vendor/flue-runtime': {}
 
   '@flue/sdk@1.0.0-beta.9':
     dependencies:
