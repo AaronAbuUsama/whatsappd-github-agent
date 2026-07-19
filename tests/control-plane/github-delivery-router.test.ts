@@ -78,6 +78,35 @@ afterEach(async () => {
 });
 
 describe("hosted GitHub callback and repository registry", () => {
+  it("publishes only an applied Operate runtime as a GitHub delivery target", async () => {
+    const databaseClient = await database();
+    const owner = await seedTenant(databaseClient, "runtime-target");
+    const store = createGitHubControlStore(databaseClient);
+    await databaseClient.execute({
+      sql: `INSERT INTO agent_instance (
+        id, tenant_id, creds_store_key, desired_mode, applied_mode,
+        runtime_base_url, dokploy_display_name, dokploy_creation_token
+      ) VALUES (
+        'runtime-target', ?1, 'tenant-db-runtime-target', 'setup', 'setup',
+        'http://setup.internal', 'Runtime Target', 'creation-runtime-target'
+      )`,
+      args: [owner.tenantId],
+    });
+
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toBeNull();
+    await databaseClient.execute({
+      sql: `UPDATE agent_instance
+        SET desired_mode = 'operate', applied_mode = 'operate', runtime_base_url = 'http://operate.internal'
+        WHERE tenant_id = ?1`,
+      args: [owner.tenantId],
+    });
+    await expect(store.runtimeTarget(owner.tenantId)).resolves.toEqual({
+      tenantId: owner.tenantId,
+      runtimeId: "runtime-target",
+      baseUrl: "http://operate.internal",
+    });
+  });
+
   it("binds an expiring callback to one tenant and makes a duplicate callback replay-safe", async () => {
     const databaseClient = await database();
     const owner = await seedTenant(databaseClient, "owner");
