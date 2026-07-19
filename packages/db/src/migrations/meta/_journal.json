@@ -15,6 +15,13 @@
       "when": 1784409241250,
       "tag": "0001_hard_bushwacker",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784438346167,
+      "tag": "0002_breezy_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

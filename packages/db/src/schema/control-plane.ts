@@ -134,6 +134,7 @@ export const agentInstance = sqliteTable(
     updatedAtMs: integer("updated_at_ms").default(nowMs).notNull(),
   },
   (table) => [
+    unique("agent_instance_tenant_store_unique").on(table.tenantId, table.credsStoreKey),
     foreignKey({
       name: "agent_instance_tenant_store_fk",
       columns: [table.tenantId, table.credsStoreKey],
@@ -175,6 +176,39 @@ export const agentInstance = sqliteTable(
         and ${table.remoteConfigTargetVersion} is not null
         and ${table.remoteConfigTargetVersion} > 0
       )`,
+    ),
+  ],
+);
+
+export const provisionerOperatorAudit = sqliteTable(
+  "provisioner_operator_audit",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    credsStoreKey: text("creds_store_key").notNull(),
+    operationId: text("operation_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    evidenceNote: text("evidence_note").notNull(),
+    fencingToken: integer("fencing_token").notNull(),
+    outcome: text("outcome", { enum: ["accepted", "rejected"] }).notNull(),
+    resolution: text("resolution", { enum: ["quiesced_restored", "cas_rejected"] }).notNull(),
+    attemptedAtMs: integer("attempted_at_ms").default(nowMs).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "provisioner_operator_audit_agent_fk",
+      columns: [table.tenantId, table.credsStoreKey],
+      foreignColumns: [agentInstance.tenantId, agentInstance.credsStoreKey],
+    }).onDelete("cascade"),
+    index("provisioner_operator_audit_operation_idx").on(table.tenantId, table.operationId),
+    check("provisioner_operator_audit_actor_check", sql`length(trim(${table.actorId})) > 0`),
+    check("provisioner_operator_audit_evidence_check", sql`length(trim(${table.evidenceNote})) > 0`),
+    check("provisioner_operator_audit_fence_check", sql`${table.fencingToken} > 0`),
+    check("provisioner_operator_audit_outcome_check", sql`${table.outcome} in ('accepted', 'rejected')`),
+    check(
+      "provisioner_operator_audit_resolution_check",
+      sql`(${table.outcome} = 'accepted' and ${table.resolution} = 'quiesced_restored')
+        or (${table.outcome} = 'rejected' and ${table.resolution} = 'cas_rejected')`,
     ),
   ],
 );

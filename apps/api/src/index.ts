@@ -12,6 +12,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { installHostedGitHub } from "./github-hosted";
+import { createHostedTenantProvisioner } from "./provisioner-hosted";
 
 const app = new Hono();
 const appRouter = createAppRouter({ getEntitlementSnapshot });
@@ -37,6 +38,13 @@ if (process.env.GITHUB_APPS_JSON) {
     ...(process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON
       ? { runtimeSecretsJson: process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON }
       : {}),
+  });
+}
+
+export const hostedTenantProvisioner = createHostedTenantProvisioner({ client });
+if (hostedTenantProvisioner) {
+  void hostedTenantProvisioner.reconcilePendingTenants().catch(() => {
+    console.error("[tenant-provisioner] startup reconciliation failed");
   });
 }
 

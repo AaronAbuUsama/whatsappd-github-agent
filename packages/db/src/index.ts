@@ -4,6 +4,7 @@ import { openControlDb } from "./control-db";
 
 export * from "./control-db";
 export * from "./github-control";
+export * from "./provisioner-control";
 
 export const controlDb = await openControlDb({
   url: env.DATABASE_URL,
