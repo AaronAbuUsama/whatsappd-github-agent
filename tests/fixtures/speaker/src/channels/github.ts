@@ -8,7 +8,10 @@ if (!webhookSecret) throw new Error("GITHUB_WEBHOOK_SECRET is required by the pe
 export const channel = createGitHubChannel({
   webhookSecret,
   webhook: async ({ delivery }) => {
-    const result = await handleGitHubDelivery(delivery);
+    const result = await handleGitHubDelivery({
+      ...delivery,
+      githubAppId: process.env.GITHUB_APP_ID ?? "fixture-app",
+    });
     return new Response(JSON.stringify(result), {
       status: 200,
       headers: { "content-type": "application/json; charset=UTF-8" },

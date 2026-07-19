@@ -106,6 +106,7 @@ export const createAmbientAgentApp = async ({
         control: () => whatsappControl,
       });
       installBridgeRoute(routes, {
+        runtimeId,
         webhookSecret: githubCredential.webhookSecret,
         status: getWhatsAppRuntimeStatus,
         control: () => whatsappControl,

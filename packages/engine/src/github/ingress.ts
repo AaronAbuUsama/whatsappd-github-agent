@@ -13,6 +13,8 @@ import { errorMessage } from "../shared/errors.ts";
 import { retry as retryOperation, type RetryPolicy } from "../shared/retry.ts";
 import type { GitHubIngressRecord, GitHubIngressStore } from "./ingress-store.ts";
 
+export type RoutedGitHubWebhookDelivery = GitHubWebhookDelivery & { readonly githubAppId?: string };
+
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const positiveInteger = v.pipe(v.number(), v.integer(), v.minValue(1));
 const issueOpenedPayloadSchema = v.object({
@@ -134,12 +136,13 @@ export const createGitHubIngress = (options: {
   const inFlight = new Set<string>();
 
   const handle = async (
-    delivery: GitHubWebhookDelivery,
+    delivery: RoutedGitHubWebhookDelivery,
     concurrentDuplicate: boolean,
   ): Promise<GitHubIngressResult> => {
+    const githubAppId = delivery.githubAppId ?? "legacy";
     const receivedAt = now().toISOString();
-    if (!options.store.claim(delivery.deliveryId, delivery.name, receivedAt)) {
-      const record = options.store.get(delivery.deliveryId);
+    if (!options.store.claim(delivery.deliveryId, delivery.name, receivedAt, githubAppId)) {
+      const record = options.store.get(delivery.deliveryId, githubAppId);
       if (!record) throw new Error(`Claimed GitHub delivery ${delivery.deliveryId} disappeared`);
       if (record.status === "received") {
         if (concurrentDuplicate) {
@@ -148,9 +151,13 @@ export const createGitHubIngress = (options: {
         }
         if (record.eventName !== delivery.name) {
           const error = `Delivery identifier was reused for ${delivery.name} after ${record.eventName}`;
-          options.store.settle(delivery.deliveryId, { status: "failed", error, settledAt: now().toISOString() });
+          options.store.settle(
+            delivery.deliveryId,
+            { status: "failed", error, settledAt: now().toISOString() },
+            githubAppId,
+          );
           logger.error({ event: "github.ingress.failed", deliveryId: delivery.deliveryId, error });
-          return { status: "failed", record: options.store.get(delivery.deliveryId)! };
+          return { status: "failed", record: options.store.get(delivery.deliveryId, githubAppId)! };
         }
         logger.info({ event: "github.ingress.resumed", deliveryId: delivery.deliveryId });
       } else {
@@ -169,10 +176,11 @@ export const createGitHubIngress = (options: {
     const isIssueOpened = delivery.name === "issues" && delivery.payload.action === "opened";
     const isPullRequestOpened = delivery.name === "pull_request" && delivery.payload.action === "opened";
     if (!isIssueOpened && !isPullRequestOpened) {
-      options.store.settle(delivery.deliveryId, {
-        status: "unsupported",
-        settledAt: now().toISOString(),
-      });
+      options.store.settle(
+        delivery.deliveryId,
+        { status: "unsupported", settledAt: now().toISOString() },
+        githubAppId,
+      );
       logger.warn({
         event: "github.ingress.unsupported",
         deliveryId: delivery.deliveryId,
@@ -187,11 +195,11 @@ export const createGitHubIngress = (options: {
     if (!parsed.success) {
       const event = isIssueOpened ? "issues.opened" : "pull_request.opened";
       const error = `Verified ${event} delivery did not match the supported application contract`;
-      options.store.settle(delivery.deliveryId, {
-        status: "unsupported",
-        error,
-        settledAt: now().toISOString(),
-      });
+      options.store.settle(
+        delivery.deliveryId,
+        { status: "unsupported", error, settledAt: now().toISOString() },
+        githubAppId,
+      );
       logger.warn({
         event: "github.ingress.unsupported",
         deliveryId: delivery.deliveryId,
@@ -247,11 +255,11 @@ export const createGitHubIngress = (options: {
         return { status: "deferred", deliveryId: delivery.deliveryId, repository, reason };
       }
       if (correlation.completedIssueNumbers.length === 0) {
-        options.store.settle(delivery.deliveryId, {
-          status: "uncorrelated",
-          repository,
-          settledAt: now().toISOString(),
-        });
+        options.store.settle(
+          delivery.deliveryId,
+          { status: "uncorrelated", repository, settledAt: now().toISOString() },
+          githubAppId,
+        );
         logger.warn({
           event: "github.ingress.uncorrelated",
           deliveryId: delivery.deliveryId,
@@ -300,13 +308,11 @@ export const createGitHubIngress = (options: {
       );
     } catch (cause) {
       const error = errorMessage(cause);
-      options.store.settle(delivery.deliveryId, {
-        status: "failed",
-        repository,
-        ambience: "ambience",
-        error,
-        settledAt: now().toISOString(),
-      });
+      options.store.settle(
+        delivery.deliveryId,
+        { status: "failed", repository, ambience: "ambience", error, settledAt: now().toISOString() },
+        githubAppId,
+      );
       logger.error({
         event: "github.ingress.failed",
         deliveryId: delivery.deliveryId,
@@ -315,7 +321,7 @@ export const createGitHubIngress = (options: {
         dispatchId: null,
         error,
       });
-      return { status: "failed", record: options.store.get(delivery.deliveryId)! };
+      return { status: "failed", record: options.store.get(delivery.deliveryId, githubAppId)! };
     }
 
     // ponytail: the single-row ledger predates broadcast; it records the first thread's
@@ -323,15 +329,19 @@ export const createGitHubIngress = (options: {
     // done log. Per-thread ledger rows only if audit ever needs them.
     const representativeChat = chats[0]!;
     const representativeReceipt = receipts[0]!;
-    options.store.settle(delivery.deliveryId, {
-      status: "done",
-      repository,
-      chatId: representativeChat,
-      ambience: "ambience",
-      dispatchId: representativeReceipt.dispatchId,
-      acceptedAt: representativeReceipt.acceptedAt,
-      settledAt: now().toISOString(),
-    });
+    options.store.settle(
+      delivery.deliveryId,
+      {
+        status: "done",
+        repository,
+        chatId: representativeChat,
+        ambience: "ambience",
+        dispatchId: representativeReceipt.dispatchId,
+        acceptedAt: representativeReceipt.acceptedAt,
+        settledAt: now().toISOString(),
+      },
+      githubAppId,
+    );
     logger.info({
       event: "github.ingress.done",
       deliveryId: delivery.deliveryId,
@@ -355,13 +365,14 @@ export const createGitHubIngress = (options: {
     };
   };
 
-  return async (delivery: GitHubWebhookDelivery): Promise<GitHubIngressResult> => {
-    const concurrentDuplicate = inFlight.has(delivery.deliveryId);
-    if (!concurrentDuplicate) inFlight.add(delivery.deliveryId);
+  return async (delivery: RoutedGitHubWebhookDelivery): Promise<GitHubIngressResult> => {
+    const identity = `${delivery.githubAppId ?? "legacy"}:${delivery.deliveryId}`;
+    const concurrentDuplicate = inFlight.has(identity);
+    if (!concurrentDuplicate) inFlight.add(identity);
     try {
       return await handle(delivery, concurrentDuplicate);
     } finally {
-      if (!concurrentDuplicate) inFlight.delete(delivery.deliveryId);
+      if (!concurrentDuplicate) inFlight.delete(identity);
     }
   };
 };

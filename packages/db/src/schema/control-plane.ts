@@ -67,6 +67,7 @@ export const tenant = sqliteTable(
   (table) => [
     unique("tenant_user_unique").on(table.userId),
     unique("tenant_subscription_unique").on(table.subscriptionEntitlementId),
+    unique("tenant_id_user_unique").on(table.id, table.userId),
     unique("tenant_id_db_name_unique").on(table.id, table.tenantDbName),
     foreignKey({
       name: "tenant_subscription_owner_fk",
@@ -291,6 +292,36 @@ export const tenantManagedChat = sqliteTable(
   ],
 );
 
+export const githubInstallationCallback = sqliteTable(
+  "github_installation_callback",
+  {
+    stateHash: text("state_hash").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role", { enum: ["coder", "reviewer", "planner"] }).notNull(),
+    expiresAtMs: integer("expires_at_ms").notNull(),
+    installationId: integer("installation_id"),
+    accountLogin: text("account_login"),
+    createdAtMs: integer("created_at_ms").default(nowMs).notNull(),
+    completedAtMs: integer("completed_at_ms"),
+  },
+  (table) => [
+    foreignKey({
+      name: "github_installation_callback_owner_fk",
+      columns: [table.tenantId, table.userId],
+      foreignColumns: [tenant.id, tenant.userId],
+    }).onDelete("cascade"),
+    index("github_installation_callback_expiry_idx").on(table.expiresAtMs),
+    check("github_installation_callback_role_check", sql`${table.role} in ('coder', 'reviewer', 'planner')`),
+    check("github_installation_callback_expiry_check", sql`${table.expiresAtMs} > ${table.createdAtMs}`),
+    check(
+      "github_installation_callback_completion_check",
+      sql`(${table.completedAtMs} is null and ${table.installationId} is null and ${table.accountLogin} is null)
+        or (${table.completedAtMs} is not null and ${table.installationId} is not null and ${table.accountLogin} is not null)`,
+    ),
+  ],
+);
+
 export const githubInstallation = sqliteTable(
   "github_installation",
   {
@@ -342,6 +373,61 @@ export const githubRepository = sqliteTable(
       .where(sql`${table.isDefault} = 1`),
     index("github_repository_selection_idx").on(table.tenantId, table.selected),
     check("github_repository_default_check", sql`${table.isDefault} = 0 or ${table.selected} = 1`),
+  ],
+);
+
+export const githubDeliveryOutbox = sqliteTable(
+  "github_delivery_outbox",
+  {
+    githubAppId: text("github_app_id").notNull(),
+    deliveryGuid: text("delivery_guid").notNull(),
+    eventName: text("event_name").notNull(),
+    installationRole: text("installation_role", { enum: ["coder", "reviewer", "planner"] }).notNull(),
+    installationId: integer("installation_id"),
+    tenantId: text("tenant_id").references(() => tenant.id, { onDelete: "set null" }),
+    payloadJson: text("payload_json").notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    state: text("state", { enum: ["pending", "acked"] })
+      .default("pending")
+      .notNull(),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    nextAttemptAtMs: integer("next_attempt_at_ms").notNull(),
+    claimId: text("claim_id"),
+    claimExpiresAtMs: integer("claim_expires_at_ms"),
+    lastError: text("last_error"),
+    tenantResultJson: text("tenant_result_json"),
+    receivedAtMs: integer("received_at_ms").notNull(),
+    acknowledgedAtMs: integer("acknowledged_at_ms"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.githubAppId, table.deliveryGuid] }),
+    index("github_delivery_outbox_due_idx").on(
+      table.state,
+      table.nextAttemptAtMs,
+      table.claimExpiresAtMs,
+    ),
+    index("github_delivery_outbox_installation_idx").on(table.installationId, table.tenantId),
+    check("github_delivery_outbox_state_check", sql`${table.state} in ('pending', 'acked')`),
+    check(
+      "github_delivery_outbox_role_check",
+      sql`${table.installationRole} in ('coder', 'reviewer', 'planner')`,
+    ),
+    check("github_delivery_outbox_attempt_count_check", sql`${table.attemptCount} >= 0`),
+    check("github_delivery_outbox_payload_check", sql`json_valid(${table.payloadJson})`),
+    check(
+      "github_delivery_outbox_claim_check",
+      sql`(${table.claimId} is null and ${table.claimExpiresAtMs} is null)
+        or (${table.claimId} is not null and ${table.claimExpiresAtMs} is not null)`,
+    ),
+    check(
+      "github_delivery_outbox_result_check",
+      sql`${table.tenantResultJson} is null or json_valid(${table.tenantResultJson})`,
+    ),
+    check(
+      "github_delivery_outbox_ack_check",
+      sql`(${table.state} = 'pending' and ${table.acknowledgedAtMs} is null)
+        or (${table.state} = 'acked' and ${table.acknowledgedAtMs} is not null and ${table.tenantResultJson} is not null)`,
+    ),
   ],
 );
 

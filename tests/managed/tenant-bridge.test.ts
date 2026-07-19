@@ -87,4 +87,30 @@ describe("control-plane tenant bridge client", () => {
       message: "Tenant bridge returned malformed health data",
     });
   });
+
+  it("pushes a purpose-bound GitHub delivery and validates the runtime acknowledgement", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        runtimeId: "runtime-1",
+        githubAppId: "app-1",
+        result: { status: "unsupported", deliveryId: "guid-1" },
+      }),
+    );
+    const delivery = { githubAppId: "app-1", deliveryId: "guid-1", name: "issues", payload: { action: "opened" } };
+    const bridge = tenantBridge({ baseUrl: "http://tenant.internal/", webhookSecret: SECRET, fetch });
+
+    await expect(bridge.deliver(delivery)).resolves.toMatchObject({
+      runtimeId: "runtime-1",
+      githubAppId: "app-1",
+      result: { status: "unsupported", deliveryId: "guid-1" },
+    });
+    expect(fetch).toHaveBeenCalledWith("http://tenant.internal/deliveries", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(SECRET, "delivery-push"),
+      },
+      body: JSON.stringify(delivery),
+    });
+  });
 });

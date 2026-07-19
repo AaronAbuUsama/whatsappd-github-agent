@@ -1,6 +1,8 @@
 import {
   BRIDGE_AUTH_HEADER,
   type BridgeChats,
+  type BridgeGitHubDelivery,
+  type BridgeGitHubDeliveryAck,
   type BridgeHealth,
   type BridgePairing,
 } from "@ambient-agent/installation/bridge-contract.ts";
@@ -38,6 +40,14 @@ const chatsSchema: z.ZodType<BridgeChats> = z.array(
     lastActivityAt: z.number().optional(),
   }),
 );
+
+const deliveryAckSchema: z.ZodType<BridgeGitHubDeliveryAck> = z.object({
+  runtimeId: z.string().min(1),
+  githubAppId: z.string().min(1),
+  result: z
+    .object({ status: z.enum(["duplicate", "unsupported", "uncorrelated", "failed", "done"]) })
+    .passthrough(),
+});
 
 export interface TenantBridgeOptions {
   readonly baseUrl: string;
@@ -77,10 +87,14 @@ const parseResponse = <Value>(schema: z.ZodType<Value>, value: unknown, resource
 export const tenantBridge = (options: TenantBridgeOptions) => {
   const baseUrl = options.baseUrl.replace(/\/+$/u, "");
   const fetch = options.fetch ?? globalThis.fetch;
-  const authorized = async (path: string, purpose: RuntimeBridgePurpose): Promise<unknown> =>
+  const authorized = async (path: string, purpose: RuntimeBridgePurpose, init: RequestInit = {}): Promise<unknown> =>
     await responseJson(
       await fetch(`${baseUrl}${path}`, {
-        headers: { [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(options.webhookSecret, purpose) },
+        ...init,
+        headers: {
+          ...init.headers,
+          [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(options.webhookSecret, purpose),
+        },
       }),
     );
 
@@ -91,5 +105,15 @@ export const tenantBridge = (options: TenantBridgeOptions) => {
       parseResponse(pairingSchema, await authorized("/pairing", "pairing-read"), "pairing"),
     chats: async (): Promise<BridgeChats> =>
       parseResponse(chatsSchema, await authorized("/chats", "chats-read"), "chats"),
+    deliver: async (delivery: BridgeGitHubDelivery): Promise<BridgeGitHubDeliveryAck> =>
+      parseResponse(
+        deliveryAckSchema,
+        await authorized("/deliveries", "delivery-push", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(delivery),
+        }),
+        "delivery acknowledgement",
+      ),
   };
 };

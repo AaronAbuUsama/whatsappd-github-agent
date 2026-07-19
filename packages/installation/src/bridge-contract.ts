@@ -20,6 +20,19 @@ export type BridgePairing =
 
 export type BridgeChats = readonly ChatCandidate[];
 
+export interface BridgeGitHubDelivery {
+  readonly githubAppId: string;
+  readonly deliveryId: string;
+  readonly name: string;
+  readonly payload: Record<string, unknown>;
+}
+
+export interface BridgeGitHubDeliveryAck {
+  readonly runtimeId: string;
+  readonly githubAppId: string;
+  readonly result: Record<string, unknown> & { readonly status: string };
+}
+
 export const bridgeHealth = (runtimeId: string, status: WhatsAppRuntimeStatus): BridgeHealth => {
   const runtime = ambientRuntimeHealth(status);
   return {

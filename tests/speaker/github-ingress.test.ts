@@ -362,6 +362,7 @@ describe("GitHub ingress delivery ledger", () => {
       });
 
       expect(store.get("delivery-29")).toEqual({
+        githubAppId: "legacy",
         deliveryId: "delivery-29",
         eventName: "issues",
         repository: "acme/widgets",
@@ -376,6 +377,21 @@ describe("GitHub ingress delivery ledger", () => {
       expect(() =>
         store.settle("delivery-29", { status: "failed", error: "late", settledAt: "2026-07-13T00:00:03.000Z" }),
       ).toThrow("cannot settle as failed");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("scopes the tenant ingress identity by GitHub App and delivery GUID", () => {
+    const store = createGitHubIngressStore(":memory:");
+    try {
+      expect(store.claim("shared-guid", "issues", "2026-07-18T00:00:00.000Z", "app-coder")).toBe(true);
+      expect(store.claim("shared-guid", "issues", "2026-07-18T00:00:00.000Z", "app-reviewer")).toBe(true);
+      expect(store.claim("shared-guid", "issues", "2026-07-18T00:00:01.000Z", "app-coder")).toBe(false);
+      expect(store.list().map((record) => `${record.githubAppId}:${record.deliveryId}`)).toEqual([
+        "app-coder:shared-guid",
+        "app-reviewer:shared-guid",
+      ]);
     } finally {
       store.close();
     }

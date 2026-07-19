@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 export type GitHubIngressStatus = "received" | "unsupported" | "uncorrelated" | "done" | "failed";
 
 export interface GitHubIngressRecord {
+  readonly githubAppId: string;
   readonly deliveryId: string;
   readonly eventName: string;
   readonly repository?: string;
@@ -19,6 +20,7 @@ export interface GitHubIngressRecord {
 }
 
 interface GitHubIngressRow {
+  github_app_id: string;
   delivery_id: string;
   event_name: string;
   repository: string | null;
@@ -33,6 +35,7 @@ interface GitHubIngressRow {
 }
 
 const hydrate = (row: GitHubIngressRow): GitHubIngressRecord => ({
+  githubAppId: row.github_app_id,
   deliveryId: row.delivery_id,
   eventName: row.event_name,
   ...(row.repository ? { repository: row.repository } : {}),
@@ -47,7 +50,7 @@ const hydrate = (row: GitHubIngressRow): GitHubIngressRecord => ({
 });
 
 export interface GitHubIngressStore {
-  claim(deliveryId: string, eventName: string, receivedAt: string): boolean;
+  claim(deliveryId: string, eventName: string, receivedAt: string, githubAppId?: string): boolean;
   settle(
     deliveryId: string,
     update:
@@ -71,8 +74,9 @@ export interface GitHubIngressStore {
           readonly error?: string;
           readonly settledAt: string;
         },
+    githubAppId?: string,
   ): void;
-  get(deliveryId: string): GitHubIngressRecord | undefined;
+  get(deliveryId: string, githubAppId?: string): GitHubIngressRecord | undefined;
   list(): readonly GitHubIngressRecord[];
   close(): void;
 }
@@ -83,7 +87,8 @@ export const createGitHubIngressStore = (databasePath: string): GitHubIngressSto
   database.exec("PRAGMA busy_timeout = 5000");
   const createTable = `
     CREATE TABLE github_ingress_deliveries (
-      delivery_id TEXT PRIMARY KEY,
+      github_app_id TEXT NOT NULL,
+      delivery_id TEXT NOT NULL,
       event_name TEXT NOT NULL,
       repository TEXT,
       chat_id TEXT,
@@ -93,7 +98,8 @@ export const createGitHubIngressStore = (databasePath: string): GitHubIngressSto
       status TEXT NOT NULL CHECK (status IN ('received', 'unsupported', 'uncorrelated', 'done', 'failed')),
       error TEXT,
       received_at TEXT NOT NULL,
-      settled_at TEXT
+      settled_at TEXT,
+      PRIMARY KEY (github_app_id, delivery_id)
     ) STRICT
   `;
   // Legacy statuses map to at-least-once semantics (ADR 0014): a settled
@@ -109,15 +115,16 @@ export const createGitHubIngressStore = (databasePath: string): GitHubIngressSto
     .get() as { sql: string } | undefined;
   if (existing === undefined) {
     database.exec(createTable);
-  } else if (!existing.sql.includes("'done'")) {
+  } else if (!existing.sql.includes("'done'") || !existing.sql.includes("github_app_id")) {
     try {
       database.exec(`
         BEGIN IMMEDIATE;
         ALTER TABLE github_ingress_deliveries RENAME TO github_ingress_deliveries_legacy;
         ${createTable};
         INSERT INTO github_ingress_deliveries
-          (delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at, status, error, received_at, settled_at)
-        SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id,
+          (github_app_id, delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at, status, error, received_at, settled_at)
+        SELECT ${existing.sql.includes("github_app_id") ? "github_app_id" : "'legacy'"},
+               delivery_id, event_name, repository, chat_id, ambience, dispatch_id,
                ${existing.sql.includes("accepted_at") ? "accepted_at" : "NULL"},
                ${legacyStatusMapping},
                CASE WHEN status IN ('received', 'dispatching', 'uncertain') THEN NULL ELSE error END,
@@ -139,30 +146,31 @@ export const createGitHubIngressStore = (databasePath: string): GitHubIngressSto
   }
   const claimStatement = database.prepare(`
     INSERT OR IGNORE INTO github_ingress_deliveries
-      (delivery_id, event_name, status, received_at)
-    VALUES (?, ?, 'received', ?)
+      (github_app_id, delivery_id, event_name, status, received_at)
+    VALUES (?, ?, ?, 'received', ?)
   `);
   const settleStatement = database.prepare(`
     UPDATE github_ingress_deliveries
        SET status = ?, repository = ?, chat_id = ?, ambience = ?, dispatch_id = ?, accepted_at = ?, error = ?, settled_at = ?
-     WHERE delivery_id = ? AND status = 'received'
+     WHERE github_app_id = ? AND delivery_id = ? AND status = 'received'
   `);
   const getStatement = database.prepare(`
-    SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
+    SELECT github_app_id, delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
            status, error, received_at, settled_at
       FROM github_ingress_deliveries
-     WHERE delivery_id = ?
+     WHERE github_app_id = ? AND delivery_id = ?
   `);
   const listStatement = database.prepare(`
-    SELECT delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
+    SELECT github_app_id, delivery_id, event_name, repository, chat_id, ambience, dispatch_id, accepted_at,
            status, error, received_at, settled_at
       FROM github_ingress_deliveries
-     ORDER BY received_at, delivery_id
+     ORDER BY received_at, github_app_id, delivery_id
   `);
 
   return {
-    claim: (deliveryId, eventName, receivedAt) => claimStatement.run(deliveryId, eventName, receivedAt).changes === 1,
-    settle: (deliveryId, update) => {
+    claim: (deliveryId, eventName, receivedAt, githubAppId = "legacy") =>
+      claimStatement.run(githubAppId, deliveryId, eventName, receivedAt).changes === 1,
+    settle: (deliveryId, update, githubAppId = "legacy") => {
       if (update.status === "done" && (!update.dispatchId || !Number.isFinite(Date.parse(update.acceptedAt)))) {
         throw new Error(`GitHub delivery ${deliveryId} has an invalid Flue admission receipt.`);
       }
@@ -175,12 +183,13 @@ export const createGitHubIngressStore = (databasePath: string): GitHubIngressSto
         update.acceptedAt ?? null,
         update.error ?? null,
         update.settledAt,
+        githubAppId,
         deliveryId,
       );
       if (result.changes !== 1) throw new Error(`GitHub delivery ${deliveryId} cannot settle as ${update.status}.`);
     },
-    get: (deliveryId) => {
-      const row = getStatement.get(deliveryId) as GitHubIngressRow | undefined;
+    get: (deliveryId, githubAppId = "legacy") => {
+      const row = getStatement.get(githubAppId, deliveryId) as GitHubIngressRow | undefined;
       return row ? hydrate(row) : undefined;
     },
     list: () => (listStatement.all() as unknown as GitHubIngressRow[]).map(hydrate),

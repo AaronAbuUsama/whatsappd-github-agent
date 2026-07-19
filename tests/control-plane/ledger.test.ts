@@ -16,12 +16,14 @@ const migrationDirectory = new URL("../../packages/db/src/migrations/", import.m
 let db: Client | undefined;
 
 async function migrate() {
-  const [migration] = (await readdir(migrationDirectory)).filter((file) => file.endsWith(".sql"));
-  if (!migration) throw new Error("control-plane migration is missing");
+  const migrations = (await readdir(migrationDirectory)).filter((file) => file.endsWith(".sql")).sort();
+  if (migrations.length === 0) throw new Error("control-plane migration is missing");
 
   const opened = await openControlDb({ url: "file::memory:" });
   db = opened.client;
-  await db.executeMultiple(await readFile(new URL(migration, migrationDirectory), "utf8"));
+  for (const migration of migrations) {
+    await db.executeMultiple(await readFile(new URL(migration, migrationDirectory), "utf8"));
+  }
   return db;
 }
 
@@ -129,7 +131,9 @@ describe("control-plane ledger migration", () => {
         "agent_instance",
         "control_operation",
         "delivery_route",
+        "github_delivery_outbox",
         "github_installation",
+        "github_installation_callback",
         "github_repository",
         "managed_chat_selection",
         "model_connection",
@@ -240,7 +244,9 @@ describe("control-plane ledger migration", () => {
       "managed_chat_selection",
       "tenant_managed_chat",
       "github_installation",
+      "github_installation_callback",
       "github_repository",
+      "github_delivery_outbox",
       "delivery_route",
       "control_operation",
     ]) {

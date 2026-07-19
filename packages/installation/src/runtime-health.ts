@@ -25,7 +25,7 @@ export const runtimeInstallationId = (webhookSecret: string): string =>
 export const runtimeSmokeAuthorization = (webhookSecret: string, nonce: string, timeoutMillis: number): string =>
   createHmac("sha256", webhookSecret).update(`ambient-agent-smoke\0${nonce}\0${timeoutMillis}`).digest("base64url");
 
-export type RuntimeBridgePurpose = "pairing-read" | "chats-read";
+export type RuntimeBridgePurpose = "pairing-read" | "chats-read" | "delivery-push";
 
 /** Replay-safe proof for a polled bridge resource, isolated from every other bridge purpose. */
 export const runtimeBridgeAuthorization = (webhookSecret: string, purpose: RuntimeBridgePurpose): string =>

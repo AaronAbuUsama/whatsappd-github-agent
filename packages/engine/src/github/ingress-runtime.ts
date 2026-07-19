@@ -1,13 +1,17 @@
-import type { GitHubWebhookDelivery } from "@flue/github";
 import type { DispatchReceipt } from "@flue/runtime";
 
 import type { GitHubIngressInput } from "../inputs.ts";
 import type { IssueOperationStore } from "./operation-store.ts";
-import { createGitHubIngress, type GitHubIngressResult, type GitHubIngressSettings } from "./ingress.ts";
+import {
+  createGitHubIngress,
+  type GitHubIngressResult,
+  type GitHubIngressSettings,
+  type RoutedGitHubWebhookDelivery,
+} from "./ingress.ts";
 import { createGitHubIngressStore, type GitHubIngressStore } from "./ingress-store.ts";
 import { createFlueGlobal } from "../shared/flue-global.ts";
 
-type GitHubIngressHandler = (delivery: GitHubWebhookDelivery) => Promise<GitHubIngressResult>;
+type GitHubIngressHandler = (delivery: RoutedGitHubWebhookDelivery) => Promise<GitHubIngressResult>;
 
 const ingressHandler = createFlueGlobal<GitHubIngressHandler>(
   "github-ingress-handler",
@@ -31,5 +35,5 @@ export const installGitHubIngressRuntime = (
   return store;
 };
 
-export const handleGitHubDelivery = (delivery: GitHubWebhookDelivery): Promise<GitHubIngressResult> =>
+export const handleGitHubDelivery = (delivery: RoutedGitHubWebhookDelivery): Promise<GitHubIngressResult> =>
   ingressHandler.get()(delivery);

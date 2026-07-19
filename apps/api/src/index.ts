@@ -1,6 +1,7 @@
 import { createContext } from "@ambient-agent/api/context";
 import { appRouter } from "@ambient-agent/api/routers/index";
 import { auth } from "@ambient-agent/auth";
+import { client } from "@ambient-agent/db";
 import { env } from "@ambient-agent/env/server";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
@@ -10,6 +11,7 @@ import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { installHostedGitHub } from "./github-hosted";
 
 const app = new Hono();
 
@@ -18,13 +20,24 @@ app.use(
   "/*",
   cors({
     origin: env.CORS_ORIGIN,
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   }),
 );
 
 app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
+
+if (process.env.GITHUB_APPS_JSON) {
+  installHostedGitHub({
+    app,
+    client,
+    appsJson: process.env.GITHUB_APPS_JSON,
+    ...(process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON
+      ? { runtimeSecretsJson: process.env.GITHUB_RUNTIME_DELIVERY_SECRETS_JSON }
+      : {}),
+  });
+}
 
 export const apiHandler = new OpenAPIHandler(appRouter, {
   plugins: [

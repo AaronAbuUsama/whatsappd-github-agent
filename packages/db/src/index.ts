@@ -3,6 +3,7 @@ import { env } from "@ambient-agent/env/server";
 import { openControlDb } from "./control-db";
 
 export * from "./control-db";
+export * from "./github-control";
 
 export const controlDb = await openControlDb({
   url: env.DATABASE_URL,

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { installBridgeRoute } from "../../apps/runtime/src/host/bridge-route.ts";
+import { installBridgeRoute, type BridgeRouteOptions } from "../../apps/runtime/src/host/bridge-route.ts";
 import type { WhatsAppRuntimeControl } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { BRIDGE_AUTH_HEADER } from "../../packages/installation/src/bridge-contract.ts";
 import {
@@ -32,12 +32,15 @@ const request = async (app: Hono, path: "/pairing" | "/chats", purpose?: "pairin
 const appWith = (options: {
   readonly status: () => WhatsAppRuntimeStatus;
   readonly control?: () => WhatsAppRuntimeControl | undefined;
+  readonly deliver?: BridgeRouteOptions["deliver"];
 }): Hono => {
   const app = new Hono();
   installBridgeRoute(app, {
+    runtimeId: "runtime-1",
     webhookSecret: SECRET,
     status: options.status,
     control: options.control ?? (() => runtimeControl()),
+    ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
   });
   return app;
 };
@@ -146,5 +149,81 @@ describe("tenant runtime bridge", () => {
     const failedResponse = await request(failed, "/chats", "chats-read");
     expect(failedResponse.status).toBe(500);
     await expect(failedResponse.json()).resolves.toEqual({ error: "chat enumeration failed" });
+  });
+
+  it("authenticates delivery pushes and acknowledges only settled tenant ingress", async () => {
+    const deliver = vi.fn<NonNullable<BridgeRouteOptions["deliver"]>>(async (delivery) => ({
+      status: "unsupported",
+      deliveryId: delivery.deliveryId,
+    }));
+    const app = appWith({ status: () => ({ phase: "online" }), deliver });
+    const body = { githubAppId: "app-1", deliveryId: "guid-1", name: "issues", payload: { action: "opened" } };
+
+    expect((await app.request("/deliveries", { method: "POST", body: JSON.stringify(body) })).status).toBe(403);
+    expect(
+      (
+        await app.request("/deliveries", {
+          method: "POST",
+          headers: { [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(SECRET, "pairing-read") },
+          body: JSON.stringify(body),
+        })
+      ).status,
+    ).toBe(403);
+    const response = await app.request("/deliveries", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(SECRET, "delivery-push"),
+      },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      runtimeId: "runtime-1",
+      githubAppId: "app-1",
+      result: { status: "unsupported", deliveryId: "guid-1" },
+    });
+    expect(deliver).toHaveBeenCalledWith(body);
+  });
+
+  it("keeps deferred and interrupted duplicate ingress retryable", async () => {
+    const body = { githubAppId: "app-1", deliveryId: "guid-2", name: "pull_request", payload: {} };
+    const requestDelivery = async (deliver: NonNullable<BridgeRouteOptions["deliver"]>) => {
+      const app = appWith({ status: () => ({ phase: "online" }), deliver });
+      return await app.request("/deliveries", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [BRIDGE_AUTH_HEADER]: runtimeBridgeAuthorization(SECRET, "delivery-push"),
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    expect(
+      (
+        await requestDelivery(async () => ({
+          status: "deferred",
+          deliveryId: "guid-2",
+          repository: "acme/repo",
+          reason: "correlation pending",
+        }))
+      ).status,
+    ).toBe(503);
+    expect(
+      (
+        await requestDelivery(async () => ({
+          status: "duplicate",
+          record: {
+            githubAppId: "app-1",
+            deliveryId: "guid-2",
+            eventName: "pull_request",
+            status: "received",
+            receivedAt: "2026-07-18T00:00:00.000Z",
+          },
+        }))
+      ).status,
+    ).toBe(503);
   });
 });
