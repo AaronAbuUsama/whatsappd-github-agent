@@ -3,7 +3,7 @@ import { defineWorkflow } from "@flue/runtime";
 import * as v from "valibot";
 
 import scribe from "@ambient-agent/agents/scribe/agent.ts";
-import { scribeDirectToken } from "@ambient-agent/agents/scribe/direct-access.ts";
+import { scribeDirectBaseUrl, scribeDirectToken } from "@ambient-agent/agents/scribe/direct-access.ts";
 import { scribeBatchInput } from "@ambient-agent/agents/scribe/input.ts";
 import { createScribeBackfillStore } from "@ambient-agent/engine/intake/scribe-backfill.ts";
 import { getManagedRuntimeDependencies } from "@ambient-agent/installation/runtime-dependencies.ts";
@@ -19,8 +19,9 @@ const output = v.object({
 });
 
 const run = async ({ input: { chatId }, log }: { input: v.InferOutput<typeof input>; log: { info(message: string, attributes?: object): void; warn(message: string, attributes?: object): void; error(message: string, attributes?: object): void } }) => {
-  const store = createScribeBackfillStore(getManagedRuntimeDependencies().paths.applicationDatabase);
-  const client = createFlueClient({ baseUrl: `http://127.0.0.1:${process.env.PORT ?? "3000"}`, token: scribeDirectToken() });
+  const dependencies = getManagedRuntimeDependencies();
+  const store = createScribeBackfillStore(dependencies.paths.applicationDatabase);
+  const client = createFlueClient({ baseUrl: scribeDirectBaseUrl(dependencies.configuration.runtime.port), token: scribeDirectToken() });
   let windowsProcessed = 0;
   let eventsProcessed = 0;
   try {
