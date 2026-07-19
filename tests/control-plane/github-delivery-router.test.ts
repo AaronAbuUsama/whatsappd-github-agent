@@ -607,6 +607,16 @@ describe("durable GitHub delivery router", () => {
       remoteConfigState: "confirmed",
     });
     expect((await databaseClient.execute("SELECT status FROM delivery_route")).rows[0]?.status).toBe("pending");
+    expect(
+      JSON.parse(String((await databaseClient.execute("SELECT config_json FROM tenant")).rows[0]?.config_json)),
+    ).toMatchObject({
+      github: {
+        kind: "github-app",
+        credential: "github",
+        defaultRepository: "acme/beta",
+        allowedRepositories: ["acme/beta"],
+      },
+    });
     await expect(
       store.replaceRepositorySelection({
         ...owner,

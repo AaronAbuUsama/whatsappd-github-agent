@@ -205,6 +205,17 @@ const advanceTenantConfigurationWith = async (
                          '$.github.defaultRepository', ?2,
                          '$.github.allowedRepositories', json(?3)
                        )
+                     WHEN json_type(config_json, '$.github') IS NULL THEN
+                       json_set(
+                         config_json,
+                         '$.github',
+                         json_object(
+                           'kind', 'github-app',
+                           'credential', 'github',
+                           'defaultRepository', ?2,
+                           'allowedRepositories', json(?3)
+                         )
+                       )
                      ELSE config_json
                    END,
                    config_version = config_version + 1,
