@@ -55,27 +55,35 @@ describe("diffSnapshots", () => {
 
 describe("coderOutcome — the conductor's light after-check (#172)", () => {
   const branch = "agent/coder/issue-7";
+  const context = {
+    issue: 7,
+    branch,
+    jobId: "job-7",
+    finalVerdict: "PASS" as const,
+    verificationRounds: 2,
+    reviewCycle: 0,
+  };
 
   it("a freshly opened, non-draft PR → opened-pr, testsPassed true", () => {
-    const result = coderOutcome({ url: "u", number: 3, created: true, draft: false }, 7, branch);
+    const result = coderOutcome({ url: "u", number: 3, created: true, draft: false }, context);
     expect(result.outcome).toBe("opened-pr");
     expect(result.testsPassed).toBe(true);
-    expect(result).toMatchObject({ prUrl: "u", prNumber: 3, branch });
+    expect(result).toMatchObject({ prUrl: "u", prNumber: 3, branch, jobId: "job-7", finalVerdict: "PASS", verificationRounds: 2, reviewCycle: 0, draft: false });
   });
 
   it("a reused open PR → updated-pr (relaunch pushed more commits, no duplicate)", () => {
-    expect(coderOutcome({ url: "u", number: 3, created: false, draft: false }, 7, branch).outcome).toBe("updated-pr");
+    expect(coderOutcome({ url: "u", number: 3, created: false, draft: false }, context).outcome).toBe("updated-pr");
   });
 
   it("a draft PR → testsPassed false (the model's own red judgment), never presented as done", () => {
-    const result = coderOutcome({ url: "u", number: 3, created: true, draft: true }, 7, branch);
+    const result = coderOutcome({ url: "u", number: 3, created: true, draft: true }, { ...context, finalVerdict: "FAIL" });
     expect(result.outcome).toBe("opened-pr");
     expect(result.testsPassed).toBe(false);
     expect(result.summary).toContain("draft");
   });
 
   it("no PR opened → blocked (the model made no committable change or gave up)", () => {
-    const result = coderOutcome(undefined, 7, branch);
+    const result = coderOutcome(undefined, { ...context, finalVerdict: "BLOCKED" });
     expect(result.outcome).toBe("blocked");
     expect(result.prUrl).toBeUndefined();
     expect(result.branch).toBe(branch);

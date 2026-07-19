@@ -1,25 +1,41 @@
-import { defineAgent, defineWorkflow, type FlueHarness, type FlueLogger } from "@flue/runtime";
+import {
+  FRAMEWORK_TOOL_EXCLUSION_SUPPORTED,
+  defineAgent,
+  defineAgentProfile,
+  defineWorkflow,
+  type FlueHarness,
+  type FlueLogger,
+  type FlueSession,
+} from "@flue/runtime";
 
 import coderSkill from "./SKILL.md" with { type: "skill" };
+import plannerSkill from "./planner/SKILL.md" with { type: "skill" };
+import verifierSkill from "./verifier/verify/SKILL.md" with { type: "skill" };
 import { createSpecialistGraphTools } from "../graph/tools.ts";
 import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 import type { SpecialistSpec } from "../delegation/tools.ts";
 import { getCoderRuntime } from "./runtime.ts";
-import { coderJobInputSchema, coderResultSchema, type CoderJobInput, type CoderResult } from "./schemas.ts";
-export type { CoderGitHub } from "./github.ts";
 import {
-  coderBranch,
-  downloadTarball,
-  fetchDefaultBranch,
-  fetchIssue,
-  getBranchHead,
-} from "./github.ts";
+  coderJobInputSchema,
+  coderResultSchema,
+  planArtifactSchema,
+  verificationReceiptSchema,
+  type CoderJobInput,
+  type CoderResult,
+  type PlanArtifact,
+  type VerificationReceipt,
+  type VerificationVerdict,
+} from "./schemas.ts";
+export type { CoderGitHub } from "./github.ts";
+import { coderBranch, downloadTarball, fetchDefaultBranch, fetchIssue, getBranchHead } from "./github.ts";
 import { createOpenPullRequestTool } from "./tool.ts";
 import {
   coderOutcome,
   coderTmpDir,
+  diffSnapshots,
   gitignoreMatcher,
+  isEmptyDiff,
   parseHashListing,
   renderGraphContext,
   type OpenPrRecord,
@@ -27,61 +43,196 @@ import {
 } from "./workspace.ts";
 
 const SHELL_TIMEOUT_MS = 20 * 60 * 1000;
+const ROLE_TURN = { frameworkTools: { task: false } } as const;
+type CodingStage = "workflow" | "planner" | "coder" | "verifier" | "publication";
+type CodingWaypointStatus = "started" | "completed" | "failed";
+export interface CodingWaypoint {
+  readonly event: "coding.waypoint";
+  readonly schemaVersion: 1;
+  readonly jobId: string;
+  readonly mode: "new_issue";
+  readonly stage: CodingStage;
+  readonly status: CodingWaypointStatus;
+  readonly reviewCycle: number;
+  readonly maxReviewCycles: number;
+  readonly verificationRound?: number;
+  readonly maxVerificationRounds: number;
+  readonly verdict?: VerificationVerdict;
+  readonly pullRequest?: number;
+  readonly draft?: boolean;
+}
 
-/**
- * The Coder agent — the config-bound full sandbox (template rule 1) plus read-only
- * `lookup_graph` (§5 D6) and the lean eval-gated SKILL (rule 4). The sandbox is read
- * from the deployment-configured runtime, never `local()` here; omitting the adapter's
- * `tools` override gives the model the standard workspace fs+shell surface. All GitHub
- * I/O is deterministic app code in `run()` below — never a model tool.
- */
+export const codingWaypoint = (input: Omit<CodingWaypoint, "event" | "schemaVersion">): CodingWaypoint => ({
+  event: "coding.waypoint",
+  schemaVersion: 1,
+  ...input,
+});
+
+type StageWaypoint = (stage: Exclude<CodingStage, "workflow" | "publication">, status: "started" | "completed", extra?: {
+  verificationRound?: number;
+  verdict?: VerificationVerdict;
+}) => void;
+
+const roleProfiles = () => [
+  defineAgentProfile({
+    name: "planner",
+    description: "Produce one ordered implementation and behavioral verification plan before code changes begin.",
+    ...resolveAgentModelProfile("planner"),
+    skills: [plannerSkill],
+    instructions: "Plan one issue. Return only the requested structured artifact. Do not edit files or implement the change.",
+  }),
+  defineAgentProfile({
+    name: "coder",
+    description: "Implement or repair the current plan in the shared workspace, then author the final pull request when asked.",
+    ...resolveAgentModelProfile("coder"),
+    skills: [coderSkill],
+    tools: createSpecialistGraphTools(),
+    instructions: "Work only in the task's named shared workspace. Never launch another agent.",
+  }),
+  defineAgentProfile({
+    name: "verifier",
+    description: "Drive the changed code at its runtime surface and return a complete PASS, FAIL, BLOCKED, or SKIP report.",
+    ...resolveAgentModelProfile("verifier"),
+    skills: [verifierSkill],
+    instructions: "Activate and follow the verify skill. Return only the requested structured receipt and never edit implementation files.",
+  }),
+];
+
+/** Unprompted root: TypeScript alone chooses every role transition and budget. */
 const coderAgent = defineAgent(() => {
+  if (FRAMEWORK_TOOL_EXCLUSION_SUPPORTED !== true) {
+    throw new Error("Pinned Flue runtime does not support fail-closed framework task-tool exclusion.");
+  }
   const { sandbox } = getCoderRuntime();
   return {
     ...resolveAgentModelProfile("coder"),
     sandbox,
-    skills: [coderSkill],
-    tools: createSpecialistGraphTools(),
-    instructions: [
-      "You are Coder, a Specialist that implements one GitHub issue in a real checked-out workspace.",
-      "The repository is already extracted at the working directory named in your task.",
-      "Follow the coder skill: read before you change, match existing idioms, and get the project's suite green.",
-      "Your file and shell tools act inside the sandbox workspace; lookup_graph is read-only background.",
-    ].join("\n"),
+    subagents: roleProfiles(),
+    instructions: "Deterministic coding-workflow coordinator. This root session is never prompted.",
   };
 });
 
-/** Hash every tracked file so `diffSnapshots` can tell what the model changed — git-free (§8 rule 2). */
+/** Hash every tracked file so publication can bind to the exact Verifier-observed bytes. */
 const snapshotWorkspace = async (
   shell: (command: string) => Promise<{ stdout: string; exitCode: number }>,
   isIgnored: (path: string) => boolean,
 ): Promise<WorkspaceSnapshot> => {
-  // ponytail: sha256sum (coreutils) with a shasum fallback for hosts without it (macOS local()).
-  // Excludes node_modules/.git so install churn never reads as a change. Upgrade path: a
-  // provider-native diff when a remote sandbox exposes one.
   const find = "find . -type f -not -path './node_modules/*' -not -path './.git/*'";
   const primary = await shell(`${find} -exec sha256sum {} + 2>/dev/null`);
   const listing = primary.exitCode === 0 && primary.stdout.trim() !== "" ? primary.stdout : (await shell(`${find} -exec shasum -a 256 {} +`)).stdout;
-  // Drop .gitignore'd build artifacts (dist/, coverage/, *.tsbuildinfo, …) so they never
-  // hash-diff as changes and get committed (§8; the tarball seed carries the .gitignore).
   const snapshot = new Map<string, string>();
   for (const [path, hash] of parseHashListing(listing)) if (!isIgnored(path)) snapshot.set(path, hash);
   return snapshot;
 };
 
-/**
- * The issue → PR run (MEMORY-STATE-SPEC §8, #172). The conductor is safe scaffolding only:
- * fetch the issue + seed tarball, set up the workspace with a workspace-local `TMPDIR` (so a
- * `noexec /tmp` host can't break the model's test run), mount the model's one safe write
- * (`open_pull_request`), let the MODEL own the loop (detect toolchain → install → implement →
- * run the repo's tests → author a rich PR body → open the PR, draft = its own green/red
- * judgment), then a light after-check: a PR opened == done, none == `blocked`. No test re-run,
- * no PR templating — the idempotent branch/PR plumbing lives in the tool handler.
- */
-const run = async ({
-  harness,
-  input,
-}: {
+export const plannerTaskPrompt = (input: {
+  issue: number;
+  title: string;
+  body: string;
+  repository: string;
+  repoDir: string;
+  framing: string;
+  graphContext: string;
+}): string =>
+  `Plan GitHub issue #${input.issue} — "${input.title}" — for ${input.repository}. The repository is available at ${input.repoDir}.\n\n` +
+  `${input.body}${input.framing}${input.graphContext}\n\n` +
+  "Return one ordered implementation plan plus a behavioral verification plan. Do not edit files or implement anything.";
+
+export const coderTaskPrompt = (input: {
+  issue: number;
+  title: string;
+  repoDir: string;
+  round: number;
+  plan: PlanArtifact;
+  priorVerification?: VerificationReceipt;
+}): string => {
+  const prior = input.priorVerification === undefined
+    ? ""
+    : `\n\nPrevious Verifier report (verbatim):\n<verifier-report>\n${input.priorVerification.report}\n</verifier-report>`;
+  return `Implement or repair GitHub issue #${input.issue} — "${input.title}" — in ${input.repoDir}. This is verification round ${input.round}.\n\n` +
+    `Planner artifact:\n${JSON.stringify(input.plan, null, 2)}${prior}\n\n` +
+    "Work the ordered plan in the shared workspace and leave it ready for independent runtime verification. " +
+    "Do not author or open the pull request in this task; publication happens only after verification.";
+};
+
+export const verifierTaskPrompt = (input: {
+  issue: number;
+  title: string;
+  repoDir: string;
+  round: number;
+  plan: PlanArtifact;
+}): string =>
+  `Verify GitHub issue #${input.issue} — "${input.title}" — in the shared workspace ${input.repoDir}. This is verification round ${input.round}.\n\n` +
+  `Planner artifact:\n${JSON.stringify(input.plan, null, 2)}\n\n` +
+  "Activate and follow the vendored verify methodology. Drive the runtime surface; return PASS, FAIL, BLOCKED, or legitimate SKIP plus the complete actionable Markdown report.";
+
+export const publicationTaskPrompt = (input: {
+  issue: number;
+  title: string;
+  plan: PlanArtifact;
+  verification: VerificationReceipt;
+  draft: boolean;
+}): string =>
+  `Author the final pull request for GitHub issue #${input.issue} — "${input.title}". Do not edit the verified workspace.\n\n` +
+  `Planner artifact:\n${JSON.stringify(input.plan, null, 2)}\n\n` +
+  `Final Verifier report (verbatim):\n<verifier-report>\n${input.verification.report}\n</verifier-report>\n\n` +
+  `Write the rich current engineering record and call open_pull_request exactly once with draft=${String(input.draft)}.`;
+
+/** The deterministic Planner → bounded Coder/Verifier loop, isolated for regression proof. */
+export const runInternalCodingLoop = async (input: {
+  session: Pick<FlueSession, "task">;
+  plannerPrompt: string;
+  coderPrompt: (round: number, plan: PlanArtifact, prior?: VerificationReceipt) => string;
+  verifierPrompt: (round: number, plan: PlanArtifact) => string;
+  cwd: string;
+  maxVerificationRounds: number;
+  waypoint: StageWaypoint;
+  snapshot: () => Promise<WorkspaceSnapshot>;
+  initialWorkspace: WorkspaceSnapshot;
+}): Promise<{ plan: PlanArtifact; verification: VerificationReceipt; rounds: number; verified: WorkspaceSnapshot }> => {
+  input.waypoint("planner", "started");
+  const plan = (await input.session.task(input.plannerPrompt, {
+    ...ROLE_TURN,
+    agent: "planner",
+    cwd: input.cwd,
+    result: planArtifactSchema,
+  })).data;
+  const plannedWorkspace = await input.snapshot();
+  if (!isEmptyDiff(diffSnapshots(input.initialWorkspace, plannedWorkspace))) {
+    throw new Error("Planner changed the shared workspace; only Coder-owned bytes may be published.");
+  }
+  input.waypoint("planner", "completed");
+
+  let prior: VerificationReceipt | undefined;
+  for (let round = 1; round <= input.maxVerificationRounds; round += 1) {
+    input.waypoint("coder", "started", { verificationRound: round });
+    await input.session.task(input.coderPrompt(round, plan, prior), {
+      ...ROLE_TURN,
+      agent: "coder",
+      cwd: input.cwd,
+    });
+    input.waypoint("coder", "completed", { verificationRound: round });
+    const coderWorkspace = await input.snapshot();
+
+    input.waypoint("verifier", "started", { verificationRound: round });
+    prior = (await input.session.task(input.verifierPrompt(round, plan), {
+      ...ROLE_TURN,
+      agent: "verifier",
+      cwd: input.cwd,
+      result: verificationReceiptSchema,
+    })).data;
+    const verified = await input.snapshot();
+    if (!isEmptyDiff(diffSnapshots(coderWorkspace, verified))) {
+      throw new Error("Verifier changed the shared workspace; only Coder-owned bytes may be published.");
+    }
+    input.waypoint("verifier", "completed", { verificationRound: round, verdict: prior.verdict });
+    if (prior.verdict === "PASS" || prior.verdict === "SKIP") return { plan, verification: prior, rounds: round, verified };
+    if (round === input.maxVerificationRounds) return { plan, verification: prior, rounds: round, verified };
+  }
+  throw new Error("Verification loop ended without a Verifier receipt.");
+};
+
+const run = async ({ harness, input, log }: {
   harness: FlueHarness;
   input: CoderJobInput;
   log: FlueLogger;
@@ -89,85 +240,129 @@ const run = async ({
   const { github, workspacesRoot } = getCoderRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
   const branch = coderBranch(input.issue);
+  const jobId = crypto.randomUUID();
+  const reviewCycle = 0;
+  let activeStage: CodingStage = "workflow";
+  const waypoint = (
+    stage: CodingStage,
+    status: "started" | "completed" | "failed",
+    extra: { verificationRound?: number; verdict?: VerificationVerdict; pullRequest?: number; draft?: boolean } = {},
+  ): void => {
+    activeStage = status === "started" ? stage : "workflow";
+    log.info(`${stage} ${status}`, codingWaypoint({
+      jobId,
+      mode: input.mode,
+      stage,
+      status,
+      reviewCycle,
+      maxReviewCycles: input.maxReviewCycles,
+      maxVerificationRounds: input.maxVerificationRounds,
+      ...extra,
+    }) as unknown as Record<string, unknown>);
+  };
 
-  const issue = await fetchIssue(github, repo, input.issue);
-  const base = await fetchDefaultBranch(github, repo);
-  const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
-  // Relaunch seeding (§8): if the per-issue branch already exists, seed the workspace FROM
-  // its head so the tested tree and the tree we later commit against are identical. A fresh
-  // issue seeds from the default branch. `ensureBranch(fromSha=baseSha)` in the tool returns
-  // this same existing head (created:false), so `commitChanges` layers onto what we ran.
-  const existingHead = await getBranchHead(github, repo, branch);
-  const seedSha = existingHead ?? baseSha;
-  const tarball = await downloadTarball(github, repo, seedSha);
-
-  const repoDir = `${workspacesRoot}/issue-${input.issue}`;
-  const tmpDir = coderTmpDir(workspacesRoot);
-  const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
+  waypoint("workflow", "started");
   try {
-    // The model's shell tools inherit TMPDIR from the sandbox env (bound at composition);
-    // just make sure the workspace-local dir it points at exists before the model runs tests.
-    // ponytail: this .tmp accumulates across runs — kept at the workspaces root (not under
-    // repoDir) deliberately so the finally-block rm(repoDir) can't destroy a concurrent run's
-    // scratch. Ceiling: unbounded growth. Upgrade path: a periodic sweep of stale entries.
-    await harness.fs.mkdir(tmpDir, { recursive: true });
-    await harness.fs.rm(repoDir, { recursive: true, force: true });
-    await harness.fs.mkdir(repoDir, { recursive: true });
-    await harness.fs.writeFile(`${repoDir}/.coder-source.tar.gz`, tarball);
-    // Extract the single top-level archive dir into repoDir (tarball roots at owner-repo-<sha>/).
-    await harness.shell(`tar xzf ${repoDir}/.coder-source.tar.gz -C ${repoDir} --strip-components=1`, {
-      timeoutMs: SHELL_TIMEOUT_MS,
-    });
-    await harness.fs.rm(`${repoDir}/.coder-source.tar.gz`, { force: true });
+    const issue = await fetchIssue(github, repo, input.issue);
+    const base = await fetchDefaultBranch(github, repo);
+    const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
+    const existingBranchHead = await getBranchHead(github, repo, branch);
+    const seedBranchHead = existingBranchHead ?? baseSha;
+    const tarball = await downloadTarball(github, repo, seedBranchHead);
+    const repoDir = `${workspacesRoot}/issue-${input.issue}`;
+    const tmpDir = coderTmpDir(workspacesRoot);
+    const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
 
-    // The .gitignore rode in with the tarball seed; honor it so build artifacts never diff.
-    const gitignoreText = (await shellIn("cat .gitignore 2>/dev/null || true")).stdout;
-    const isIgnored = gitignoreMatcher(gitignoreText);
-    const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
-    const before = await snapshot();
+    try {
+      await harness.fs.mkdir(tmpDir, { recursive: true });
+      await harness.fs.rm(repoDir, { recursive: true, force: true });
+      await harness.fs.mkdir(repoDir, { recursive: true });
+      await harness.fs.writeFile(`${repoDir}/.coder-source.tar.gz`, tarball);
+      await harness.shell(`tar xzf ${repoDir}/.coder-source.tar.gz -C ${repoDir} --strip-components=1`, { timeoutMs: SHELL_TIMEOUT_MS });
+      await harness.fs.rm(`${repoDir}/.coder-source.tar.gz`, { force: true });
 
-    // The model's one safe write, built with the workspace context bound in — the handler
-    // snapshots-diffs-commits-and-opens the PR idempotently. `record.pr` is the after-check's
-    // signal, and the seam a #173 verifier reads before the PR is opened.
-    const record: { pr?: OpenPrRecord } = {};
-    const openPullRequest = createOpenPullRequestTool({
-      github,
-      repo,
-      branch,
-      base,
-      baseSha,
-      issue: input.issue,
-      issueTitle: issue.title,
-      before,
-      snapshotAfter: snapshot,
-      readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
-      record,
-    });
+      const gitignoreText = (await shellIn("cat .gitignore 2>/dev/null || true")).stdout;
+      const isIgnored = gitignoreMatcher(gitignoreText);
+      const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
+      const before = await snapshot();
+      const session = await harness.session("coordinator");
+      const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+      const graphContext = renderGraphContext(input.graphContext);
+      const coordinated = await runInternalCodingLoop({
+        session,
+        plannerPrompt: plannerTaskPrompt({
+          issue: input.issue,
+          title: issue.title,
+          body: issue.body,
+          repository: input.repository,
+          repoDir,
+          framing,
+          graphContext,
+        }),
+        coderPrompt: (round, plan, prior) => coderTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan, priorVerification: prior }),
+        verifierPrompt: (round, plan) => verifierTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan }),
+        cwd: repoDir,
+        maxVerificationRounds: input.maxVerificationRounds,
+        waypoint,
+        snapshot,
+        initialWorkspace: before,
+      });
 
-    const session = await harness.session();
-    const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
-    const graphContext = renderGraphContext(input.graphContext);
-    // GROWTH SEAM (#173): this single model turn is the unit that later becomes
-    // `session.task("coder", …)` inside a planner→coder→verifier workflow — the tool mount
-    // and the after-check below stay identical; only who drives the turn changes.
-    await session.prompt(
-      `Implement GitHub issue #${input.issue} — "${issue.title}" — in the repository already checked out at ${repoDir}.\n\n` +
-        `${issue.body}${framing}${graphContext}\n\n` +
-        "Work there now: detect the project's toolchain, install it, make the change, and run the project's own test " +
-        "suite until you have a verdict. Then write a rich pull-request body (a clear narrative, structured sections, " +
-        "mermaid diagrams where they help) and call `open_pull_request` exactly once — set `draft` to false only if the " +
-        "suite is green, true if it is not. Never present a red or unfinished change as done.",
-      { tools: [openPullRequest] },
-    );
+      const requiredDraft = coordinated.verification.verdict === "FAIL" || coordinated.verification.verdict === "BLOCKED";
+      const record: { pr?: OpenPrRecord } = {};
+      const openPullRequest = createOpenPullRequestTool({
+        github,
+        repo,
+        branch,
+        base,
+        seedBranchHead,
+        seedBranchExisted: existingBranchHead !== undefined,
+        issue: input.issue,
+        issueTitle: issue.title,
+        before,
+        verified: coordinated.verified,
+        requiredDraft,
+        snapshotAfter: snapshot,
+        readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
+        record,
+      });
 
-    // Light after-check: no test re-run, no templating. A PR opened == the model finished.
-    return coderOutcome(record.pr, input.issue, branch);
-  } finally {
-    await harness.fs.rm(repoDir, { recursive: true, force: true }).catch(() => {});
+      waypoint("publication", "started", { draft: requiredDraft });
+      await session.task(publicationTaskPrompt({
+        issue: input.issue,
+        title: issue.title,
+        plan: coordinated.plan,
+        verification: coordinated.verification,
+        draft: requiredDraft,
+      }), {
+        ...ROLE_TURN,
+        agent: "coder",
+        cwd: repoDir,
+        tools: [openPullRequest],
+      });
+      waypoint("publication", "completed", { pullRequest: record.pr?.number, draft: record.pr?.draft ?? requiredDraft });
+
+      const result = coderOutcome(record.pr, {
+        issue: input.issue,
+        branch,
+        jobId,
+        finalVerdict: coordinated.verification.verdict,
+        verificationRounds: coordinated.rounds,
+        reviewCycle,
+      });
+      waypoint("workflow", "completed", { pullRequest: result.prNumber, draft: result.draft });
+      return result;
+    } finally {
+      await harness.fs.rm(repoDir, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (error) {
+    const failedStage = activeStage;
+    waypoint(failedStage, "failed");
+    if (failedStage !== "workflow") waypoint("workflow", "failed");
+    throw error;
   }
 };
 
-/** The discovered `coder` workflow (its filename becomes the workflow name). */
 export const coder = defineWorkflow({
   agent: coderAgent,
   input: coderJobInputSchema,
@@ -175,18 +370,11 @@ export const coder = defineWorkflow({
   run,
 });
 
-/**
- * The agent-neutral, eval-gated description for the `start_coder_job` launch tool
- * (#137 hard rule: no acting-agent name). Mounted on the Speaker via
- * `createDelegationTools`; its input IS the workflow input (one source of truth).
- */
 export const START_CODER_JOB_DESCRIPTION =
-  "Start a background job that implements one GitHub issue: it checks out the repository, writes the code, " +
-  "runs the project's suite, and opens a pull request under its own identity — a non-draft PR when the suite is " +
-  "green, a draft flagged blocked when it cannot get there. Returns immediately with a run id; the finished " +
-  "result reports back to this chat on its own.";
+  "Start a background coding workflow for one GitHub issue: Planner produces an ordered plan, Coder implements it, " +
+  "Verifier drives the result within a bounded budget, and Coder opens one rich ready or draft pull request. Returns " +
+  "immediately with a run id; the finished result reports back to this chat on its own.";
 
-/** The Coder as the delegation transport sees it (§8): input == the workflow input, one source of truth. */
 export const coderSpecialistSpec: SpecialistSpec<typeof coderJobInputSchema> = {
   name: "coder",
   toolName: "start_coder_job",

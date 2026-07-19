@@ -1,0 +1,114 @@
+diff --git a/dist/conversation-stream-store-Bitz7UoW.mjs b/dist/conversation-stream-store-Bitz7UoW.mjs
+index 94032552cc83d3596ae6e53bd46ec6c9c9749b01..5c6bdd0662323e1b7587faff7518194e12003d15 100644
+--- a/dist/conversation-stream-store-Bitz7UoW.mjs
++++ b/dist/conversation-stream-store-Bitz7UoW.mjs
+@@ -1100,6 +1100,7 @@ var Session = class {
+ 				promptText: buildPromptText(text, schema),
+ 				schema,
+ 				tools: options?.tools,
++				frameworkTools: options?.frameworkTools,
+ 				model: options?.model,
+ 				thinkingLevel: options?.thinkingLevel,
+ 				images: options?.images,
+@@ -1457,6 +1458,7 @@ var Session = class {
+ 				promptText,
+ 				schema,
+ 				tools: options?.tools,
++				frameworkTools: options?.frameworkTools,
+ 				model: options?.model,
+ 				thinkingLevel: options?.thinkingLevel,
+ 				images: options?.images,
+@@ -1832,7 +1834,7 @@ var Session = class {
+ 		}) : this.wrapModelTool(tool, group.source)));
+ 	}
+ 	/** Build built-in tools from the sandbox adapter or the framework defaults. */
+-	createBuiltinToolGroups(env, tools, model, thinkingLevel, activePackagedSkills) {
++	createBuiltinToolGroups(env, tools, model, thinkingLevel, activePackagedSkills, frameworkToolOptions) {
+ 		const runTask = (params, signal, toolCallId) => this.runTaskForTool(params, tools, model, thinkingLevel, signal, toolCallId);
+ 		const packagedSkills = {
+ 			...getRegisteredPackagedSkills(this.config.skills),
+@@ -1842,7 +1844,7 @@ var Session = class {
+ 		const activateSkillTool = skillNames.length > 0 ? createActivateSkillTool(skillNames, (name) => this.activateSkillForTool(name)) : void 0;
+ 		const packagedRead = Object.values(packagedSkills).some((skill) => Object.keys(skill.files).some((path) => path !== "SKILL.md")) ? createPackagedSkillReadTool(packagedSkills) : void 0;
+ 		const frameworkTools = (taskTool) => [
+-			taskTool,
++			...frameworkToolOptions?.task === false ? [] : [taskTool],
+ 			...activateSkillTool ? [activateSkillTool] : [],
+ 			...packagedRead ? [packagedRead] : []
+ 		];
+@@ -1884,7 +1886,7 @@ var Session = class {
+ 		const resolvedModel = this.resolveModelForCall(options.model);
+ 		this.agentLoop.state.model = resolvedModel;
+ 		this.agentLoop.state.thinkingLevel = this.resolveThinkingLevelForCall(options.thinkingLevel);
+-		const builtinToolGroups = this.createBuiltinToolGroups(this.env, options.tools, options.model, options.thinkingLevel, options.activePackagedSkills);
++		const builtinToolGroups = this.createBuiltinToolGroups(this.env, options.tools, options.model, options.thinkingLevel, options.activePackagedSkills, options.frameworkTools);
+ 		this.agentLoop.state.tools = this.assembleModelTools(builtinToolGroups, [...this.agentTools, ...options.tools], options.extraTools ?? []);
+ 		try {
+ 			return await fn({ resolvedModel });
+@@ -1978,6 +1980,7 @@ var Session = class {
+ 				model: options?.model ?? (taskAgent?.model !== void 0 ? void 0 : options?.inheritedModel),
+ 				thinkingLevel: options?.thinkingLevel ?? (taskAgent?.thinkingLevel !== void 0 ? void 0 : options?.inheritedThinkingLevel),
+ 				tools: options?.tools,
++				frameworkTools: options?.frameworkTools,
+ 				images: options?.images,
+ 				signal
+ 			};
+@@ -2836,6 +2839,7 @@ var Session = class {
+ 		const resultBundle = args.schema ? createResultTools(args.schema) : void 0;
+ 		return this.withCallOverrides({
+ 			tools: args.tools ?? [],
++			frameworkTools: args.frameworkTools,
+ 			model: args.model,
+ 			thinkingLevel: args.thinkingLevel,
+ 			extraTools: resultBundle?.tools,
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 169195e097baecf7bd1c2304a8f9e238e35ad6bf..2f98e265650442f377325acb1953aec0eda605d4 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -8,6 +8,8 @@ import { R as WorkflowDefinition, h as WorkflowInvokeRequest, m as WorkflowInvoc
+ import { t as defineTool } from "./tool-cYDWyO6V.mjs";
+ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+ import { AgentTool } from "@earendil-works/pi-agent-core";
++
++declare const FRAMEWORK_TOOL_EXCLUSION_SUPPORTED: true;
+ //#region src/agent-definition.d.ts
+ /**
+  * Validates and returns a reusable agent profile. Use profiles as the baseline
+@@ -158,3 +160,4 @@ interface DefineSkillOptions {
+ declare function defineSkill(options: DefineSkillOptions): SkillReference;
+ //#endregion
+ export { type ActionContext, type ActionDefinition, type ActionInput, type ActionInputSchema, ActionInputValidationError, type ActionOutput, type ActionOutputSchema, ActionOutputSerializationError, ActionOutputValidationError, type AgentDefinition, type AgentDispatchRequest, type AgentInitializerContext, type AgentManifestEntry, type AgentProfile, type AgentRouteHandler, type AgentRuntimeConfig, type AttachedAgentEvent, AttachmentNotAvailableError, type BashFactory, type BashLike, type CallHandle, type CompactionConfig, type DefineSkillOptions, DelegationDepthExceededError, type DispatchReceipt, type DurabilityConfig, FLUE_EVENT_SCHEMA_REVISION, type FileStat, FlueError, type FlueEvent, type FlueEventContext, type FlueEventSubscriber, type FlueExecutionContext, type FlueExecutionInterceptor, type FlueExecutionOperation, type FlueFs, type FlueHarness, type FlueInstrumentation, type FlueLogger, type FlueObservation, type FlueObservationSubscriber, type FlueSession, type FlueSessions, type HttpProviderRegistration, IMAGE_DATA_OMITTED, InstrumentationAlreadyInstalledError, type JsonValue, type ListRunsOpts, type ListRunsResponse, type LlmAssistantMessage, type LlmImageContent, type LlmMessage, type LlmTextContent, type LlmThinkingContent, type LlmTool, type LlmToolCall, type LlmToolResultMessage, type LlmTurnPurpose, type LlmUserMessage, type McpServerConnection, type McpServerOptions, type McpTransport, type ModelRequest, type ModelRequestInfo, type ModelRequestInput, type ModelResponse, type NamedAgentDispatchRequest, OperationFailedError, type PackagedSkillDirectory, type PackagedSkillFile, ProductEventVersionError, type PromptImage, type PromptModel, type PromptOptions, type PromptResponse, type PromptResultResponse, type PromptUsage, type ProviderRegistration, ProviderRegistrationError, ResultUnavailableError, type RunPointer, type RunRecord, type RunStatus, type SandboxApi, type SandboxFactory, SandboxOperationUnsupportedError, SessionAlreadyExistsError, SessionBusyError, type SessionEnv, SessionNotFoundError, type SessionToolFactory, type SessionToolFactoryOptions, type ShellOptions, type ShellResult, type Skill, SkillDefinitionValidationError, SkillNotRegisteredError, type SkillOptions, type SkillReference, SubagentNotDeclaredError, SubmissionAbortedError, SubmissionInterruptedError, SubmissionRetryExhaustedError, SubmissionTimeoutError, type TaskOptions, type ThinkingLevel, type ToolContext, type ToolDefinition, type ToolInput, type ToolInputSchema, ToolInputValidationError, ToolLegacyDefinitionError, ToolNameConflictError, type ToolOutput, type ToolOutputSchema, ToolOutputSerializationError, ToolOutputValidationError, type ToolValidationIssue, type ValidationIssue, WorkflowAdmissionError, WorkflowAdmissionUnavailableError, type WorkflowDefinition, WorkflowInputSerializationError, WorkflowInputUnexpectedError, WorkflowInvocationNotConfiguredError, type WorkflowInvocationReceipt, type WorkflowInvokeRequest, WorkflowNotDiscoveredError, type WorkflowRouteHandler, type WorkflowRunPointer, type WorkflowRunsHandler, bash, connectMcpServer, createAgent, createSandboxSessionEnv, defineAction, defineAgent, defineAgentProfile, defineSkill, defineTool, defineWorkflow, dispatch, getRun, instrument, invoke, listAgents, listRuns, observe, registerApiProvider, registerProvider };
++export { FRAMEWORK_TOOL_EXCLUSION_SUPPORTED };
+diff --git a/dist/index.mjs b/dist/index.mjs
+index f31f2789e7ef39435afa76c2232d064cb2d7084f..6176cc4ff3f9969eab0e409e4ad3c993ed2936a4 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -12,6 +12,7 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+ //#region package.json
+ var version = "1.0.0-beta.9";
++const FRAMEWORK_TOOL_EXCLUSION_SUPPORTED = true;
+ //#endregion
+ //#region src/mcp.ts
+ /**
+@@ -374,3 +375,4 @@ function isRecord(value) {
+ const FLUE_EVENT_SCHEMA_REVISION = 3;
+ //#endregion
+ export { ActionInputValidationError, ActionOutputSerializationError, ActionOutputValidationError, AttachmentNotAvailableError, DelegationDepthExceededError, FLUE_EVENT_SCHEMA_REVISION, FlueError, IMAGE_DATA_OMITTED, InstrumentationAlreadyInstalledError, OperationFailedError, ProductEventVersionError, ProviderRegistrationError, ResultUnavailableError, SandboxOperationUnsupportedError, SessionAlreadyExistsError, SessionBusyError, SessionNotFoundError, SkillDefinitionValidationError, SkillNotRegisteredError, SubagentNotDeclaredError, SubmissionAbortedError, SubmissionInterruptedError, SubmissionRetryExhaustedError, SubmissionTimeoutError, ToolInputValidationError, ToolLegacyDefinitionError, ToolNameConflictError, ToolOutputSerializationError, ToolOutputValidationError, WorkflowAdmissionError, WorkflowAdmissionUnavailableError, WorkflowInputSerializationError, WorkflowInputUnexpectedError, WorkflowInvocationNotConfiguredError, WorkflowNotDiscoveredError, bash, connectMcpServer, createAgent, createSandboxSessionEnv, defineAction, defineAgent, defineAgentProfile, defineSkill, defineTool, defineWorkflow, dispatch, getRun, instrument, invoke, listAgents, listRuns, observe, registerApiProvider, registerProvider };
++export { FRAMEWORK_TOOL_EXCLUSION_SUPPORTED };
+diff --git a/dist/types-USSZhfC6.d.mts b/dist/types-USSZhfC6.d.mts
+index e41ab79c03df8f1af64e73af81b76e545d17fa69..1f8624592189d010cca3e5eb7703325a94f1af97 100644
+--- a/dist/types-USSZhfC6.d.mts
++++ b/dist/types-USSZhfC6.d.mts
+@@ -588,6 +588,11 @@ interface OperationOptions<S extends v.GenericSchema | undefined = undefined> {
+   result?: S;
+   /** Additional custom model-callable tools for this operation. */
+   tools?: ToolDefinition[];
++  /** Framework-owned tools exposed to the model for this operation. */
++  frameworkTools?: {
++    /** Disable model-facing task delegation while preserving programmatic session.task(). */
++    task?: boolean;
++  };
+   /** Model specifier override for this operation. */
+   model?: string;
+   /** Override reasoning effort for this call. See `AgentRuntimeConfig.thinkingLevel`. */

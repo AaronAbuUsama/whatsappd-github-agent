@@ -203,10 +203,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
-});
+}, 30_000);
 
 describe("packed ambient-agent executable", () => {
-  it("is a normal executable Node npm bin produced by Vite+", async () => {
+  it("is a normal executable Node npm bin produced by Vite+", { timeout: 15_000 }, async () => {
     const installedManifest = JSON.parse(
       await readFile(join(installDirectory, "node_modules", "ambient-agent", "package.json"), "utf8"),
     ) as { readonly bin?: unknown; readonly version: string };

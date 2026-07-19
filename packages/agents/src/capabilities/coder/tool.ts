@@ -21,10 +21,13 @@ export interface OpenPullRequestContext {
   readonly repo: GitHubRepositoryRef;
   readonly branch: string;
   readonly base: string;
-  readonly baseSha: string;
+  readonly seedBranchHead: string;
+  readonly seedBranchExisted: boolean;
   readonly issue: number;
   readonly issueTitle: string;
   readonly before: WorkspaceSnapshot;
+  readonly verified: WorkspaceSnapshot;
+  readonly requiredDraft: boolean;
   readonly snapshotAfter: () => Promise<WorkspaceSnapshot>;
   readonly readFile: (path: string) => Promise<Uint8Array>;
   readonly record: { pr?: OpenPrRecord };
@@ -45,8 +48,8 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
     name: "open_pull_request",
     description:
       "Open the pull request for the issue you are implementing. Call this once, when your work is complete: supply a " +
-      "title and a rich Markdown body (narrative, structured sections, mermaid diagrams all welcome), and set `draft` " +
-      "to true when the change is not yet passing the project's tests and false when the suite is green. Your workspace " +
+      "title and a rich Markdown body (narrative, structured sections, mermaid diagrams all welcome), and use the " +
+      "required `draft` value stated in your publication task. Your verified workspace " +
       "changes are committed and the pull request is opened for you; calling it again for the same issue converges on " +
       "the same branch and pull request rather than duplicating them.",
     input: v.object({
@@ -62,8 +65,16 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
       message: v.optional(v.string()),
     }),
     run: async ({ input }) => {
-      const diff = diffSnapshots(ctx.before, await ctx.snapshotAfter());
-      if (isEmptyDiff(diff)) {
+      if (input.draft !== ctx.requiredDraft) {
+        throw new Error(`Final verification requires draft=${String(ctx.requiredDraft)}.`);
+      }
+      const after = await ctx.snapshotAfter();
+      if (!isEmptyDiff(diffSnapshots(ctx.verified, after))) {
+        throw new Error("Workspace changed after the final Verifier observation; start a new verified run before publishing.");
+      }
+      const diff = diffSnapshots(ctx.before, after);
+      const empty = isEmptyDiff(diff);
+      if (empty && !ctx.seedBranchExisted) {
         return {
           opened: false,
           message:
@@ -71,15 +82,20 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
         };
       }
 
-      const head = await ensureBranch(ctx.github, ctx.repo, ctx.branch, ctx.baseSha);
-      await commitChanges(ctx.github, ctx.repo, {
-        branch: ctx.branch,
-        headSha: head.sha,
-        message: `Coder: issue #${ctx.issue} — ${ctx.issueTitle}`.slice(0, 72),
-        files: diff.changed.map((path) => ({ path })),
-        deletions: diff.deleted,
-        read: ctx.readFile,
-      });
+      const head = await ensureBranch(ctx.github, ctx.repo, ctx.branch, ctx.seedBranchHead);
+      if (head.sha !== ctx.seedBranchHead) {
+        throw new Error("Coder branch moved after this run was seeded; start a new verified run before publishing.");
+      }
+      if (!empty) {
+        await commitChanges(ctx.github, ctx.repo, {
+          branch: ctx.branch,
+          headSha: head.sha,
+          message: `Coder: issue #${ctx.issue} — ${ctx.issueTitle}`.slice(0, 72),
+          files: diff.changed.map((path) => ({ path })),
+          deletions: diff.deleted,
+          read: ctx.readFile,
+        });
+      }
       // Handler plumbing (never templating): guarantee the load-bearing `Closes #N` so a
       // merged PR auto-closes its issue and the ingress backstop correlates the webhook.
       const body = ensureClosesIssue(input.body, ctx.issue);

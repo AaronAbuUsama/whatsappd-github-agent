@@ -1,6 +1,6 @@
 import { isEmptyDigest, type GraphDigest } from "@ambient-agent/engine/graph/digest.ts";
 
-import type { CoderResult } from "./schemas.ts";
+import type { CoderResult, VerificationVerdict } from "./schemas.ts";
 
 /**
  * Which files the model touched, git-free. The tarball seed has no `.git`, so the
@@ -144,21 +144,39 @@ export const gitignoreMatcher = (gitignoreText: string): ((path: string) => bool
  * ponytail: `summary` is the terse Speaker relay; the rich narrative is the MODEL-authored
  * PR body on the PR itself, never templated here.
  */
-export const coderOutcome = (record: OpenPrRecord | undefined, issue: number, branch: string): CoderResult => {
+export const coderOutcome = (
+  record: OpenPrRecord | undefined,
+  context: {
+    readonly issue: number;
+    readonly branch: string;
+    readonly jobId: string;
+    readonly finalVerdict: VerificationVerdict;
+    readonly verificationRounds: number;
+    readonly reviewCycle: number;
+  },
+): CoderResult => {
+  const metadata = {
+    branch: context.branch,
+    jobId: context.jobId,
+    finalVerdict: context.finalVerdict,
+    verificationRounds: context.verificationRounds,
+    reviewCycle: context.reviewCycle,
+  } as const;
   if (record === undefined) {
     return {
       outcome: "blocked",
-      branch,
-      summary: `Issue #${issue}: no pull request was opened — the coder made no committable change or could not finish.`,
+      ...metadata,
+      summary: `Issue #${context.issue}: no pull request was opened — the coder made no committable change or could not finish.`,
     };
   }
   return {
     outcome: record.created ? "opened-pr" : "updated-pr",
     prUrl: record.url,
     prNumber: record.number,
-    branch,
+    ...metadata,
     testsPassed: !record.draft,
-    summary: `Issue #${issue}: ${record.created ? "opened" : "updated"} ${record.draft ? "a draft (not yet green) " : "a "}pull request — ${record.url}`,
+    draft: record.draft,
+    summary: `Issue #${context.issue}: ${record.created ? "opened" : "updated"} ${record.draft ? "a draft (not yet green) " : "a "}pull request — ${record.url}`,
   };
 };
 

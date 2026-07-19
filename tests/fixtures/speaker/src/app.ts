@@ -63,6 +63,15 @@ const respond = async (context: Context) => {
   const last = context.messages.at(-1);
   const serialized = JSON.stringify(last);
   const transcript = JSON.stringify(context.messages);
+  if (serialized.includes("Plan a small API behavior change without editing or publishing")) {
+    return fauxAssistantMessage("Implementation: inspect the route, make the smallest coherent handler change, and preserve validation. Verification: drive the public API with the success and malformed-input cases before publication.");
+  }
+  if (serialized.includes("Verify a changed CLI flag at its public command surface")) {
+    return fauxAssistantMessage("PASS — runtime surface observed by launching the CLI, driving the changed flag, and probing an invalid value; captured command output matched the expected behavior.");
+  }
+  if (serialized.includes("Verify a documentation-only change with no runtime surface")) {
+    return fauxAssistantMessage("SKIP — documentation-only change; no runtime surface exists to drive.");
+  }
   const recoveryMarker = serialized.match(/HOLD_AGENT_FOR_RESTART:([A-Za-z0-9_-]+)/)?.[1];
   if (recoveryMarker && holdAgentRecovery) {
     heldRecoveryMarkers.add(recoveryMarker);

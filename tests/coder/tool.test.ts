@@ -12,16 +12,18 @@ const before = parseHashListing("h1  src/a.ts\nh2  src/keep.ts");
 const after = parseHashListing("h1x src/a.ts\nh2  src/keep.ts");
 
 /** A full Git-Data + pulls mock. `branchExists` / `openPr` drive the two idempotency legs. */
-const makeGitHub = (opts: { branchExists: boolean; openPr?: { number: number; html_url: string; draft: boolean } }) => {
+const makeGitHub = (opts: { branchExists: boolean; branchHead?: string; openPr?: { number: number; node_id: string; html_url: string; draft: boolean } }) => {
   const getRef = vi.fn(async () => {
-    if (opts.branchExists) return { data: { object: { sha: "existing-head" } } };
+    if (opts.branchExists) return { data: { object: { sha: opts.branchHead ?? "seed-head" } } };
     throw notFound();
   });
   const createRef = vi.fn(async () => ({ data: { ref: "refs/heads/agent/coder/issue-42" } }));
   const list = vi.fn(async () => ({ data: opts.openPr === undefined ? [] : [opts.openPr] }));
-  const create = vi.fn(async () => ({ data: { number: 100, html_url: "https://x/pr/100" } }));
+  const create = vi.fn(async () => ({ data: { number: 100, node_id: "PR_100", html_url: "https://x/pr/100" } }));
   const update = vi.fn(async () => ({ data: {} }));
+  const graphql = vi.fn(async () => ({ }));
   const gh = {
+    graphql,
     git: {
       getRef,
       createRef,
@@ -33,20 +35,27 @@ const makeGitHub = (opts: { branchExists: boolean; openPr?: { number: number; ht
     },
     pulls: { list, create, update },
   } as unknown as CoderGitHub;
-  return { gh, getRef, createRef, list, create, update };
+  return { gh, getRef, createRef, list, create, update, graphql };
 };
 
-const buildTool = (gh: CoderGitHub, record: { pr?: OpenPrRecord }, snapshotAfter = async () => after) =>
+const buildTool = (
+  gh: CoderGitHub,
+  record: { pr?: OpenPrRecord },
+  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; verified?: ReturnType<typeof parseHashListing>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean } = {},
+) =>
   createOpenPullRequestTool({
     github: gh,
     repo: REPO,
     branch: "agent/coder/issue-42",
     base: "main",
-    baseSha: "base-sha",
+    seedBranchHead: options.seedBranchHead ?? "seed-head",
+    seedBranchExisted: options.seedBranchExisted ?? false,
     issue: 42,
     issueTitle: "Do the thing",
     before,
-    snapshotAfter,
+    verified: options.verified ?? after,
+    requiredDraft: options.requiredDraft ?? false,
+    snapshotAfter: options.snapshotAfter ?? (async () => after),
     readFile: async () => new TextEncoder().encode("changed bytes"),
     record,
   });
@@ -56,7 +65,7 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     for (const draft of [true, false]) {
       const record: { pr?: OpenPrRecord } = {};
       const { gh, create } = makeGitHub({ branchExists: false });
-      const result = (await buildTool(gh, record).run({
+      const result = (await buildTool(gh, record, { requiredDraft: draft }).run({
         input: { title: "t", body: "rich body", draft },
       })) as { opened: boolean; draft?: boolean };
 
@@ -71,7 +80,7 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     const record: { pr?: OpenPrRecord } = {};
     const { gh, createRef, create } = makeGitHub({
       branchExists: true,
-      openPr: { number: 9, html_url: "https://x/pr/9", draft: false },
+      openPr: { number: 9, node_id: "PR_9", html_url: "https://x/pr/9", draft: false },
     });
 
     const result = (await buildTool(gh, record).run({
@@ -118,14 +127,11 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     expect(sent2.body).toBe("Done. Fixes #42 fully.");
   });
 
-  it("relaunch onto an open PR: updates its title/body and reports the PR's ACTUAL draft state", async () => {
-    // Finding 2 (#172): "update if open" — patch the existing PR with the model's fresh
-    // values, and honestly report its real isDraft (a green relaunch onto a draft PR is
-    // still draft; draft→ready needs GraphQL, out of scope), never a blind input.draft stamp.
+  it("relaunch onto an open PR: updates its body and transitions draft to ready", async () => {
     const record: { pr?: OpenPrRecord } = {};
-    const { gh, update, create } = makeGitHub({
+    const { gh, update, create, graphql } = makeGitHub({
       branchExists: true,
-      openPr: { number: 9, html_url: "https://x/pr/9", draft: true },
+      openPr: { number: 9, node_id: "PR_9", html_url: "https://x/pr/9", draft: true },
     });
 
     const result = (await buildTool(gh, record).run({
@@ -136,14 +142,15 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ pull_number: 9, title: "fresh title", body: expect.stringContaining("fresh body") }),
     );
-    expect(result.draft).toBe(true); // the existing PR's real state, not input.draft (false)
-    expect(record.pr?.draft).toBe(true);
+    expect(graphql).toHaveBeenCalledWith(expect.stringContaining("markPullRequestReadyForReview"), { pullRequestId: "PR_9" });
+    expect(result.draft).toBe(false);
+    expect(record.pr?.draft).toBe(false);
   });
 
   it("no committable change: opens nothing and leaves the record empty (→ conductor blocks)", async () => {
     const record: { pr?: OpenPrRecord } = {};
     const { gh, getRef, create } = makeGitHub({ branchExists: false });
-    const result = (await buildTool(gh, record, async () => before).run({
+    const result = (await buildTool(gh, record, { verified: before, snapshotAfter: async () => before }).run({
       input: { title: "t", body: "b", draft: false },
     })) as { opened: boolean; message?: string };
 
@@ -152,5 +159,52 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     expect(record.pr).toBeUndefined();
     expect(getRef).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("no new diff on a reused branch still refreshes the PR and its draft lifecycle", async () => {
+    const record: { pr?: OpenPrRecord } = {};
+    const { gh, update, graphql } = makeGitHub({
+      branchExists: true,
+      openPr: { number: 9, node_id: "PR_9", html_url: "https://x/pr/9", draft: true },
+    });
+
+    const result = await buildTool(gh, record, {
+      verified: before,
+      snapshotAfter: async () => before,
+      seedBranchExisted: true,
+    }).run({ input: { title: "verified", body: "current evidence", draft: false } });
+
+    expect(result).toMatchObject({ opened: true, number: 9, draft: false });
+    expect(gh.git.createCommit).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ pull_number: 9, title: "verified" }));
+    expect(graphql).toHaveBeenCalledWith(expect.stringContaining("markPullRequestReadyForReview"), { pullRequestId: "PR_9" });
+  });
+
+  it("rejects publication when the workspace changed after the final Verifier observation", async () => {
+    const record: { pr?: OpenPrRecord } = {};
+    const { gh, getRef, create } = makeGitHub({ branchExists: false });
+    await expect(buildTool(gh, record, { verified: before }).run({
+      input: { title: "t", body: "b", draft: false },
+    })).rejects.toThrow("Workspace changed after the final Verifier observation");
+    expect(getRef).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects publication when the issue branch moved after the run was seeded", async () => {
+    const record: { pr?: OpenPrRecord } = {};
+    const { gh, create } = makeGitHub({ branchExists: true, branchHead: "moved-head" });
+    await expect(buildTool(gh, record, { seedBranchHead: "seed-head" }).run({
+      input: { title: "t", body: "b", draft: false },
+    })).rejects.toThrow("Coder branch moved after this run was seeded");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a publication draft state that contradicts the final verdict", async () => {
+    const record: { pr?: OpenPrRecord } = {};
+    const { gh, getRef } = makeGitHub({ branchExists: false });
+    await expect(buildTool(gh, record, { requiredDraft: true }).run({
+      input: { title: "t", body: "b", draft: false },
+    })).rejects.toThrow("Final verification requires draft=true");
+    expect(getRef).not.toHaveBeenCalled();
   });
 });

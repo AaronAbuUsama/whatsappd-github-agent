@@ -122,6 +122,8 @@ const runFamily = async (family: EvalFamily): Promise<void> => {
     APPLICATION_DB_PATH: join(workingDirectory, "application.sqlite"),
     SPEAKER_EVAL_LIVE_MODEL: live ? "true" : "false",
     SPEAKER_FIXTURE_LIVE_MODEL: live ? "true" : "false",
+    PLANNER_FIXTURE_READY: "true",
+    VERIFIER_FIXTURE_READY: "true",
     BRAINTRUST_EXPERIMENT_NAME: experimentName,
     ...(process.env.BRAINTRUST_API_KEY === undefined ? {} : { BRAINTRUST_TRACING: "1" }),
     FLUE_BASE_URL: baseUrl,
