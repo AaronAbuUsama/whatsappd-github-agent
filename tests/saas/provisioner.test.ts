@@ -422,6 +422,28 @@ describe("tenant provisioner", () => {
     });
   });
 
+  test("stops a bound application before blocking a corrupt tenant token", async () => {
+    const client = await migrate();
+    const tenantId = await seed(client, "corrupt-token");
+    const turso = new FakeTurso();
+    const dokploy = new FakeDokploy();
+    const provisioner = provisionerFor(client, turso, dokploy);
+
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({ status: "running" });
+    await client.execute({
+      sql: "UPDATE tenant SET tenant_db_token_ciphertext = 'corrupt' WHERE id = ?1",
+      args: [tenantId],
+    });
+    const stopsBefore = dokploy.calls.filter((call) => call.startsWith("stop:")).length;
+
+    expect(await provisioner.reconcileTenant(tenantId)).toMatchObject({
+      status: "blocked",
+      errorCode: "tenant_token_decryption_failed",
+    });
+    expect([...dokploy.taskCounts.values()]).toEqual([0]);
+    expect(dokploy.calls.filter((call) => call.startsWith("stop:")).length).toBe(stopsBefore + 1);
+  });
+
   test("keeps a response-lost start pending until zero tasks are observed", async () => {
     const client = await migrate();
     const tenantId = await seed(client, "start-unknown");

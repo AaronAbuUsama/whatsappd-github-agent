@@ -448,7 +448,11 @@ export const createTenantProvisioner = (options: TenantProvisionerOptions) => {
         try {
           token = options.secrets.decrypt(target.tenantDbTokenCiphertext);
         } catch {
-          return await recordInvariant(null, "tenant_token_decryption_failed");
+          if (target.dokployApplicationId) {
+            application = await options.dokploy.inspectApplication(target.dokployApplicationId);
+            if (!application) return await recordInvariant(null, "dokploy_bound_application_missing");
+          }
+          return await recordInvariant(application, "tenant_token_decryption_failed");
         }
       } else {
         return await recordInvariant(null, "tenant_credentials_incomplete");
