@@ -18,12 +18,22 @@ describe("the single-instance lock on the data directory", () => {
   it("refuses a second runtime while the first is alive", async () => {
     // T2's second-instance negative (#253): two runtimes on one data directory share the SQLite
     // pair and the WhatsApp session. The second must fail loudly, not start beside the first.
+    // The owner is this process's parent — a real, live, different process.
+    const root = await dataDirectory();
+    await writeFile(join(root, "runtime.lock"), `${process.ppid}\n`);
+
+    await expect(acquireInstanceLock(root)).rejects.toThrow(
+      new RegExp(`Another ambient-agent runtime \\(pid ${process.ppid}\\) is already using`, "u"),
+    );
+  });
+
+  it("lets a failed start retry in the same process rather than locking itself out", async () => {
+    // `start` throwing after it took the lock (occupied port, unreadable key) leaves our own pid
+    // in the file. That is a lock we hold, not a competitor, and it must not block the retry.
     const root = await dataDirectory();
     await acquireInstanceLock(root);
 
-    await expect(acquireInstanceLock(root)).rejects.toThrow(
-      new RegExp(`Another ambient-agent runtime \\(pid ${process.pid}\\) is already using`, "u"),
-    );
+    await expect(acquireInstanceLock(root)).resolves.toBeUndefined();
   });
 
   it("reclaims the lock a crashed or signalled runtime left behind", async () => {

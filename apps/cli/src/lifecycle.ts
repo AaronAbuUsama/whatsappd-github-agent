@@ -76,7 +76,9 @@ export const acquireInstanceLock = async (root: string): Promise<void> => {
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
     const owner = Number((await readFile(lock, "utf8")).trim());
-    if (Number.isInteger(owner) && owner > 0 && running(owner)) {
+    // Our own pid is a lock we already hold, not a competitor: a start that failed after taking
+    // the lock (occupied port, bad key) must not lock this process out of its own retry.
+    if (Number.isInteger(owner) && owner > 0 && owner !== process.pid && running(owner)) {
       throw new Error(
         `Another ambient-agent runtime (pid ${owner}) is already using ${root}. Stop it before starting another; two runtimes on one data directory corrupt it.`,
       );
