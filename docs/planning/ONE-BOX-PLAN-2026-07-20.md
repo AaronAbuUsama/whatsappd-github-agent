@@ -101,10 +101,8 @@ ChatGPT. There is no `pi login` to reuse.
 | `apps/runtime/src/app.ts:102` | branch: api-key provider vs codex subscription | 6 |
 | `apps/cli/src/program.ts` | `config --model-provider <id>`, key via **prompt, not flag** | 20 |
 
-**Gate — plumbing only.** With `provider: "openai"`, a real key and a cheap model, a message to the
-managed chat gets a real reply. Assert the reply **arrives** and the request reached the provider.
-Record model id, turns, tokens, wall time and cost. **Do not assert reply quality** — this proves the
-wire, not the model.
+**Gate:** with `provider: "openai"` and a real key, a message to the managed chat gets a real reply.
+Record model id, turns, tokens, wall time and cost.
 **Negative:** with the credential file absent the runtime must **exit non-zero at start**, not boot
 and settle silent. Assert the exit code, not a log line. Second negative: a provider/credential
 mismatch is refused at **config-write** time (`configuration.ts:66` re-validates and rolls back), not
@@ -113,31 +111,25 @@ discovered at first inference.
 **Rollback:** `config --model-provider openai-codex` returns to the untouched subscription path.
 Schema changes are `v.optional(…, default)`, so existing configs parse unchanged.
 
-## The cheap-model trap — read before spending anything
+## Running on a budget model
 
-Funds are limited, so gates will run on a nano-class model. That creates a specific and expensive
-failure mode:
+Funds are limited, so gates run on a mid-tier model — `gpt-5.4-mini` or `gpt-5.1-codex-mini` class.
+**That is a capable coding model.** It will write a small correct diff, open a PR and review one.
+Gates assert real outcomes; nothing is deferred on the assumption the model cannot cope.
 
-**A cheap model failing at a task is indistinguishable from the code being broken.** The Coder green
-path has never once worked. If a nano model is pointed at it and the run fails, we cannot tell
-whether the plumbing is broken or the model simply could not write the code — and the tempting
-conclusion is the wrong one.
+Two practical adjustments, and that is all:
 
-**Therefore every gate splits in two:**
-
-| | Asserts | Cheap model? |
-|---|---|---|
-| **Plumbing** | the request left, the response parsed, a tool was invoked, a sandbox `exec` succeeded, a branch was created, a PR opened, the run settled | **Yes — run now** |
-| **Capability** | the diff is correct, the verifier returns `PASS` | **No — deferred until funds allow** |
-
-The thing believed to be broken (#172: `/tmp` mounted `noexec`, `EACCES` when the model spawns a
-binary) is **a filesystem fact, not a model capability**. A plumbing gate proves or refutes it for
-near-zero spend. That is the highest-value measurement available right now, and it is cheap.
+1. **Give the first green run a well-specified small task.** Add a file, fix a bug with an obvious
+   fix, add a small function with a test. The point of the first run is to prove the loop closes, so
+   do not make the task the variable under test.
+2. **Instrument the run so a failure names its layer.** If a run fails, we need to know whether the
+   sandbox `exec` failed (#172, `/tmp` `noexec`, `EACCES` — a filesystem fact) or the model produced
+   a bad diff. Record the sandbox mount flags and whether `exec` succeeded *alongside* the verdict.
+   This costs nothing and is the difference between a useful failure and an ambiguous one.
 
 **Per-role profiles are the cost lever.** `AgentModelProfilesSchema` already supports a model per
-role (`resolveAgentModelProfile`, `pi-subscription.ts:46-49`). Put the Speaker on nano — chat
-replies are well within it — and leave the Coder role pointed at something capable rather than
-spending funds proving a cheap model cannot write code.
+role (`resolveAgentModelProfile`, `pi-subscription.ts:46-49`). The Speaker can sit on something
+cheaper than the Coder — chat replies are less demanding than writing a diff.
 
 ## M2 · One sandbox, selectable, config-driven
 
@@ -165,21 +157,20 @@ always available. That closes the boot-green-with-specialists-absent hole for fr
 **Retain #172's fix:** `TMPDIR` must point inside the workspace, not `/tmp` (which is `noexec` on the
 rig). `e2b-sandbox.ts:146,214` already does this for E2B; the local branch needs the same.
 
-**Gate — split (see the cheap-model trap above).**
+**Gate:** from the managed chat, ask for a small well-specified code change. A real non-draft PR
+appears with a non-empty diff, authored by `ambient-coder[bot]`, produced in a local sandbox with no
+E2B key present, and the verifier returns `PASS`.
 
-*M2a · plumbing, runs now on a cheap model.* From the managed chat, ask for a code change and assert
-the **mechanics**: `start_coder_job` is invoked and a run lands in the ledger
-(`capabilities/delegation/ledger.ts:49`); a sandbox session is created and `exec` **succeeds inside
-it** — this is the model-independent #172 proof; the tarball unpacks; a branch is created; a PR is
-opened by `ambient-coder[bot]`; the run settles rather than hanging.
-*Negative:* the process must not boot green with the sandbox misconfigured, and a sandbox `exec`
-failure must surface as a **failed run**, not a silent skip.
+**Negative:** assert `verdict === "PASS"` **and** a non-empty diff — draft-ness alone proves nothing,
+since a legitimate `SKIP` also yields a non-draft PR. And the process must **not** boot green with
+the sandbox misconfigured.
 
-*M2b · capability, deferred until a capable model is affordable.* `verdict === "PASS"` **and** a
-non-empty diff. Draft-ness alone proves nothing — a legitimate `SKIP` also yields a non-draft PR.
+**Record alongside the verdict, so a failure names its layer:** whether the sandbox `exec` succeeded,
+and the mount flags from inside the sandbox (`mount | grep /tmp`). A green run on an exec-mounted
+`/tmp` proves nothing about #172, and a failed run is only useful if we know whether the shell or the
+model was at fault.
 
-**Receipt:** `docs/proof/coder-green-local.md`. **M2a is the thing that has never worked, and it is
-cheap to settle.**
+**Receipt:** `docs/proof/coder-green-local.md`. **This is the thing that has never worked.**
 
 ## M3 · Env vars → CLI config
 
