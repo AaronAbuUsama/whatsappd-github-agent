@@ -1,3 +1,4 @@
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -50,6 +51,42 @@ export const resolveAgentSandbox = (environment: NodeJS.ProcessEnv = process.env
 
 const importRuntime: ImportRuntime = async (specifier) => await import(specifier);
 
+const running = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * Refuse a second runtime on one data directory (T2, #253). Flue forbids two replicas on one
+ * volume, and a second process would otherwise share the SQLite pair and the WhatsApp session
+ * and corrupt both silently. No cleanup handler: `stopRuntimeOnSignal` re-raises the signal, so
+ * the file always outlives the process and the stale-pid reclaim below is the normal restart path.
+ * ponytail: pid liveness, not flock — Node's stdlib has no flock, a reused pid would hold the
+ * directory hostage (delete `runtime.lock`), and two simultaneous reclaims of one stale lock both
+ * win. Swap in a real advisory lock if either ever bites.
+ */
+export const acquireInstanceLock = async (root: string): Promise<void> => {
+  const lock = join(root, "runtime.lock");
+  try {
+    await writeFile(lock, `${process.pid}\n`, { flag: "wx" });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+    const owner = Number((await readFile(lock, "utf8")).trim());
+    // Our own pid is a lock we already hold, not a competitor: a start that failed after taking
+    // the lock (occupied port, bad key) must not lock this process out of its own retry.
+    if (Number.isInteger(owner) && owner > 0 && owner !== process.pid && running(owner)) {
+      throw new Error(
+        `Another ambient-agent runtime (pid ${owner}) is already using ${root}. Stop it before starting another; two runtimes on one data directory corrupt it.`,
+      );
+    }
+    await writeFile(lock, `${process.pid}\n`);
+  }
+};
+
 export const parseRuntimePort = (value: string): number => {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -92,6 +129,7 @@ export const startGeneratedRuntime = async (
   authentication: ChatGptAuthentication,
   importServer: ImportRuntime = importRuntime,
 ): Promise<void> => {
+  await acquireInstanceLock(paths.root);
   await configureLogging({
     logsDirectory: paths.logs,
     level: logging.debug ? "debug" : "info",
