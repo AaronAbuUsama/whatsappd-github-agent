@@ -191,9 +191,11 @@ const resolveGitHub = async (
       continue;
     }
 
-    const triples = input.interactive
-      ? await input.prompts.githubApps(repository)
-      : input.scripted?.githubApps;
+    // --github-apps-file wins whenever it was supplied. Asking interactively instead made the
+    // flag unreachable on the only path that pairs WhatsApp, and the guided paste cannot carry a
+    // PEM anyway: its prompt is single-line, so a pasted multi-line key silently becomes its
+    // last line. An operator who brought the triples in a file must never be asked for them.
+    const triples = input.scripted?.githubApps ?? (input.interactive ? await input.prompts.githubApps(repository) : undefined);
     if (triples === undefined) {
       // Non-interactive setup has no guided paste; the triples must be supplied up front.
       throw new Error("Non-interactive setup requires the three GitHub App triples.");

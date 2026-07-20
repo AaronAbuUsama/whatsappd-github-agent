@@ -258,6 +258,34 @@ describe("transactional first-run setup", () => {
     expect(reviews).toMatchObject([{ chat: { jid: "older@g.us", name: "Older Project", kind: "group" } }]);
   });
 
+  it("honors GitHub App triples supplied as a file during interactive setup", async () => {
+    // --github-apps-file was only read when setup was non-interactive, and non-interactive setup
+    // refuses to pair WhatsApp — so the flag was unreachable on the only path that completes a
+    // first run, and the operator was sent to a guided paste whose single-line prompt reduces a
+    // pasted PEM to its last line. An operator who brought the triples must never be asked.
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts, reviews } = setup(events);
+    prompts.githubApps = async () => {
+      throw new Error("the guided paste must not run when --github-apps-file was supplied");
+    };
+
+    await expect(
+      runFirstRunSetup({
+        dataDirectory: paths.dataDirectory,
+        interactive: true,
+        scripted: { githubApps: fakeGitHubAppTriples() },
+        services,
+        prompts,
+        chatGptCallbacks: { onDeviceCode: () => undefined },
+        whatsappCallbacks: {},
+      }),
+    ).resolves.toMatchObject({ created: true });
+
+    expect(events).not.toContain("prompt.githubApps:owner/discovered");
+    expect(reviews.length).toBe(1);
+  });
+
   it("retries invalid chat and GitHub fields without repeating provider authentication", async () => {
     const paths = await fixture();
     const events: string[] = [];
