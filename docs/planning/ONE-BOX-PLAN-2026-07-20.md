@@ -62,6 +62,27 @@ M1 API-key provider ──▶ M2 Sandbox selector ──▶ M4 Run it on the box
 **M1 is first because nothing else can be verified without inference.** Every downstream gate drives
 the model.
 
+## How each ticket is accepted — no ceremony until M4
+
+The implementing agent works on a remote machine with **no install, no paired phone, and no
+secrets**. No completed install exists anywhere yet, so any gate phrased as "message the managed
+chat" is unrunnable until M4. Every ticket therefore has a proof the agent can produce alone, plus
+**one command the owner runs**.
+
+| Tier | Who | Needs |
+|---|---|---|
+| **A** | the agent | nothing — typecheck, tests, config round-trip, the negative assertions |
+| **B** | the owner, one command | an API key (and for M2, a throwaway repo). **No WhatsApp, no install.** |
+| **C** | deferred to M4 | the WhatsApp round trip — needs the one-time pairing ceremony |
+
+Tier B follows the gated live-test pattern already in the tree
+(`tests/speaker/pi-subscription.test.ts:320-341`, `tests/speaker/issue-management.live.test.ts`),
+which needs only a data directory and a credential. `AMBIENT_AGENT_LIVE_*` stays an environment
+variable by design — the no-env-vars rule governs **runtime config**, not test harnesses.
+
+**A green Tier B is the signal to start the next ticket.** The pairing ceremony happens once, in M4,
+where it belongs.
+
 ## M1 · Make the model provider an API-key choice
 
 No subscription is available and funds are tight. Without this, nothing else can be verified — every
