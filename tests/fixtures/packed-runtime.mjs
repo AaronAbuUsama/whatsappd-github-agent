@@ -71,15 +71,7 @@ export const createSession = ({ store }) => {
     },
     stop: async () => { online = false; },
     identity: () => online ? identity : undefined,
-    send: async (chatId, content) => {
-      // A live gate needs to observe the reply, not just that the runtime did not crash.
-      const log = process.env.PACKED_WHATSAPP_SEND_LOG;
-      if (log) {
-        const { appendFile } = await import("node:fs/promises");
-        await appendFile(log, JSON.stringify({ at: Date.now(), chatId, content }) + "\n");
-      }
-      return { id: "packed-message" };
-    },
+    send: async () => ({ id: "packed-message" }),
     setTyping: async () => undefined,
   };
 };
@@ -130,60 +122,9 @@ const jwtPayload = Buffer.from(
 const accessToken = `e30.${jwtPayload}.signature`;
 
 const upstreamFetch = globalThis.fetch;
-
-/**
- * Record every request to the live model provider and the usage its stream reports, so a
- * live-inference gate can assert the request actually left the process and account for what
- * it cost. Off unless PACKED_PROVIDER_ORIGIN names an origin to let through.
- */
-const providerOrigin = process.env.PACKED_PROVIDER_ORIGIN;
-const providerLog = process.env.PACKED_PROVIDER_LOG;
-const recordProvider = async (entry) => {
-  if (!providerLog) return;
-  const { appendFile } = await import("node:fs/promises");
-  await appendFile(providerLog, JSON.stringify(entry) + "\n");
-};
-const teeProviderUsage = (response, started) => {
-  if (!providerLog || response.body === null) return response;
-  const [recorded, returned] = response.body.tee();
-  void (async () => {
-    let buffered = "";
-    const decoder = new TextDecoder();
-    for await (const chunk of recorded) buffered += decoder.decode(chunk, { stream: true });
-    // The Responses stream carries usage on its terminal completed/done event.
-    for (const line of buffered.split("\n")) {
-      if (!line.startsWith("data:")) continue;
-      let event;
-      try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
-      const usage = event?.response?.usage ?? event?.usage;
-      if (usage === undefined) continue;
-      await recordProvider({
-        kind: "usage",
-        model: event?.response?.model,
-        usage,
-        elapsedMs: Date.now() - started,
-      });
-    }
-  })();
-  return new Response(returned, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-};
-
-globalThis.fetch = async (input, init) => {
-  const url = String(input instanceof Request ? input.url : input);
+globalThis.fetch = async (input) => {
+  const url = String(input);
   if (url.startsWith("http://127.0.0.1:")) return await upstreamFetch(input);
-  if (providerOrigin && url.startsWith(providerOrigin)) {
-    const started = Date.now();
-    let body;
-    try { body = JSON.parse(String(init?.body ?? "")); } catch { body = undefined; }
-    await recordProvider({ kind: "request", url, model: body?.model, at: started });
-    const response = await upstreamFetch(input, init);
-    await recordProvider({ kind: "response", url, status: response.status, elapsedMs: Date.now() - started });
-    return teeProviderUsage(response, started);
-  }
   if (url.endsWith("/api/accounts/deviceauth/usercode")) {
     return Response.json({ device_auth_id: "packed-device", user_code: "PACK-TEST", interval: 0 });
   }
