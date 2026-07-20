@@ -6,12 +6,14 @@ import { DatabaseSync } from "node:sqlite";
 import * as v from "valibot";
 
 import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "@ambient-agent/engine/intake/database-versions.ts";
+import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { managedPaths, type ManagedPathEnvironment, type ManagedPaths } from "./paths.ts";
 import {
   createManagedConfig,
   GITHUB_APP_REFERENCES,
   GitHubAppCredentialSchema,
   ManagedConfigSchema,
+  modelCredentialReferences,
   type GitHubAppCredential,
   type GitHubAppReference,
   type GitHubAppTriples,
@@ -365,13 +367,15 @@ const inspectConfigReferences = (path: string, value: unknown): readonly Install
       ? (config.github as Record<string, unknown>)
       : undefined;
   const issues: InstallationDiagnostic[] = [];
-  if (model?.credential !== "chatgpt-oauth" && model?.credential !== "pi-auth") {
+  const provider = typeof model?.provider === "string" ? model.provider : SUBSCRIPTION_PROVIDER_ID;
+  const allowed = modelCredentialReferences(provider);
+  if (typeof model?.credential !== "string" || !allowed.includes(model.credential)) {
     issues.push(
       diagnostic(
         "credential.reference",
         path,
-        "The model credential reference must be chatgpt-oauth.",
-        "Set model.credential to chatgpt-oauth and run ambient-agent doctor.",
+        `The model credential reference for provider ${provider} must be ${allowed.join(" or ")}.`,
+        `Run ambient-agent config --model-provider ${provider}, then ambient-agent doctor.`,
       ),
     );
   }

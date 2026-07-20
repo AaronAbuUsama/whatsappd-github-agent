@@ -3,6 +3,7 @@ import { defineAgent, type AgentRouteHandler } from "@flue/runtime";
 import {
   DEFAULT_AGENT_MODEL_PROFILES,
   modelSpecifier,
+  SUBSCRIPTION_PROVIDER_ID,
 } from "../../../../../packages/engine/src/model/pi-subscription.ts";
 
 export const description = "Fixture-only LLM judge for the ratified Speaker participation rubric.";
@@ -10,7 +11,7 @@ export const description = "Fixture-only LLM judge for the ratified Speaker part
 export const route: AgentRouteHandler = async (_context, next) => next();
 
 export default defineAgent(() => ({
-  model: modelSpecifier(DEFAULT_AGENT_MODEL_PROFILES.speaker.id),
+  model: modelSpecifier(SUBSCRIPTION_PROVIDER_ID, DEFAULT_AGENT_MODEL_PROFILES.speaker.id),
   thinkingLevel: "low",
   instructions: [
     "You are an independent evaluation judge, not Speaker.",

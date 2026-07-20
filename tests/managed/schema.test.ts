@@ -6,6 +6,7 @@ import {
   GitHubAppCredentialSchema,
   ManagedConfigSchema,
   createManagedConfig,
+  modelApiKeyCredentialFrom,
 } from "../../packages/installation/src/schema.ts";
 
 const EXPECTED_DEFAULT_PROFILES = {
@@ -145,6 +146,47 @@ describe("managed schemas", () => {
       ...older,
       runtime: { port: 3000, reviewerSandbox: { kind: "docker", image: "node:22-bookworm" } },
     }).success).toBe(false);
+  });
+
+  it("parses an existing config unchanged and defaults its provider to the subscription one", () => {
+    // No migration and no schemaVersion bump: `provider` is optional with the historical
+    // default, so a config written before #250 still parses.
+    const { model, ...rest } = createManagedConfig(["120363000@g.us"], "owner/repo");
+    const { provider: _provider, ...modelWithoutProvider } = model;
+    const parsed = v.parse(ManagedConfigSchema, { ...rest, model: modelWithoutProvider });
+    expect(parsed.model.provider).toBe("openai-codex");
+    expect(parsed.model.credential).toBe("chatgpt-oauth");
+  });
+
+  it("accepts any provider pi ships paired with the api-key credential, and refuses a mismatch", () => {
+    const config = createManagedConfig(["120363000@g.us"], "owner/repo");
+    const withModel = (model: Record<string, unknown>) => v.safeParse(ManagedConfigSchema, { ...config, model });
+    const profiles = {
+      ...EXPECTED_DEFAULT_PROFILES,
+      speaker: { id: "gpt-5.4-nano", thinkingLevel: "low" },
+    };
+
+    // Any of pi's 35 provider IDs, not a hand-kept allowlist.
+    for (const provider of ["openai", "anthropic", "groq", "deepseek", "openrouter"]) {
+      expect(withModel({ provider, credential: "api-key", profiles }).success).toBe(true);
+    }
+    // A provider paired with the wrong credential file is refused at parse time, which is
+    // what `writeManagedConfiguration` re-validates through before it touches disk.
+    expect(withModel({ provider: "openai", credential: "chatgpt-oauth", profiles }).success).toBe(false);
+    expect(withModel({ provider: "openai-codex", credential: "api-key", profiles }).success).toBe(false);
+    // A provider ID no build ships is refused rather than deferred to first inference.
+    expect(withModel({ provider: "opeani", credential: "api-key", profiles }).success).toBe(false);
+  });
+
+  it("binds the api-key credential file to the provider it was pasted for", () => {
+    expect(modelApiKeyCredentialFrom("openai", " sk-test-key ")).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-test-key",
+    });
+    expect(() => modelApiKeyCredentialFrom("openai", "   ")).toThrow();
+    expect(() => modelApiKeyCredentialFrom("not-a-provider", "sk-test-key")).toThrow();
   });
 
   it("accepts only a managed group as the dedicated smoke canary", () => {

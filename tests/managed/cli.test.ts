@@ -64,6 +64,7 @@ const harness = () => {
     repository: async (discovered?: string) => discovered ?? "owner/repo",
     githubApps: async () => fakeGitHubAppTriples(),
     githubApp: async (reference: GitHubAppReference) => fakeGitHubAppTriples()[reference],
+    modelApiKey: async () => "sk-pasted-model-key",
     review: async () => true,
     validationError: () => undefined,
   };
@@ -893,6 +894,78 @@ describe("managed CLI", () => {
     await expect(readFile(managed.flueDatabase)).resolves.toEqual(beforeFlue);
     await expect(readFile(managed.chatGptOAuthCredential, "utf8")).resolves.toBe(beforeModel);
     expect(config.stdout()).not.toContain("fake-planner-key");
+  });
+
+  it("switches the model provider from the CLI, prompting for the key and never taking it as a flag", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+
+    const cli = harness();
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "config",
+          "--model-provider",
+          "openai",
+          "--model",
+          "gpt-5.4-nano",
+          "--model-coder",
+          "gpt-5.4",
+        ],
+        cli,
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    // The config references the credential by name and never carries the key itself.
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    expect(JSON.parse(written)).toMatchObject({
+      model: {
+        provider: "openai",
+        credential: "api-key",
+        profiles: {
+          speaker: { id: "gpt-5.4-nano" },
+          coder: { id: "gpt-5.4" },
+        },
+      },
+    });
+    // Mode 0600, beside the other managed credentials.
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
+    expect(cli.stdout()).not.toContain("sk-pasted-model-key");
+  });
+
+  it("refuses a model the chosen provider does not have, before writing anything", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const before = await readFile(managed.config, "utf8");
+
+    const cli = harness();
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "config", "--model-provider", "openai", "--model", "claude-sonnet-4-6"],
+        cli,
+      ),
+    ).not.toBe(0);
+    expect(cli.stderr()).toContain("has no model claude-sonnet-4-6");
+    await expect(readFile(managed.config, "utf8")).resolves.toBe(before);
+    await expect(lstat(managed.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("leaves the coder credential untouched when a github-app rotation is cancelled at review", async () => {

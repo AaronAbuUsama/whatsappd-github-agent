@@ -99,4 +99,48 @@ describe("managed configuration migrations", () => {
       });
     }
   });
+
+  it("refuses a provider/credential mismatch at write time and leaves both files untouched", async () => {
+    // Negative assertion for #250: a config naming a provider whose credential file it does
+    // not reference never reaches disk, so the mismatch is impossible to discover later at
+    // first inference. `writeManagedConfiguration` re-parses through the schema first.
+    const root = await mkdtemp(join(tmpdir(), "ambient-config-model-mismatch-"));
+    roots.push(root);
+    const configPath = join(root, "config.json");
+    const credentialPath = join(root, "github-planner.json");
+    const config = {
+      schemaVersion: 1,
+      managedChats: ["chat@g.us"],
+      model: { provider: "openai-codex", credential: "chatgpt-oauth" },
+      github: {
+        kind: "github-app",
+        credential: "github",
+        defaultRepository: "owner/old",
+        allowedRepositories: ["owner/old"],
+      },
+    } as const;
+    const previousConfig = `${JSON.stringify(config)}\n`;
+    const previousCredential = `${JSON.stringify(appCredential({ webhookSecret: "secret" }))}\n`;
+    await writeFile(configPath, previousConfig, { mode: 0o600 });
+    await writeFile(credentialPath, previousCredential, { mode: 0o600 });
+
+    const written: string[] = [];
+    await expect(
+      writeManagedConfiguration(
+        configPath,
+        credentialPath,
+        // The openai provider's key lives in credentials/model-api-key.json, so naming the
+        // ChatGPT OAuth credential beside it is the mismatch.
+        { ...config, model: { provider: "openai", credential: "chatgpt-oauth" } },
+        appCredential({ webhookSecret: "secret" }),
+        async (path, value) => {
+          written.push(path);
+          await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+        },
+      ),
+    ).rejects.toThrow();
+    expect(written).toEqual([]);
+    await expect(readFile(configPath, "utf8")).resolves.toBe(previousConfig);
+    await expect(readFile(credentialPath, "utf8")).resolves.toBe(previousCredential);
+  });
 });

@@ -35,7 +35,9 @@ import { bridgeHealth } from "@ambient-agent/installation/bridge-contract.ts";
 import { runtimeInstallationId } from "@ambient-agent/installation/runtime-health.ts";
 import {
   configureAgentModelProfiles,
+  connectPiApiKeyProvider,
   connectPiChatGptSubscription,
+  SUBSCRIPTION_PROVIDER_ID,
 } from "@ambient-agent/engine/model/pi-subscription.ts";
 
 /**
@@ -97,12 +99,16 @@ export const createAmbientAgentApp = async ({
   githubCredential,
   paths,
   agentSandbox,
+  modelApiKey,
 }: ManagedRuntimeDependencies): Promise<Hono> => {
-  configureAgentModelProfiles(configuration.model.profiles);
-  const subscription = await connectPiChatGptSubscription({
-    authentication,
-    profiles: configuration.model.profiles,
-  });
+  const { provider, profiles } = configuration.model;
+  configureAgentModelProfiles(profiles, provider);
+  // An API-key provider needs no api registration: every `api` pi's catalog names is already
+  // built in, so the key is the whole binding.
+  const subscription =
+    provider === SUBSCRIPTION_PROVIDER_ID
+      ? await connectPiChatGptSubscription({ authentication, profiles })
+      : await connectPiApiKeyProvider({ provider, apiKey: modelApiKey ?? "", profiles });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
   const runtimeId = bridge?.runtimeId ?? runtimeInstallationId(githubCredential.webhookSecret);
   // The Coder Specialist (#158) runs under its own App identity in the same config-bound

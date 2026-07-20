@@ -33,6 +33,11 @@ export interface FirstRunPrompts {
   githubApps(repository: string): Promise<GitHubAppTriples>;
   /** Guided paste of a single App triple — the rotation path (`config --github-app <ref>`). */
   githubApp(reference: GitHubAppReference, repository: string): Promise<GitHubAppTriple>;
+  /**
+   * Guided paste of the model API key (`config --model-provider <id>`). Optional because
+   * first-run setup never asks for it — provider selection is a config-time choice.
+   */
+  modelApiKey?(provider: string): Promise<string>;
   review(review: SetupReview): Promise<boolean>;
   validationError(field: "chat" | "repository" | "github", message: string): void;
 }

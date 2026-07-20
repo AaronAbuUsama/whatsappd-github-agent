@@ -87,6 +87,10 @@ export const defaultSetupPrompts: SetupPrompts = {
     return triples;
   },
   githubApp: async (reference, repository) => await promptGitHubAppTriple(reference, repository),
+  modelApiKey: async (provider) =>
+    await requiredPrompt(`${provider} API key`, () =>
+      prompts.password({ message: `${provider} API key (paste the value; it is never echoed)`, mask: "*" }),
+    ),
   review: async (review: SetupReview) => {
     prompts.note(
       [

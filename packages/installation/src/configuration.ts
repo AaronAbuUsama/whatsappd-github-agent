@@ -4,11 +4,14 @@ import { chmod, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import * as v from "valibot";
 
+import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
   GitHubAppCredentialSchema,
   ManagedConfigSchema,
+  ModelApiKeyCredentialSchema,
   type GitHubAppCredential,
   type ManagedConfig,
+  type ModelApiKeyCredential,
 } from "./schema.ts";
 
 const FILE_MODE = 0o600;
@@ -39,6 +42,13 @@ export const readManagedConfig = async (path: string): Promise<ManagedConfig> =>
 
 export const readManagedGitHubAppCredential = async (path: string): Promise<GitHubAppCredential> =>
   await readPrivateJson(path, GitHubAppCredentialSchema);
+
+/**
+ * The model API key. A missing or damaged file throws: the runtime must fail loudly at start
+ * rather than boot green with no inference (#250).
+ */
+export const readManagedModelApiKey = async (path: string): Promise<ModelApiKeyCredential> =>
+  await readPrivateJson(path, ModelApiKeyCredentialSchema);
 
 export const atomicWriteManagedConfig = async (path: string, value: unknown): Promise<void> => {
   const directory = dirname(path);
@@ -116,7 +126,10 @@ export const migrateManagedChatGptCredentialReference = async (path: string): Pr
     if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT") return;
     throw cause;
   }
-  if (config.model.credential === "chatgpt-oauth") return;
+  // Only the legacy `pi-auth` reference is walked forward. An API-key install owns a
+  // different credential file, and rewriting it to a ChatGPT one would break the pairing
+  // check it is about to be re-validated against.
+  if (config.model.provider !== SUBSCRIPTION_PROVIDER_ID || config.model.credential === "chatgpt-oauth") return;
   await atomicWriteManagedConfig(path, {
     ...config,
     model: { ...config.model, credential: "chatgpt-oauth" },

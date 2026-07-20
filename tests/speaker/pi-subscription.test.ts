@@ -5,8 +5,10 @@ import {
   DEFAULT_AGENT_MODEL_PROFILES,
   ChatGptReadinessError,
   configureAgentModelProfiles,
+  connectPiApiKeyProvider,
   connectPiChatGptSubscription,
   modelSpecifier,
+  SUBSCRIPTION_PROVIDER_ID,
   prepareLunaResponsesLiteRequest,
   resolveAgentModelProfile,
   runChatGptReadinessCheck,
@@ -25,9 +27,9 @@ const authentication = (apiKey = "header.payload.signature"): ChatGptAuthenticat
 });
 
 const SPEAKER_MODEL_ID = DEFAULT_AGENT_MODEL_PROFILES.speaker.id;
-const SPEAKER_MODEL_SPECIFIER = modelSpecifier(SPEAKER_MODEL_ID);
+const SPEAKER_MODEL_SPECIFIER = modelSpecifier(SUBSCRIPTION_PROVIDER_ID, SPEAKER_MODEL_ID);
 
-afterEach(() => configureAgentModelProfiles(DEFAULT_AGENT_MODEL_PROFILES));
+afterEach(() => configureAgentModelProfiles(DEFAULT_AGENT_MODEL_PROFILES, SUBSCRIPTION_PROVIDER_ID));
 
 describe("connectPiChatGptSubscription", () => {
   it("loads model authorization only from the injected Ambient Agent authentication service", async () => {
@@ -270,7 +272,7 @@ describe("connectPiChatGptSubscription", () => {
       ...DEFAULT_AGENT_MODEL_PROFILES,
       speaker: { id: "gpt-5.6-terra", thinkingLevel: "medium" },
       verifier: { id: "gpt-5.6-luna", thinkingLevel: "off" },
-    });
+    }, SUBSCRIPTION_PROVIDER_ID);
 
     expect(resolveAgentModelProfile("speaker")).toEqual({
       model: "openai-codex/gpt-5.6-terra",
@@ -339,4 +341,62 @@ describe("connectPiChatGptSubscription", () => {
     },
     70_000,
   );
+});
+
+describe("connectPiApiKeyProvider", () => {
+  it("binds any catalog provider with the key alone, and never registers an api", async () => {
+    // Every api pi's catalog names is already built in (`compat.js:136` calls
+    // registerBuiltInApiProviders at import), so an api-key provider is one registerProvider
+    // call. Supporting all 35 is this, not a per-provider branch.
+    for (const provider of ["openai", "anthropic", "groq", "deepseek", "openrouter"]) {
+      const registerProvider = vi.fn();
+      const receipt = await connectPiApiKeyProvider({
+        provider,
+        apiKey: "managed-api-key",
+        profiles: DEFAULT_AGENT_MODEL_PROFILES,
+        registerProvider,
+      });
+
+      expect(registerProvider).toHaveBeenCalledTimes(1);
+      expect(registerProvider).toHaveBeenCalledWith(provider, { apiKey: "managed-api-key" });
+      expect(receipt).toMatchObject({ authentication: "api-key", provider });
+    }
+  });
+
+  it("refuses an empty key and a provider no build ships rather than failing at first inference", async () => {
+    const registerProvider = vi.fn();
+    await expect(
+      connectPiApiKeyProvider({
+        provider: "openai",
+        apiKey: "   ",
+        profiles: DEFAULT_AGENT_MODEL_PROFILES,
+        registerProvider,
+      }),
+    ).rejects.toThrow(/API key/iu);
+    await expect(
+      connectPiApiKeyProvider({
+        provider: "opeani",
+        apiKey: "managed-api-key",
+        profiles: DEFAULT_AGENT_MODEL_PROFILES,
+        registerProvider,
+      }),
+    ).rejects.toThrow(/not a model provider/iu);
+    expect(registerProvider).not.toHaveBeenCalled();
+  });
+
+  it("prefixes each role's own model with the configured provider", () => {
+    // Funds are limited: a cheap Speaker beside a capable Coder is config, and every agent
+    // reads it through this one seam.
+    configureAgentModelProfiles(
+      {
+        ...DEFAULT_AGENT_MODEL_PROFILES,
+        speaker: { id: "gpt-5.4-nano", thinkingLevel: "low" },
+        coder: { id: "gpt-5.4", thinkingLevel: "high" },
+      },
+      "openai",
+    );
+
+    expect(resolveAgentModelProfile("speaker")).toEqual({ model: "openai/gpt-5.4-nano", thinkingLevel: "low" });
+    expect(resolveAgentModelProfile("coder")).toEqual({ model: "openai/gpt-5.4", thinkingLevel: "high" });
+  });
 });

@@ -2,7 +2,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { configureLogging, type LogFormat } from "@ambient-agent/engine/logging/logging.ts";
-import { ensureManagedGitHubWebhookSecret, readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
+import {
+  ensureManagedGitHubWebhookSecret,
+  readManagedConfig,
+  readManagedGitHubAppCredential,
+  readManagedModelApiKey,
+} from "@ambient-agent/installation/configuration.ts";
+import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
   installManagedRuntimeDependencies,
   resolveTenantRuntimeOperateBridge,
@@ -57,6 +63,29 @@ const portOccupied = (cause: unknown): boolean =>
     ? cause.errors.some(portOccupied)
     : (cause as NodeJS.ErrnoException | null)?.code === "EADDRINUSE";
 
+/**
+ * Read the configured provider's key, or throw. This runs before anything binds, so a runtime
+ * with no usable inference exits non-zero at start instead of booting green and going silent
+ * on the first message (#250).
+ */
+const readModelApiKeyOrFail = async (paths: ManagedPaths, provider: string): Promise<string> => {
+  let credential: Awaited<ReturnType<typeof readManagedModelApiKey>>;
+  try {
+    credential = await readManagedModelApiKey(paths.modelApiKeyCredential);
+  } catch (cause) {
+    throw new Error(
+      `model.provider is ${provider} but the managed API key at ${paths.modelApiKeyCredential} is missing or unreadable. Run ambient-agent config --model-provider ${provider} and paste a fresh key.`,
+      { cause },
+    );
+  }
+  if (credential.provider !== provider) {
+    throw new Error(
+      `The managed API key at ${paths.modelApiKeyCredential} was issued for ${credential.provider}, but model.provider is ${provider}. Run ambient-agent config --model-provider ${provider} and paste a key for that provider.`,
+    );
+  }
+  return credential.apiKey;
+};
+
 export const startGeneratedRuntime = async (
   paths: ManagedPaths,
   logging: RuntimeLoggingOptions,
@@ -74,6 +103,10 @@ export const startGeneratedRuntime = async (
   if (githubCredential.webhookSecret === undefined) {
     throw new Error("The app-owned GitHub webhook credential migration did not complete.");
   }
+  const modelApiKey =
+    configuration.model.provider === SUBSCRIPTION_PROVIDER_ID
+      ? undefined
+      : await readModelApiKeyOrFail(paths, configuration.model.provider);
   const deployment = runtimeDeploymentIdentityFromEnvironment();
   const bridge = resolveTenantRuntimeOperateBridge();
   const agentSandbox = resolveAgentSandbox();
@@ -85,6 +118,7 @@ export const startGeneratedRuntime = async (
     ...(deployment === undefined ? {} : { deployment }),
     ...(bridge === undefined ? {} : { bridge }),
     ...(agentSandbox === undefined ? {} : { agentSandbox }),
+    ...(modelApiKey === undefined ? {} : { modelApiKey }),
   });
   process.chdir(paths.root);
   const serverEntry = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "server.mjs"));

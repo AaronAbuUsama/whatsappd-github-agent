@@ -193,10 +193,10 @@ export const createInspectionReporter = ({
                 "The ChatGPT live readiness request failed; retry when the service is reachable.",
                 { cause },
               );
-        const profiles = configuration!.model.profiles;
+        const { profiles, provider } = configuration!.model;
         liveCheck = {
-          model: modelSpecifier(profiles.speaker.id),
-          models: configuredModelIds(profiles).map(modelSpecifier),
+          model: modelSpecifier(provider, profiles.speaker.id),
+          models: configuredModelIds(profiles).map((id) => modelSpecifier(provider, id)),
           request: "failed",
           reason: failure.code,
         };

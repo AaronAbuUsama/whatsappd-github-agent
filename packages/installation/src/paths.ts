@@ -20,6 +20,8 @@ export interface ManagedPaths {
   readonly legacyGithubCredential: string;
   readonly chatGptOAuthCredential: string;
   readonly legacyPiAuthCredential: string;
+  /** The model API key, for every `model.provider` that is not the subscription one (#250). */
+  readonly modelApiKeyCredential: string;
   readonly applicationDatabase: string;
   readonly flueDatabase: string;
   readonly whatsapp: string;
@@ -88,6 +90,7 @@ export const managedPaths = (options: ManagedPathEnvironment = {}): ManagedPaths
     legacyGithubCredential: paths.join(credentials, "github.json"),
     chatGptOAuthCredential: paths.join(credentials, "chatgpt-oauth.json"),
     legacyPiAuthCredential: paths.join(credentials, "pi-auth.json"),
+    modelApiKeyCredential: paths.join(credentials, "model-api-key.json"),
     applicationDatabase: paths.join(root, "application.sqlite"),
     flueDatabase: paths.join(root, "flue.sqlite"),
     whatsapp: paths.join(root, "whatsapp"),
