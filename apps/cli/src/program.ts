@@ -58,6 +58,7 @@ import {
 } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import type { ChatGptReadinessReceipt } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { modelSelectionFrom, resolveModelSelection } from "./model-configuration.ts";
+import { readSuppliedPrivateKey } from "./private-key.ts";
 import {
   discoverOriginRepository,
   normalizeGitHubRepository,
@@ -137,13 +138,17 @@ const readGitHubAppTriplesFile = async (path: string): Promise<GitHubAppTriples>
   const triples = {} as Record<GitHubAppReference, GitHubAppTriple>;
   for (const reference of GITHUB_APP_REFERENCES) {
     const entry = (parsed as Record<string, unknown> | null)?.[reference] as Partial<GitHubAppTriple> | undefined;
-    const appId = entry?.appId?.trim();
-    const installationId = entry?.installationId?.trim();
-    const privateKey = entry?.privateKey?.trim();
-    if (!appId || !installationId || !privateKey) {
+    // Coerced, not required as strings: a hand-written triples file naturally carries the two
+    // IDs as JSON numbers, and failing that on `.trim is not a function` helps nobody.
+    const appId = String(entry?.appId ?? "").trim();
+    const installationId = String(entry?.installationId ?? "").trim();
+    const suppliedKey = String(entry?.privateKey ?? "").trim();
+    if (!appId || !installationId || !suppliedKey) {
       throw new Error(`The ${reference} App triple in ${path} needs a non-empty appId, installationId, and privateKey.`);
     }
-    triples[reference] = { appId, installationId, privateKey };
+    // privateKey may be the key itself or a path to the downloaded .pem. The planner key is
+    // proven for real by verifyGitHub before promotion, so this does not re-parse it here.
+    triples[reference] = { appId, installationId, privateKey: await readSuppliedPrivateKey(reference, suppliedKey) };
   }
   return triples;
 };

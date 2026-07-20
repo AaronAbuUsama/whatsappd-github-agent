@@ -38,5 +38,5 @@ export const githubAppSetupChecklist = (reference: GitHubAppReference, repositor
       : []),
     `  ${reference === "planner" ? 4 : 3}. Generate a private key and download the .pem file.`,
     `  ${reference === "planner" ? 5 : 4}. Install the App on ${repository} and open the installation settings.`,
-    `  ${reference === "planner" ? 6 : 5}. Copy the App ID (App settings) and the Installation ID (the number in the installation settings URL), then paste them with the private key below.`,
+    `  ${reference === "planner" ? 6 : 5}. Copy the App ID (App settings) and the Installation ID (the number in the installation settings URL), then enter them below with the path to the .pem file.`,
   ].join("\n");

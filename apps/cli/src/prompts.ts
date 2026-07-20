@@ -8,6 +8,7 @@ import {
   type GitHubAppTriple,
 } from "@ambient-agent/installation/schema.ts";
 import type { FirstRunPrompts, SetupReview } from "./setup/first-run.ts";
+import { resolvePrivateKey } from "./private-key.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import type { CliOutput } from "./program.ts";
 
@@ -44,9 +45,16 @@ const promptGitHubAppTriple = async (
   const installationId = await requiredPrompt(`${reference} Installation ID`, () =>
     prompts.text({ message: `${reference} Installation ID`, placeholder: "12345678" }),
   );
-  const privateKey = await requiredPrompt(`${reference} private key`, () =>
-    prompts.password({ message: `${reference} private key (paste the .pem contents)`, mask: "*" }),
+  // A path, not the key text: this prompt is single-line, and a pasted multi-line PEM is cut at
+  // its first newline. The path is not a secret, so it echoes — the key itself never reaches the
+  // terminal, and resolvePrivateKey proves it parses before setup can promote it.
+  const suppliedKey = await requiredPrompt(`${reference} private key`, () =>
+    prompts.text({
+      message: `${reference} private key — path to the .pem file GitHub generated`,
+      placeholder: `~/${reference}.private-key.pem`,
+    }),
   );
+  const privateKey = await resolvePrivateKey(reference, suppliedKey);
   return { appId, installationId, privateKey };
 };
 
