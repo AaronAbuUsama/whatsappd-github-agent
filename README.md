@@ -192,8 +192,7 @@ Useful lifecycle commands:
 | `ambient-agent doctor`        | Diagnose installation integrity and unresolved work                       |
 | `ambient-agent doctor --live` | Add bounded real GitHub and model readiness checks                        |
 
-For stopped-runtime backup, restore, and Uncertain-work procedures, see
-[Ambience recovery](./docs/architecture/ambience-recovery.md).
+Use `ambient-agent doctor` for installation integrity and unresolved (Uncertain) work.
 
 ### Logging
 
@@ -347,12 +346,10 @@ for current-head Node 22 and Node 24 checks before merging.
 
 ## Documentation
 
-- [Production architecture](./docs/architecture/ambient-agent.md) — the full runtime, ownership, and extension model
-- [Architecture decisions](./docs/adr/) — the load-bearing trade-offs in short form
+- [System architecture](./docs/SYSTEM-ARCHITECTURE.md) — the conceptual system (Brain, Speakers, Graph, Digest, control loop); §13 maps built-vs-designed
+- [Architecture map](./docs/ARCHITECTURE.md) — the code taxonomy: which package owns what
 - [Domain language](./CONTEXT.md) — the vocabulary used throughout the product and code
-- [Stable-base live receipt](./docs/proof/ambient-agent-stable-base-live.md) — packaged WhatsApp, GitHub, OAuth, and
-  process-replacement evidence
-- [Ambience recovery](./docs/architecture/ambience-recovery.md) — local durability and operator recovery boundaries
+- [Status](./STATUS.md) — where the reset stands and what's deferred
 
 ## Current limits
 

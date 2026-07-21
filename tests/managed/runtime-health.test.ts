@@ -9,7 +9,7 @@ import {
   runtimeSmokeAuthorization,
   runtimeSmokeAuthorizationMatches,
 } from "../../packages/installation/src/runtime-health.ts";
-import { bridgeHealth, setupBridgeHealth } from "../../packages/installation/src/bridge-contract.ts";
+import { bridgeHealth } from "../../packages/installation/src/bridge-contract.ts";
 
 describe("managed runtime health", () => {
   it.each([
@@ -108,21 +108,6 @@ describe("managed runtime health", () => {
       ok: false,
       runtimeId: "runtime-correlation-id",
       runtime: { state: "starting", whatsapp: { phase: "pairing" } },
-    });
-  });
-
-  it.each([
-    ["disabled", true, "healthy"],
-    ["starting", true, "healthy"],
-    ["pairing", true, "healthy"],
-    ["online", true, "healthy"],
-    ["failed", false, "failed"],
-    ["stopped", false, "stopped"],
-  ] as const)("keeps setup live during WhatsApp %s while preserving terminal failures", (phase, ok, state) => {
-    expect(setupBridgeHealth("runtime-correlation-id", { phase })).toEqual({
-      ok,
-      runtimeId: "runtime-correlation-id",
-      runtime: { state, whatsapp: { phase } },
     });
   });
 

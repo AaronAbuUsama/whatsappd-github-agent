@@ -57,11 +57,9 @@ sequenceDiagram
 ## Where things live — quick answers
 
 - **"Any agent needs this"** → `packages/engine`. Precedent: operation-store and input
-  contracts moved down in #131; the dispatch-correlator split is next
-  (survey: `docs/planning/LEGACY-AUDIT-2026-07-17.md`, activity-reporter section).
+  contracts moved down in #131.
 - **"A kind of work an agent can do"** → `packages/agents/src/capabilities/<name>/`
-  (SKILL.md + tools + port). Shared across agents; ratified in
-  `docs/planning/SHARED-CAPABILITIES-SPEC.md`.
+  (SKILL.md + tools + port). Shared across agents.
 - **"Who an agent is"** → `packages/agents/src/<agent>/` (instructions, composition,
   dispatch).
 - **"On-disk state of an install"** → `packages/installation`.
@@ -73,8 +71,8 @@ sequenceDiagram
 
 `CONTEXT.md` at the repo root is the ratified glossary (Capability, Skill, Window,
 Managed Chat, Operation Identity, Uncertain, …). Name things from it; propose additions
-there first. Design records: `docs/COALESCER-DESIGN.md` (D1–D4), ADRs 0010–0016,
-`docs/planning/` for in-flight specs.
+there first. For the conceptual system (Brain, Speakers, Graph, Digest, control loop) see
+[`SYSTEM-ARCHITECTURE.md`](./SYSTEM-ARCHITECTURE.md).
 
 ## Per-package docs
 

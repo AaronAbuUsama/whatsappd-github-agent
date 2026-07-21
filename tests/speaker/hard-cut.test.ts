@@ -37,7 +37,7 @@ describe("the post-Eve production cut", () => {
     expect(packageJson.scripts["build:runtime"]).toBe("flue build --target node --root apps/runtime --output dist");
     expect(packageJson.scripts["build:cli"]).toBe("vp pack");
     expect(packageJson.scripts["build:dist"]).toBe("pnpm run build:runtime && pnpm run build:cli");
-    expect(packageJson.scripts.build).toBe("pnpm run build:dist && pnpm run build:api && pnpm run build:web");
+    expect(packageJson.scripts.build).toBe("pnpm run build:dist");
     expect(packageJson.scripts.start).toBe("node dist/cli/main.js start");
     expect(Object.keys(packageJson.scripts)).not.toContain("speaker:build");
     expect(Object.values(packageJson.scripts).join("\n")).not.toMatch(

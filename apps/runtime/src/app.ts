@@ -88,7 +88,6 @@ const configureReviewerRuntimeBinding = async (
 export const createAmbientAgentApp = async ({
   authentication,
   configuration,
-  bridge,
   deployment,
   githubCredential,
   paths,
@@ -113,7 +112,7 @@ export const createAmbientAgentApp = async ({
       ? await connectPiChatGptSubscription({ authentication, profiles })
       : await connectPiApiKeyProvider({ provider, apiKey: modelApiKey ?? "", profiles });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
-  const runtimeId = bridge?.runtimeId ?? runtimeInstallationId(githubCredential.webhookSecret);
+  const runtimeId = runtimeInstallationId(githubCredential.webhookSecret);
   // The Coder Specialist (#158) runs under its own App identity in the config-bound per-job
   // sandbox the selector resolved (ADR 0021, #251) — shared with the Reviewer. A missing or
   // mispasted coder App credential fails boot loudly rather than mounting a dead capability.
@@ -180,8 +179,7 @@ export const createAmbientAgentApp = async ({
       });
       installBridgeRoute(routes, {
         runtimeId,
-        webhookSecret: bridge?.bridgeSecret ?? githubCredential.webhookSecret,
-        ...(bridge === undefined ? {} : { configVersion: bridge.configVersion }),
+        webhookSecret: githubCredential.webhookSecret,
         status: getWhatsAppRuntimeStatus,
         control: () => whatsappControl,
       });

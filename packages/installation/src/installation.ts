@@ -626,39 +626,6 @@ const createPrivateStaging = async (paths: ManagedPaths): Promise<void> => {
   }
 };
 
-/**
- * Hosted tenant volumes are created by Docker (0755 directories, 0644 files), never by
- * `ambient-agent init`, so a fresh volume would fail the readiness inspection forever.
- * Bring the volume to the private layout `inspectManagedData` requires. Idempotent, and
- * it never creates config.json or credential files — the provisioner mounts those, and
- * their absence must keep surfacing as the real error.
- */
-export const prepareHostedManagedLayout = async (paths: ManagedPaths): Promise<void> => {
-  for (const directory of [paths.root, paths.credentials, paths.whatsapp, paths.logs]) {
-    await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
-    await chmod(directory, DIRECTORY_MODE);
-  }
-  for (const database of [paths.applicationDatabase, paths.flueDatabase]) {
-    if (!(await exists(database))) await writeSecureFile(database, "");
-    await chmod(database, FILE_MODE);
-  }
-  const applicationDatabase = new DatabaseSync(paths.applicationDatabase);
-  try {
-    const stamped = applicationDatabase.prepare("PRAGMA application_id").get() as { application_id: number };
-    if (stamped.application_id === 0) {
-      applicationDatabase.exec(`
-        PRAGMA application_id = ${APPLICATION_DATABASE_ID};
-        PRAGMA user_version = ${APPLICATION_DATABASE_SCHEMA_VERSION};
-      `);
-    }
-  } finally {
-    applicationDatabase.close();
-  }
-  for (const mounted of [paths.config, ...Object.values(paths.githubAppCredentials)]) {
-    if (await exists(mounted)) await chmod(mounted, FILE_MODE);
-  }
-};
-
 /** Turn a pasted triple into a credential file; only the Planner file carries the webhook secret. */
 export const githubAppCredentialFrom = (
   reference: GitHubAppReference,

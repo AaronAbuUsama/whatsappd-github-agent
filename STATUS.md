@@ -1,19 +1,46 @@
-# Current production status
+# Status
 
-Milestone 3 replaced the legacy harness with one production path: the Ambience agent running on Flue.
+The canonical description of the system is
+[`docs/SYSTEM-ARCHITECTURE.md`](docs/SYSTEM-ARCHITECTURE.md) — **the coworker**: one
+**Brain** (the mind, the owner, the decider), many dumb reactive **Speakers** (one per
+surface), a single global **Scribe**, and one owned **Graph**. Its **§13** is the honest,
+always-current map of what is built versus what is designed-but-not-yet-built. Read §13 for
+the real frontier; this file is only the one-paragraph orientation.
 
-- One continuing Ambience instance is keyed by each managed WhatsApp `chatId`.
-- Pi ChatGPT subscription OAuth selects `openai-codex/gpt-5.6-luna` with low reasoning.
-- The in-process paired whatsappd session feeds the retained per-chat Coalescer.
-- Ordinary assistant prose is private Flue context; only `say` sends WhatsApp.
-- Root Ambience exposes history, `say`, and finite-workflow admission tools only.
-- Bounded GitHub specialists own mutations under the repository allowlist.
-- Workflow admission is non-blocking; terminal results return later to the same Ambience.
-- GitHub ingress verification, routing, correlation, and deduplication are application-owned.
+## Where we are (2026-07-21)
 
-The architecture and recovery contract live in
-[docs/architecture/ambience-recovery.md](./docs/architecture/ambience-recovery.md).
-The complete post-deletion receipt is in
-[docs/proof/ambience-hard-cut-live.md](./docs/proof/ambience-hard-cut-live.md).
-The pre-deletion replacement proof remains as a historical prerequisite in
-[docs/proof/ambience-replacement-live.md](./docs/proof/ambience-replacement-live.md).
+Mid-reset. Three dead pivots — **Eve-era**, **Ambience**, and the **SaaS / multi-tenant**
+cutover — have been stripped down to one stable line, and the system is being rebuilt
+forward from `SYSTEM-ARCHITECTURE.md`. **One instance, one operator — not multi-tenant**
+(tenancy was killed 2026-07-19).
+
+**Already built, and already the definitive shape** (§13): the Graph, the live Digest pull
+side, async delegation with durable no-drop return, modelless coalescing, and the
+Coder / Reviewer / Planner Specialists as distinct GitHub identities.
+
+**The distance to close is concentration of authority, not new machinery:**
+
+- Introduce the **Brain** as a real actor — single up-inbox, two clocks, owns state + work.
+- Consolidate the **Scribe** to one global ingestion clock with explicit per-fact provenance.
+- Reduce the **Speaker** to a dumb mouth — remove issue/delegation/ontology-write, add intent escalation.
+- Replace GitHub webhook broadcast + drop with the single up-inbox.
+
+## The reset — where the code stands (2026-07-21)
+
+The reset is a code-level cut down to **one runtime path** (single-box self-host), done in two layers:
+
+- **Layer 1 — done.** Dropped the dead SaaS / multi-tenant + operator-web stack:
+  `apps/{api,web,server}`, `packages/{api,auth,db,env}`, and their tests.
+- **Layer 2 — done.** Removed the orphaned hosted/tenant runtime boot (`setup-server`/`setup-app`,
+  `TenantRuntime*` setup-boot + operate-bridge, `prepareHostedManagedLayout`). Only
+  `ambient-agent start` → `apps/runtime/app.ts` remains.
+
+Both were behaviour-neutral on single-box (all removed code was gated behind unset
+`AMBIENT_AGENT_RUNTIME_PROFILE`/`TENANT_DB_URL`); typecheck + full test suite green, and the
+single-box build is deployed and healthy.
+
+**Deferred (decisions, not deletes — for the next design pass):**
+- Credential/session storage: collapse the file-vs-libsql fork to files-only (`tenant-credentials.ts`).
+- Specialist sandbox substrate: `local()` vs Daytona (native in Flue) vs e2b.
+
+Branding is `coworker` (surface only); repo, package, and login names are unchanged for now.

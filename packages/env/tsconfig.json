@@ -1,3 +1,0 @@
-{
-  "extends": "@ambient-agent/config/tsconfig.base.json"
-}

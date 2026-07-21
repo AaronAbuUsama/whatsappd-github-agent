@@ -1,8 +1,7 @@
 import type { ChatGptAuthentication } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import type { AgentSandbox } from "./agent-sandbox.ts";
-import { managedPaths, type ManagedPaths } from "./paths.ts";
+import type { ManagedPaths } from "./paths.ts";
 import type { GitHubAppCredential, ManagedConfig } from "./schema.ts";
-import { tenantCredentialDatabaseFromEnvironment, type TenantCredentialEnvironment } from "./tenant-credentials.ts";
 
 export interface ManagedRuntimeDependencies {
   readonly authentication: ChatGptAuthentication;
@@ -11,7 +10,6 @@ export interface ManagedRuntimeDependencies {
   readonly githubCredential: GitHubAppCredential & { readonly webhookSecret: string };
   readonly paths: ManagedPaths;
   readonly deployment?: RuntimeDeploymentIdentity;
-  readonly bridge?: TenantRuntimeOperateBridge;
   /**
    * The per-job agent sandbox both Specialist shells run in, and the workspace root it extracts
    * repos into (#251) — resolved together by {@link resolveAgentSandbox}. Always present: the
@@ -35,33 +33,14 @@ export interface ManagedRuntimeDependencies {
   readonly braintrustApiKey?: string;
 }
 
-export interface TenantRuntimeEnvironment extends TenantCredentialEnvironment {
+export interface TenantRuntimeEnvironment {
   readonly AMBIENT_AGENT_RUNTIME_PROFILE?: string;
   readonly AMBIENT_AGENT_CONFIG_VERSION?: string;
-  readonly AMBIENT_AGENT_RUNTIME_ID?: string;
-  readonly AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET?: string;
-  readonly PORT?: string;
 }
 
 export interface RuntimeDeploymentIdentity {
   readonly configVersion: number;
   readonly mode: "setup" | "operate";
-}
-
-export interface TenantRuntimeOperateBridge {
-  readonly runtimeId: string;
-  readonly bridgeSecret: string;
-  readonly configVersion: number;
-}
-
-export interface TenantRuntimeSetupBoot {
-  readonly mode: "setup";
-  readonly runtimeId: string;
-  readonly bridgeSecret: string;
-  readonly port: number;
-  readonly paths: ManagedPaths;
-  readonly credentialEnvironment: Required<TenantCredentialEnvironment>;
-  readonly deployment: RuntimeDeploymentIdentity & { readonly mode: "setup" };
 }
 
 const RUNTIME_DEPENDENCIES = Symbol.for("ambient-agent.managed-runtime-dependencies");
@@ -86,20 +65,6 @@ export const getManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
   return dependencies;
 };
 
-const requiredRuntimeValue = (name: string, value: string | undefined): string => {
-  const configured = value?.trim();
-  if (!configured) throw new Error(`${name} is required for the tenant runtime.`);
-  return configured;
-};
-
-const setupRuntimePort = (value: string | undefined): number => {
-  const port = value === undefined ? 3000 : Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("The tenant setup runtime port must be an integer from 1 through 65535.");
-  }
-  return port;
-};
-
 export const runtimeDeploymentIdentityFromEnvironment = (
   environment: TenantRuntimeEnvironment = process.env,
 ): RuntimeDeploymentIdentity | undefined => {
@@ -114,68 +79,6 @@ export const runtimeDeploymentIdentityFromEnvironment = (
     throw new Error("AMBIENT_AGENT_CONFIG_VERSION must be a positive integer.");
   }
   return { configVersion, mode };
-};
-
-export const resolveTenantRuntimeOperateBridge = (
-  environment: TenantRuntimeEnvironment = process.env,
-): TenantRuntimeOperateBridge | undefined => {
-  const configured = [
-    environment.AMBIENT_AGENT_RUNTIME_ID,
-    environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
-    environment.AMBIENT_AGENT_CONFIG_VERSION,
-  ].some((value) => value?.trim());
-  const profile = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
-  if (!configured) {
-    if (profile === "operate") {
-      throw new Error("The hosted operate runtime requires its bridge identity and config version.");
-    }
-    return undefined;
-  }
-  if (profile !== "operate") {
-    throw new Error("Hosted bridge identity requires AMBIENT_AGENT_RUNTIME_PROFILE=operate.");
-  }
-  const configVersion = Number(environment.AMBIENT_AGENT_CONFIG_VERSION);
-  if (!Number.isSafeInteger(configVersion) || configVersion <= 0) {
-    throw new Error("AMBIENT_AGENT_CONFIG_VERSION must be a positive integer.");
-  }
-  return {
-    runtimeId: requiredRuntimeValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
-    bridgeSecret: requiredRuntimeValue(
-      "AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET",
-      environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
-    ),
-    configVersion,
-  };
-};
-
-/** Composition-root boundary for the standalone, setup-only tenant server. */
-export const resolveTenantRuntimeSetupBoot = (
-  environment: TenantRuntimeEnvironment = process.env,
-  paths: ManagedPaths = managedPaths(),
-): TenantRuntimeSetupBoot => {
-  const deployment = runtimeDeploymentIdentityFromEnvironment(environment);
-  if (deployment?.mode !== "setup") {
-    throw new Error("The tenant setup server requires AMBIENT_AGENT_RUNTIME_PROFILE=setup.");
-  }
-  const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
-  if (tenantDatabase === undefined) {
-    throw new Error("TENANT_DB_URL and TENANT_DB_TOKEN are required for the tenant runtime setup profile.");
-  }
-  return {
-    mode: "setup",
-    runtimeId: requiredRuntimeValue("AMBIENT_AGENT_RUNTIME_ID", environment.AMBIENT_AGENT_RUNTIME_ID),
-    bridgeSecret: requiredRuntimeValue(
-      "AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET",
-      environment.AMBIENT_AGENT_RUNTIME_BRIDGE_SECRET,
-    ),
-    port: setupRuntimePort(environment.PORT),
-    paths,
-    credentialEnvironment: {
-      TENANT_DB_URL: tenantDatabase.url,
-      TENANT_DB_TOKEN: requiredRuntimeValue("TENANT_DB_TOKEN", tenantDatabase.authToken),
-    },
-    deployment: { configVersion: deployment.configVersion, mode: "setup" },
-  };
 };
 
 // The generated server and the CLI are separate bundles, so this handoff crosses

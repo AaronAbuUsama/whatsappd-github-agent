@@ -36,7 +36,6 @@ export default defineConfig(({ mode }) => ({
     noExternal: [/^@ambient-agent\//],
     entry: {
       main: "apps/cli/src/main.ts",
-      setup: "apps/runtime/src/setup-server.ts",
     },
     outDir: "dist/cli",
     format: "esm",

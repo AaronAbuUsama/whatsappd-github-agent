@@ -9,7 +9,6 @@ import {
   acquireSetupLock,
   githubAppCredentialFrom,
   inspectManagedData,
-  prepareHostedManagedLayout,
   promoteReplacementWhatsAppStore,
   releaseSetupLock,
 } from "@ambient-agent/installation/installation.ts";
@@ -261,10 +260,6 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   });
   const readyManagedPaths = async (verb: string): Promise<ManagedPaths> => {
     const paths = managedPaths({ dataDirectory: program.opts().dataDir });
-    // Hosted volumes come from Docker, not `init`; repair the private layout before the gate.
-    if (process.env.AMBIENT_AGENT_RUNTIME_PROFILE?.trim() === "operate") {
-      await prepareHostedManagedLayout(paths);
-    }
     const inspection = await inspectManagedData({ dataDirectory: paths.root });
     if (inspection.state !== "ready") {
       throw new Error(
