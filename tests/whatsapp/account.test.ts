@@ -162,7 +162,45 @@ describe("managed WhatsApp account", () => {
     reopenedArchive.close();
   });
 
+  it("readies the archive on a reconnect that goes online with no conversation sync batch", async () => {
+    // The runtime restart-and-reboot path: whatsappd reconnects an existing session, skips
+    // history sync because the store already holds it, and goes straight to online — emitting
+    // zero conversation-sync batches. initialArchiveReady must resolve on that online alone;
+    // requiring a batch here hung every restart 60s and failed a healthy session (T2, #253).
+    const { root, archive } = fixture();
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      start: async () => {
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      identity: () => ({ jid: "15550000000@s.whatsapp.net" }),
+      stop: async () => undefined,
+    } as unknown as WhatsAppSession;
+    const account = createWhatsAppAccount({
+      storeDirectory: join(root, "whatsapp"),
+      archive,
+      sessionFactory: () => session,
+      syncTimeoutMillis: 1_000,
+    });
+
+    await account.authenticate({});
+    await expect(account.initialArchiveReady!()).resolves.toBeUndefined();
+
+    await account.stop();
+    archive.close();
+  });
+
   it("waits when online arrives before the initial conversation sync batch", async () => {
+    // First-link chat discovery: synchronizedChats returns candidates *from* the sync batch, so
+    // it must wait for that batch even after online. (initialArchiveReady is a separate gate and
+    // has its own reconnect coverage above.)
     const { root, archive } = fixture();
     const statusListeners = new Set<(status: Status) => void | Promise<void>>();
     const syncListeners = new Set<(batch: ConversationSyncBatch) => void | Promise<void>>();
@@ -192,16 +230,11 @@ describe("managed WhatsApp account", () => {
 
     await account.authenticate({});
     let settled = false;
-    let archiveReady = false;
     const candidates = account.synchronizedChats().finally(() => {
       settled = true;
     });
-    const ready = account.initialArchiveReady!().finally(() => {
-      archiveReady = true;
-    });
     await Promise.resolve();
     expect(settled).toBe(false);
-    expect(archiveReady).toBe(false);
     for (const listener of syncListeners) {
       await listener({
         chats: [{ id: "late-sync@g.us", subject: "Late Sync", isGroup: true, lastMessageAt: 4_000 }],
@@ -212,7 +245,7 @@ describe("managed WhatsApp account", () => {
     await expect(candidates).resolves.toEqual([
       { jid: "late-sync@g.us", name: "Late Sync", kind: "group", lastActivityAt: 4_000 },
     ]);
-    await expect(ready).resolves.toBeUndefined();
+    await expect(account.initialArchiveReady!()).resolves.toBeUndefined();
     expect(archive.readThread("late-sync@g.us").map(({ id }) => id)).toEqual(["late-history"]);
 
     await account.stop();

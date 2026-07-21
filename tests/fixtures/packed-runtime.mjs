@@ -77,6 +77,15 @@ export const createSession = ({ store }) => {
 };
 `;
 
+// e2b's CJS entry `require`s a package-internal `#ansi-styles` subpath import, which the
+// module hooks below cannot link. The CLI imports e2b statically but only constructs a
+// sandbox when E2B_API_KEY is set, which no fixture run does, so a stub is enough.
+const e2bSource = String.raw`
+export class Sandbox {}
+export class CommandExitError extends Error {}
+export class TimeoutError extends Error {}
+`;
+
 const octokitSource = String.raw`
 const ok = async () => ({ data: {} });
 const issues = new Proxy({}, { get: () => ok });
@@ -96,11 +105,13 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "whatsappd") return { url: "ambient-fixture:whatsappd", shortCircuit: true };
     if (specifier === "@octokit/rest") return { url: "ambient-fixture:octokit", shortCircuit: true };
+    if (specifier === "e2b") return { url: "ambient-fixture:e2b", shortCircuit: true };
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
     if (url === "ambient-fixture:whatsappd") return { format: "module", source: whatsappSource, shortCircuit: true };
     if (url === "ambient-fixture:octokit") return { format: "module", source: octokitSource, shortCircuit: true };
+    if (url === "ambient-fixture:e2b") return { format: "module", source: e2bSource, shortCircuit: true };
     return nextLoad(url, context);
   },
 });

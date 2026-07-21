@@ -6,6 +6,11 @@ import { assertSupportedFlueSchemaVersion } from "@flue/runtime/adapter";
 import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "@ambient-agent/engine/intake/database-versions.ts";
 import { inspectGitHubCredentialComponent } from "./installation.ts";
 import type { ManagedPaths } from "./paths.ts";
+import {
+  libsqlStore,
+  tenantCredentialDatabaseFromEnvironment,
+  type TenantCredentialEnvironment,
+} from "./tenant-credentials.ts";
 
 export type ManagedCheckState = "ready" | "warning" | "failed";
 /** Static evidence caps at "paired"; "online" comes only from live runtime observation. */
@@ -235,8 +240,67 @@ const databaseCheck = (name: "application-database" | "flue-database", path: str
   }
 };
 
+const whatsappCredentialCheck = (value: unknown): ManagedCheck => {
+  const identity = typeof value === "object" && value !== null ? Reflect.get(value, "me") : undefined;
+  const linkedIdentity =
+    typeof identity === "object" &&
+    identity !== null &&
+    typeof Reflect.get(identity, "id") === "string" &&
+    Reflect.get(identity, "id").trim().length > 0;
+  const registered =
+    typeof value === "object" && value !== null && (Reflect.get(value, "registered") === true || linkedIdentity);
+  return registered
+    ? {
+        name: "whatsapp-session",
+        state: "paired",
+        code: "whatsapp.paired",
+        message:
+          "The app-owned WhatsApp store contains persisted pairing evidence; liveness is unverified until the runtime connects.",
+      }
+    : {
+        name: "whatsapp-session",
+        state: "re-pair-required",
+        code: "whatsapp.not-registered",
+        message: "The app-owned WhatsApp store is not a registered linked session.",
+        remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
+      };
+};
+
+const missingWhatsAppCredentialCheck = (): ManagedCheck => ({
+  name: "whatsapp-session",
+  state: "re-pair-required",
+  code: "whatsapp.store-missing",
+  message: "No readable app-owned WhatsApp session store was found.",
+  remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
+});
+
 /** Static store evidence caps at "paired"; a missing or cleared store is "re-pair-required". */
-export const inspectWhatsAppSession = async (paths: ManagedPaths): Promise<ManagedCheck> => {
+export const inspectWhatsAppSession = async (
+  paths: ManagedPaths,
+  environment: TenantCredentialEnvironment = process.env,
+): Promise<ManagedCheck> => {
+  const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
+  if (tenantDatabase !== undefined) {
+    let serialized: string | null;
+    try {
+      serialized = await libsqlStore(tenantDatabase).read("creds");
+    } catch {
+      return {
+        name: "whatsapp-session",
+        state: "failed",
+        code: "whatsapp.store-unreadable",
+        message: "The tenant WhatsApp credential store could not be read.",
+        remediation: "Check the tenant database URL, scoped token, and network access, then run doctor again.",
+      };
+    }
+    if (serialized === null) return missingWhatsAppCredentialCheck();
+    try {
+      return whatsappCredentialCheck(JSON.parse(serialized));
+    } catch {
+      return whatsappCredentialCheck(undefined);
+    }
+  }
+
   const path = `${paths.whatsapp}/creds.json`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -245,37 +309,9 @@ export const inspectWhatsAppSession = async (paths: ManagedPaths): Promise<Manag
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > 4 * 1024 * 1024) throw new Error("unsupported");
     const value = JSON.parse(await handle.readFile("utf8")) as unknown;
-    const identity = typeof value === "object" && value !== null ? Reflect.get(value, "me") : undefined;
-    const linkedIdentity =
-      typeof identity === "object" &&
-      identity !== null &&
-      typeof Reflect.get(identity, "id") === "string" &&
-      Reflect.get(identity, "id").trim().length > 0;
-    const registered =
-      typeof value === "object" && value !== null && (Reflect.get(value, "registered") === true || linkedIdentity);
-    return registered
-      ? {
-          name: "whatsapp-session",
-          state: "paired",
-          code: "whatsapp.paired",
-          message:
-            "The app-owned WhatsApp store contains persisted pairing evidence; liveness is unverified until the runtime connects.",
-        }
-      : {
-          name: "whatsapp-session",
-          state: "re-pair-required",
-          code: "whatsapp.not-registered",
-          message: "The app-owned WhatsApp store is not a registered linked session.",
-          remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
-        };
+    return whatsappCredentialCheck(value);
   } catch {
-    return {
-      name: "whatsapp-session",
-      state: "re-pair-required",
-      code: "whatsapp.store-missing",
-      message: "No readable app-owned WhatsApp session store was found.",
-      remediation: "Run ambient-agent repair whatsapp to pair again; the rest of the installation is preserved.",
-    };
+    return missingWhatsAppCredentialCheck();
   } finally {
     await handle?.close();
   }
@@ -302,9 +338,12 @@ const githubCredentialCheck = async (paths: ManagedPaths): Promise<ManagedCheck>
 };
 
 /** Read-only local checks. Live provider checks remain explicit doctor operations. */
-export const inspectManagedServices = async (paths: ManagedPaths): Promise<readonly ManagedCheck[]> => [
+export const inspectManagedServices = async (
+  paths: ManagedPaths,
+  environment: TenantCredentialEnvironment = process.env,
+): Promise<readonly ManagedCheck[]> => [
   databaseCheck("application-database", paths.applicationDatabase),
   databaseCheck("flue-database", paths.flueDatabase),
-  await inspectWhatsAppSession(paths),
+  await inspectWhatsAppSession(paths, environment),
   await githubCredentialCheck(paths),
 ];

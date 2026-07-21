@@ -41,7 +41,7 @@ const makeGitHub = (opts: { branchExists: boolean; branchHead?: string; openPr?:
 const buildTool = (
   gh: CoderGitHub,
   record: { pr?: OpenPrRecord },
-  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; verified?: ReturnType<typeof parseHashListing>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean } = {},
+  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean } = {},
 ) =>
   createOpenPullRequestTool({
     github: gh,
@@ -53,7 +53,6 @@ const buildTool = (
     issue: 42,
     issueTitle: "Do the thing",
     before,
-    verified: options.verified ?? after,
     requiredDraft: options.requiredDraft ?? false,
     snapshotAfter: options.snapshotAfter ?? (async () => after),
     readFile: async () => new TextEncoder().encode("changed bytes"),
@@ -150,7 +149,7 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
   it("no committable change: opens nothing and leaves the record empty (→ conductor blocks)", async () => {
     const record: { pr?: OpenPrRecord } = {};
     const { gh, getRef, create } = makeGitHub({ branchExists: false });
-    const result = (await buildTool(gh, record, { verified: before, snapshotAfter: async () => before }).run({
+    const result = (await buildTool(gh, record, { snapshotAfter: async () => before }).run({
       input: { title: "t", body: "b", draft: false },
     })) as { opened: boolean; message?: string };
 
@@ -169,7 +168,6 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     });
 
     const result = await buildTool(gh, record, {
-      verified: before,
       snapshotAfter: async () => before,
       seedBranchExisted: true,
     }).run({ input: { title: "verified", body: "current evidence", draft: false } });
@@ -178,16 +176,6 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     expect(gh.git.createCommit).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ pull_number: 9, title: "verified" }));
     expect(graphql).toHaveBeenCalledWith(expect.stringContaining("markPullRequestReadyForReview"), { pullRequestId: "PR_9" });
-  });
-
-  it("rejects publication when the workspace changed after the final Verifier observation", async () => {
-    const record: { pr?: OpenPrRecord } = {};
-    const { gh, getRef, create } = makeGitHub({ branchExists: false });
-    await expect(buildTool(gh, record, { verified: before }).run({
-      input: { title: "t", body: "b", draft: false },
-    })).rejects.toThrow("Workspace changed after the final Verifier observation");
-    expect(getRef).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects publication when the issue branch moved after the run was seeded", async () => {

@@ -1,0 +1,179 @@
+<!-- source: https://flueframework.com/docs/ecosystem/tooling/sentry/ -->
+---
+description: Report Flue workflow failures and explicit error logs to Sentry on Node.js and Cloudflare.
+title: Sentry | Flue
+image: https://flueframework.com/docs/og4.jpg
+---
+
+# Sentry
+
+Last updated Jun 20, 2026 [ View as Markdown ](https://flueframework.com/docs/ecosystem/tooling/sentry/index.md) 
+
+## Quickstart
+
+Add error reporting to an existing Flue project with the [Sentry](https://sentry.io) blueprint. Run the following command in your terminal or coding agent of choice:
+
+```sh
+flue add tooling sentry
+```
+
+## Overview
+
+The Sentry blueprint creates a source-root `sentry.ts` and imports it once from `app.ts`. On Node.js, the core of that generated bridge looks like this:
+
+```ts
+import { observe } from '@flue/runtime';
+import * as Sentry from '@sentry/node';
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  enabled: Boolean(process.env.SENTRY_DSN),
+  environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV,
+  release: process.env.SENTRY_RELEASE,
+  attachStacktrace: true,
+  tracesSampleRate: 0,
+});
+
+observe((event) => {
+  if (event.type === 'run_end' && event.isError) {
+    Sentry.captureException(toError(event.error));
+  }
+
+  if (event.type === 'log' && event.level === 'error') {
+    if (Object.hasOwn(event.attributes ?? {}, 'error')) {
+      Sentry.captureException(toError(event.attributes?.error));
+    } else {
+      Sentry.captureMessage(event.message, 'error');
+    }
+  }
+});
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+```
+
+On Cloudflare, the generated `sentry.ts` contains the same observer bridge without calling `Sentry.init()`. Instead, the blueprint adds a module-local `cloudflare` extension to every discovered agent and workflow. The extension wraps the final generated Durable Object class with `instrumentDurableObjectWithSentry(...)`, while leaving the outer Worker uninstrumented.
+
+## Configure
+
+| Variable            | Purpose                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| SENTRY\_DSN         | **Required for event delivery** — Identifies the Sentry project and permits event submission. |
+| SENTRY\_ENVIRONMENT | **Optional** — Identifies the deployment environment in Sentry.                               |
+| SENTRY\_RELEASE     | **Optional** — Associates events with a deployed release.                                     |
+
+Only `SENTRY_DSN` is needed to deliver events. A Sentry DSN permits event submission but does not grant read access to project data. Keeping it in deployment configuration rather than application source makes rotation and abuse mitigation easier; use a secret or environment binding according to your project’s policy.
+
+The blueprint installs `@sentry/node` or `@sentry/cloudflare`, initializes the SDK at the appropriate runtime boundary, and adds an `observe(...)` bridge for workflow failures and explicit `ctx.log.error(...)` calls. It does not enable traces, AI metrics, or model-content export by default.
+
+See [Observability](https://flueframework.com/docs/guide/observability/#choose-an-observability-provider) to compare Sentry with OpenTelemetry and Braintrust.
+
+The integration uses different SDKs by target:
+
+| Target     | Package            | Initialization                                                                                 |
+| ---------- | ------------------ | ---------------------------------------------------------------------------------------------- |
+| Node.js    | @sentry/node       | Module-scoped Sentry.init(...) in application source                                           |
+| Cloudflare | @sentry/cloudflare | instrumentDurableObjectWithSentry(...) around each generated agent and workflow Durable Object |
+
+Do not use `@sentry/node` on Cloudflare through `nodejs_compat`.
+
+## Choose what to report
+
+The generated bridge reports:
+
+* workflow `run_end` events with `isError: true`;
+* `ctx.log.error(...)` as an exception when the log has an `error` attribute;
+* other error logs as error-level Sentry messages.
+
+Captures include relevant `flue.*` correlation tags. Workflow failures include `flue.run.id`, which can be inspected with SDK `client.runs` or raw `/runs` APIs when the workflow exposes its run resources. Persistent-agent captures use instance, session, operation, submission, and optional dispatch correlation instead. See [Observability](https://flueframework.com/docs/guide/observability/) for Flue’s identity and observer model.
+
+The bridge intentionally skips failed operations and tools because those failures may be recovered and later duplicated by a fatal workflow report. It also avoids arbitrary log attributes, prompts, responses, tool arguments, and complete event payloads. Make an explicit data-handling decision before expanding that policy.
+
+## Target behavior
+
+On Node.js, module-scoped initialization is sufficient for the bridge’s explicit captures. Complete Sentry HTTP, database, or tracing auto-instrumentation requires Sentry’s preload setup before application imports and should be verified against the built Flue server.
+
+On Cloudflare, Flue applies a module-local `wrap` extension to the final generated Durable Object class for every instrumented agent and workflow. This preserves Flue’s routing and durability behavior while allowing Sentry to initialize from the current binding environment. The wrapper does not cover the outer Worker or an authored Hono application; add HTTP middleware separately when request instrumentation is required.
+
+## Verify
+
+Trigger one failed workflow and one explicit error log against a non-production Sentry project. Confirm the expected `flue.*` correlation fields. On Cloudflare, exercise a wrapped agent or workflow under workerd, and verify that the application still starts without a configured DSN.
+
+## Docs Navigation
+
+Current page: [Sentry](https://flueframework.com/docs/ecosystem/tooling/sentry/)
+
+### Sections
+
+* [Guide](https://flueframework.com/docs/getting-started/quickstart/)
+* [Reference](https://flueframework.com/docs/api/agent-api/)
+* [CLI](https://flueframework.com/docs/cli/overview/)
+* [SDK](https://flueframework.com/docs/sdk/overview/)
+* [Ecosystem](https://flueframework.com/docs/ecosystem/)
+
+* [  Overview ](https://flueframework.com/docs/ecosystem/)
+
+### Channels
+
+* [ Discord ](https://flueframework.com/docs/ecosystem/channels/discord/)
+* [ Facebook ](https://flueframework.com/docs/ecosystem/channels/messenger/)
+* [ GitHub ](https://flueframework.com/docs/ecosystem/channels/github/)
+* [ Google Chat ](https://flueframework.com/docs/ecosystem/channels/google-chat/)
+* [ Intercom ](https://flueframework.com/docs/ecosystem/channels/intercom/)
+* [ Linear ](https://flueframework.com/docs/ecosystem/channels/linear/)
+* [ Microsoft Teams ](https://flueframework.com/docs/ecosystem/channels/teams/)
+* [ Notion ](https://flueframework.com/docs/ecosystem/channels/notion/)
+* [ Resend ](https://flueframework.com/docs/ecosystem/channels/resend/)
+* [ Salesforce ](https://flueframework.com/docs/ecosystem/channels/salesforce-marketing-cloud/)
+* [ Shopify ](https://flueframework.com/docs/ecosystem/channels/shopify/)
+* [ Slack ](https://flueframework.com/docs/ecosystem/channels/slack/)
+* [ Stripe ](https://flueframework.com/docs/ecosystem/channels/stripe/)
+* [ Telegram ](https://flueframework.com/docs/ecosystem/channels/telegram/)
+* [ Twilio ](https://flueframework.com/docs/ecosystem/channels/twilio/)
+* [ WhatsApp ](https://flueframework.com/docs/ecosystem/channels/whatsapp/)
+* [ Zendesk ](https://flueframework.com/docs/ecosystem/channels/zendesk/)
+
+### Sandboxes
+
+* [ boxd ](https://flueframework.com/docs/ecosystem/sandboxes/boxd/)
+* [ Cloudflare Shell ](https://flueframework.com/docs/ecosystem/sandboxes/cloudflare-shell/)
+* [ Cloudflare Sandbox ](https://flueframework.com/docs/ecosystem/sandboxes/cloudflare/)
+* [ Daytona ](https://flueframework.com/docs/ecosystem/sandboxes/daytona/)
+* [ E2B ](https://flueframework.com/docs/ecosystem/sandboxes/e2b/)
+* [ exe.dev ](https://flueframework.com/docs/ecosystem/sandboxes/exedev/)
+* [ islo ](https://flueframework.com/docs/ecosystem/sandboxes/islo/)
+* [ Mirage ](https://flueframework.com/docs/ecosystem/sandboxes/mirage/)
+* [ Modal ](https://flueframework.com/docs/ecosystem/sandboxes/modal/)
+* [ Vercel Sandbox ](https://flueframework.com/docs/ecosystem/sandboxes/vercel/)
+
+### Deploy
+
+* [ AWS ](https://flueframework.com/docs/ecosystem/deploy/aws/)
+* [ Cloudflare ](https://flueframework.com/docs/ecosystem/deploy/cloudflare/)
+* [ Docker ](https://flueframework.com/docs/ecosystem/deploy/docker/)
+* [ Fly.io ](https://flueframework.com/docs/ecosystem/deploy/fly/)
+* [ GitHub Actions ](https://flueframework.com/docs/ecosystem/deploy/github-actions/)
+* [ GitLab CI/CD ](https://flueframework.com/docs/ecosystem/deploy/gitlab-ci/)
+* [ Node.js ](https://flueframework.com/docs/ecosystem/deploy/node/)
+* [ Railway ](https://flueframework.com/docs/ecosystem/deploy/railway/)
+* [ Render ](https://flueframework.com/docs/ecosystem/deploy/render/)
+* [ SST ](https://flueframework.com/docs/ecosystem/deploy/sst/)
+
+### Databases
+
+* [ libSQL ](https://flueframework.com/docs/ecosystem/databases/libsql/)
+* [ MongoDB ](https://flueframework.com/docs/ecosystem/databases/mongodb/)
+* [ MySQL ](https://flueframework.com/docs/ecosystem/databases/mysql/)
+* [ Postgres ](https://flueframework.com/docs/ecosystem/databases/postgres/)
+* [ Redis ](https://flueframework.com/docs/ecosystem/databases/redis/)
+* [ Supabase ](https://flueframework.com/docs/ecosystem/databases/supabase/)
+* [ Turso ](https://flueframework.com/docs/ecosystem/databases/turso/)
+* [ Valkey ](https://flueframework.com/docs/ecosystem/databases/valkey/)
+
+### Tooling
+
+* [ Braintrust ](https://flueframework.com/docs/ecosystem/tooling/braintrust/)
+* [ OpenTelemetry ](https://flueframework.com/docs/ecosystem/tooling/opentelemetry/)
+* [ Sentry ](https://flueframework.com/docs/ecosystem/tooling/sentry/)
+* [ Vitest Evals ](https://flueframework.com/docs/ecosystem/tooling/vitest-evals/)

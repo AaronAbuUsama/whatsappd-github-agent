@@ -19,5 +19,16 @@
     "types": ["node"]
   },
   "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "*.ts"],
-  "exclude": ["node_modules", "dist", ".vercel"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".vercel",
+    "apps/web",
+    "apps/api",
+    "packages/api",
+    "packages/auth",
+    "packages/config",
+    "packages/db",
+    "packages/env"
+  ]
 }

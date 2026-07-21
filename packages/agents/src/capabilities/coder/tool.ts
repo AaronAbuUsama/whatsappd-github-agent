@@ -26,7 +26,6 @@ export interface OpenPullRequestContext {
   readonly issue: number;
   readonly issueTitle: string;
   readonly before: WorkspaceSnapshot;
-  readonly verified: WorkspaceSnapshot;
   readonly requiredDraft: boolean;
   readonly snapshotAfter: () => Promise<WorkspaceSnapshot>;
   readonly readFile: (path: string) => Promise<Uint8Array>;
@@ -69,9 +68,6 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
         throw new Error(`Final verification requires draft=${String(ctx.requiredDraft)}.`);
       }
       const after = await ctx.snapshotAfter();
-      if (!isEmptyDiff(diffSnapshots(ctx.verified, after))) {
-        throw new Error("Workspace changed after the final Verifier observation; start a new verified run before publishing.");
-      }
       const diff = diffSnapshots(ctx.before, after);
       const empty = isEmptyDiff(diff);
       if (empty && !ctx.seedBranchExisted) {

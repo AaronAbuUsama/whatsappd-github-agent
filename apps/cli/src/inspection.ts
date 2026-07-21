@@ -4,7 +4,12 @@ import { createConversationArchive } from "@ambient-agent/engine/intake/conversa
 import { createManagedChatInbox, inspectWindowDeliveryCounts } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createManagedChatGptAuthentication } from "@ambient-agent/installation/chatgpt-authentication.ts";
-import { readManagedConfig, readManagedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
+import {
+  readManagedConfig,
+  readManagedGitHubAppCredential,
+  readManagedModelApiKey,
+} from "@ambient-agent/installation/configuration.ts";
+import { errorCode } from "@ambient-agent/engine/shared/errors.ts";
 import { inspectManagedServices } from "@ambient-agent/installation/diagnostics.ts";
 import { inspectManagedData } from "@ambient-agent/installation/installation.ts";
 import { managedPaths, type ManagedPaths } from "@ambient-agent/installation/paths.ts";
@@ -22,6 +27,7 @@ import {
   configuredModelIds,
   modelSpecifier,
   runChatGptReadinessCheck,
+  SUBSCRIPTION_PROVIDER_ID,
   type ChatGptReadinessReceipt,
 } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { verifyGitHubAppRepositoryAccess } from "./setup/github.ts";
@@ -45,6 +51,30 @@ interface InspectionReporterOptions {
   readonly operationSignal: (timeoutMillis: number) => AbortSignal;
 }
 
+/**
+ * Model auth for an API-key provider is the managed key file, not a ChatGPT OAuth credential.
+ * A key issued for a different provider than the config names is `unusable` rather than
+ * `ready`, which is the same mismatch the runtime refuses to boot on.
+ */
+const inspectModelApiKey = async (paths: ManagedPaths, provider: string): Promise<ChatGptAuthenticationStatus> => {
+  try {
+    const credential = await readManagedModelApiKey(paths.modelApiKeyCredential);
+    return credential.provider === provider
+      ? { state: "ready" }
+      : {
+          state: "unusable",
+          message: `The managed API key was issued for ${credential.provider}, but model.provider is ${provider}. Run ambient-agent config --model-provider ${provider}.`,
+        };
+  } catch (cause) {
+    return errorCode(cause) === "ENOENT"
+      ? { state: "missing" }
+      : {
+          state: "malformed",
+          message: `The managed API key at ${paths.modelApiKeyCredential} could not be read.`,
+        };
+  }
+};
+
 export const createInspectionReporter = ({
   dataDirectory,
   output,
@@ -53,7 +83,9 @@ export const createInspectionReporter = ({
   operationSignal,
 }: InspectionReporterOptions) => {
   const authenticationFor =
-    authenticationOverride ?? ((paths: ManagedPaths) => createManagedChatGptAuthentication(paths, dependencies.chatGptOAuth));
+    authenticationOverride ??
+    ((paths: ManagedPaths) =>
+      createManagedChatGptAuthentication(paths, dependencies.chatGptOAuth, dependencies.environment ?? process.env));
   const inspectUncertainWork = dependencies.inspectUncertainWork ?? inspectUncertainWorkStatus;
   const inspectWindowDeliveries = dependencies.inspectWindowDeliveries ?? inspectWindowDeliveryCounts;
   const readinessSignal = (): AbortSignal => operationSignal(dependencies.readinessTimeoutMillis ?? 60_000);
@@ -101,7 +133,7 @@ export const createInspectionReporter = ({
     const inspection = await inspectManagedData({ dataDirectory: paths.root });
     const ready = inspection.state === "ready";
     const configuration = ready ? await readManagedConfig(paths.config) : undefined;
-    const checks = ready ? [...(await inspectManagedServices(paths))] : [];
+    const checks = ready ? [...(await inspectManagedServices(paths, dependencies.environment ?? process.env))] : [];
     const githubCredentialReady = checks.some(
       ({ name, state }) => name === "github-credential" && state === "ready",
     );
@@ -154,15 +186,22 @@ export const createInspectionReporter = ({
         };
       }
     }
+    // Model auth is an API key OR a subscription. Inspecting the ChatGPT credential on an
+    // API-key install would report a missing file the install does not use, and mark a
+    // working installation unusable.
+    const apiKeyProvider =
+      ready && configuration !== undefined && configuration.model.provider !== SUBSCRIPTION_PROVIDER_ID;
     let authenticationStatus: ChatGptAuthenticationStatus =
       inspection.state === "absent"
         ? { state: "missing" }
         : !ready
           ? {
               state: "unusable",
-              message: `ChatGPT authentication was not inspected because the managed installation is ${inspection.state}.`,
+              message: `Model authentication was not inspected because the managed installation is ${inspection.state}.`,
             }
-          : await authentication!.inspect();
+          : apiKeyProvider
+            ? await inspectModelApiKey(paths, configuration!.model.provider)
+            : await authentication!.inspect();
     if (refresh && authenticationStatus.state === "expired-refreshable") {
       try {
         await authentication!.authorization(readinessSignal());
@@ -172,7 +211,10 @@ export const createInspectionReporter = ({
       authenticationStatus = await authentication!.inspect();
     }
     let liveCheck: ChatGptReadinessReceipt | undefined;
-    if (live && authenticationStatus.state === "ready") {
+    // The readiness probe is Codex-specific (it drives the Codex Responses api directly), so
+    // it is not run for an API-key provider. Its live equivalent is the pre-flight in
+    // tests/speaker/pi-subscription.test.ts, not the doctor.
+    if (live && !apiKeyProvider && authenticationStatus.state === "ready") {
       try {
         liveCheck = await (
           dependencies.readinessCheck ??
@@ -191,10 +233,10 @@ export const createInspectionReporter = ({
                 "The ChatGPT live readiness request failed; retry when the service is reachable.",
                 { cause },
               );
-        const profiles = configuration!.model.profiles;
+        const { profiles, provider } = configuration!.model;
         liveCheck = {
-          model: modelSpecifier(profiles.speaker.id),
-          models: configuredModelIds(profiles).map(modelSpecifier),
+          model: modelSpecifier(provider, profiles.speaker.id),
+          models: configuredModelIds(profiles).map((id) => modelSpecifier(provider, id)),
           request: "failed",
           reason: failure.code,
         };

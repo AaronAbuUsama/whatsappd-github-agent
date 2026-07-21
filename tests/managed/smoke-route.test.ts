@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { installSmokeRoute } from "../../apps/server/src/host/smoke-route.ts";
-import { WhatsAppSmokeCanaryError, type WhatsAppRuntimeControl } from "../../apps/server/src/host/whatsapp-runtime.ts";
+import { installSmokeRoute } from "../../apps/runtime/src/host/smoke-route.ts";
+import { WhatsAppSmokeCanaryError, type WhatsAppRuntimeControl } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { runtimeSmokeAuthorization } from "../../packages/installation/src/runtime-health.ts";
 
 const SECRET = "private-webhook-secret";
@@ -21,6 +21,7 @@ const request = async (app: Hono, body: unknown, authorization?: string): Promis
 
 const control = (smokeCanary: WhatsAppRuntimeControl["smokeCanary"]): WhatsAppRuntimeControl => ({
   smokeCanary,
+  synchronizedChats: async () => [],
   stop: async () => undefined,
 });
 

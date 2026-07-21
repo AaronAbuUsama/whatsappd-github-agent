@@ -79,15 +79,6 @@ export interface OpenPrRecord {
 }
 
 /**
- * The workspace-local scratch dir the model's shell tools use as `TMPDIR`, so the test
- * run survives a `noexec /tmp` on hardened hosts. Kept at the workspaces root (not under
- * the per-issue `repoDir`) so the conductor's end-of-run `rm(repoDir)` never destroys it.
- * Bound into the sandbox env at composition (`local({ env: { TMPDIR } })`) and `mkdir`ed
- * by the conductor per run.
- */
-export const coderTmpDir = (workspacesRoot: string): string => `${workspacesRoot}/.tmp`;
-
-/**
  * Build-artifact patterns every JS/TS repo produces, layered UNDER the workspace
  * `.gitignore` so a repo that forgot one still never commits it (`node_modules`/`.git`
  * are already pruned by the `find`, listed here so the matcher is self-contained).

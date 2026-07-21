@@ -1,5 +1,9 @@
 # Architecture map
 
+> This is the **code taxonomy** — which package owns what. For the definitive
+> description of how the agentic system *works* (the Brain, Speakers, the Graph, the
+> Digest, the control loop), see [`SYSTEM-ARCHITECTURE.md`](./SYSTEM-ARCHITECTURE.md).
+
 The ratified taxonomy (#117 → #131): three packages, two apps, one arrow diagram —
 enforced, not aspirational (`tests/speaker/hard-cut.test.ts`).
 
@@ -7,7 +11,7 @@ enforced, not aspirational (`tests/speaker/hard-cut.test.ts`).
 graph TD
   subgraph apps
     CLI["apps/cli<br/>operate the installation"]
-    SRV["apps/server<br/>Flue build root — hosts Speaker"]
+    SRV["apps/runtime<br/>Flue build root — hosts Speaker"]
   end
   subgraph packages
     AG["agents<br/>everything that thinks:<br/>agents own identity,<br/>capabilities are shared"]
@@ -26,7 +30,7 @@ graph TD
 ```
 
 **Rules** (verbatim from the hard-cut test): engine → nothing internal; agents → engine;
-installation → agents+engine; apps/server → all packages; apps/cli → installation+engine
+installation → agents+engine; apps/runtime → all packages; apps/cli → installation+engine
 (**never** agents); test-support → anything. Additionally: capabilities may never import
 from an agent folder, and no package may publish a `./*` wildcard export.
 
@@ -78,4 +82,4 @@ Each workspace has a README: [engine](../packages/engine/README.md) ·
 [agents](../packages/agents/README.md) ·
 [installation](../packages/installation/README.md) ·
 [test-support](../packages/test-support/README.md) ·
-[cli](../apps/cli/README.md) · [server](../apps/server/README.md)
+[cli](../apps/cli/README.md) · [server](../apps/runtime/README.md)

@@ -8,6 +8,7 @@ import {
   type GitHubAppTriple,
 } from "@ambient-agent/installation/schema.ts";
 import type { FirstRunPrompts, SetupReview } from "./setup/first-run.ts";
+import { resolvePrivateKey } from "./private-key.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import type { CliOutput } from "./program.ts";
 
@@ -44,9 +45,16 @@ const promptGitHubAppTriple = async (
   const installationId = await requiredPrompt(`${reference} Installation ID`, () =>
     prompts.text({ message: `${reference} Installation ID`, placeholder: "12345678" }),
   );
-  const privateKey = await requiredPrompt(`${reference} private key`, () =>
-    prompts.password({ message: `${reference} private key (paste the .pem contents)`, mask: "*" }),
+  // A path, not the key text: this prompt is single-line, and a pasted multi-line PEM is cut at
+  // its first newline. The path is not a secret, so it echoes — the key itself never reaches the
+  // terminal, and resolvePrivateKey proves it parses before setup can promote it.
+  const suppliedKey = await requiredPrompt(`${reference} private key`, () =>
+    prompts.text({
+      message: `${reference} private key — path to the .pem file GitHub generated`,
+      placeholder: `~/${reference}.private-key.pem`,
+    }),
   );
+  const privateKey = await resolvePrivateKey(reference, suppliedKey);
   return { appId, installationId, privateKey };
 };
 
@@ -87,6 +95,45 @@ export const defaultSetupPrompts: SetupPrompts = {
     return triples;
   },
   githubApp: async (reference, repository) => await promptGitHubAppTriple(reference, repository),
+  modelApiKey: async (provider) =>
+    await requiredPrompt(`${provider} API key`, () =>
+      prompts.password({ message: `${provider} API key (paste the value; it is never echoed)`, mask: "*" }),
+    ),
+  e2bApiKey: async () =>
+    await requiredPrompt("E2B API key", () =>
+      prompts.password({ message: "E2B API key (paste the value; it is never echoed)", mask: "*" }),
+    ),
+  braintrustApiKey: async () =>
+    await requiredPrompt("Braintrust API key", () =>
+      prompts.password({ message: "Braintrust API key (paste the value; it is never echoed)", mask: "*" }),
+    ),
+  modelAuthMode: async () =>
+    await promptValue(
+      prompts.select({
+        message: "How should Ambient Agent authenticate to the model provider?",
+        options: [
+          { value: "subscription" as const, label: "Log in with a ChatGPT subscription", hint: "device authorization" },
+          { value: "api-key" as const, label: "Paste an OpenAI API key", hint: "pick a model and reasoning level" },
+        ],
+        initialValue: "subscription" as const,
+      }),
+    ),
+  selectModel: async (provider, modelIds) =>
+    await promptValue(
+      prompts.select({
+        message: `Select the ${provider} model for every agent`,
+        options: modelIds.map((id) => ({ value: id })),
+        maxItems: 12,
+      }),
+    ),
+  selectThinkingLevel: async (levels) =>
+    await promptValue(
+      prompts.select({
+        message: "Select the reasoning level for every agent",
+        options: levels.map((level) => ({ value: level })),
+        initialValue: "medium",
+      }),
+    ),
   review: async (review: SetupReview) => {
     prompts.note(
       [

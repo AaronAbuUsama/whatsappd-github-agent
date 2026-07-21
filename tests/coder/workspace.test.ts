@@ -2,7 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   coderOutcome,
-  coderTmpDir,
   diffSnapshots,
   ensureClosesIssue,
   gitignoreMatcher,
@@ -11,15 +10,6 @@ import {
   renderGraphContext,
 } from "../../packages/agents/src/capabilities/coder/workspace.ts";
 import type { GraphDigest } from "@ambient-agent/engine/graph/digest.ts";
-
-describe("coderTmpDir — the workspace-local TMPDIR (#172, survives noexec /tmp)", () => {
-  it("is under the workspaces root, never the host /tmp", () => {
-    const tmp = coderTmpDir("/home/agent/.ambient-agent/workspaces");
-    expect(tmp).toBe("/home/agent/.ambient-agent/workspaces/.tmp");
-    expect(tmp.startsWith("/home/agent/.ambient-agent/workspaces")).toBe(true);
-    expect(tmp.startsWith("/tmp")).toBe(false);
-  });
-});
 
 describe("parseHashListing", () => {
   it("reads sha256sum-style lines and strips the leading ./", () => {

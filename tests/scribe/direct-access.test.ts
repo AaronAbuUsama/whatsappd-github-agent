@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { route as discoveredRoute } from "../../apps/server/src/agents/scribe.ts";
+import { route as discoveredRoute } from "../../apps/runtime/src/agents/scribe.ts";
 import { route as packagedRoute } from "../../packages/agents/src/scribe/agent.ts";
 import {
   acceptsScribeDirectToken,

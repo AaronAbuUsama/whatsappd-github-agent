@@ -28,9 +28,15 @@ import { createManagedChatInbox, managedChatWindowStore } from "../../../../pack
 import { createManagedChatGptAuthentication } from "../../../../packages/installation/src/chatgpt-authentication.ts";
 import { managedPaths } from "../../../../packages/installation/src/paths.ts";
 import {
-  DEFAULT_AGENT_MODEL_PROFILES,
+  configureAgentModelProfiles,
+  connectPiApiKeyProvider,
   connectPiChatGptSubscription,
+  SUBSCRIPTION_PROVIDER_ID,
 } from "../../../../packages/engine/src/model/pi-subscription.ts";
+import {
+  readManagedConfig,
+  readManagedModelApiKey,
+} from "../../../../packages/installation/src/configuration.ts";
 
 const liveModel = process.env.SPEAKER_FIXTURE_LIVE_MODEL === "true";
 const provider = liveModel ? undefined : registerFauxProvider({ provider: "speaker-fixture" });
@@ -229,10 +235,25 @@ const respond = async (context: Context) => {
 if (provider === undefined) {
   const dataDirectory = process.env.SPEAKER_FIXTURE_DATA_DIR;
   if (!dataDirectory) throw new Error("SPEAKER_FIXTURE_DATA_DIR is required for a live-model fixture.");
-  await connectPiChatGptSubscription({
-    authentication: createManagedChatGptAuthentication(managedPaths({ dataDirectory })),
-    profiles: DEFAULT_AGENT_MODEL_PROFILES,
-  });
+  // The same branch the runtime takes (`apps/runtime/src/app.ts`), reading the same managed
+  // config, so a live fixture run exercises the production provider binding rather than a
+  // parallel one.
+  const paths = managedPaths({ dataDirectory });
+  const configuration = await readManagedConfig(paths.config);
+  const { provider: modelProvider, profiles } = configuration.model;
+  configureAgentModelProfiles(profiles, modelProvider);
+  if (modelProvider === SUBSCRIPTION_PROVIDER_ID) {
+    await connectPiChatGptSubscription({
+      authentication: createManagedChatGptAuthentication(paths),
+      profiles,
+    });
+  } else {
+    const credential = await readManagedModelApiKey(paths.modelApiKeyCredential);
+    if (credential.provider !== modelProvider) {
+      throw new Error(`The managed API key was issued for ${credential.provider}, not ${modelProvider}.`);
+    }
+    await connectPiApiKeyProvider({ provider: modelProvider, apiKey: credential.apiKey, profiles });
+  }
 } else {
   provider.setResponses(Array.from({ length: 100 }, () => respond));
   const model = provider.getModel();

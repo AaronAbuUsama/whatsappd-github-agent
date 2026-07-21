@@ -20,6 +20,12 @@ export interface ManagedPaths {
   readonly legacyGithubCredential: string;
   readonly chatGptOAuthCredential: string;
   readonly legacyPiAuthCredential: string;
+  /** The model API key, for every `model.provider` that is not the subscription one (#250). */
+  readonly modelApiKeyCredential: string;
+  /** The E2B API key, read when `runtime.sandbox.kind` is `e2b` (#252). */
+  readonly e2bCredential: string;
+  /** The Braintrust API key, read when `runtime.tracing.enabled` is true (#252). */
+  readonly braintrustCredential: string;
   readonly applicationDatabase: string;
   readonly flueDatabase: string;
   readonly whatsapp: string;
@@ -88,6 +94,9 @@ export const managedPaths = (options: ManagedPathEnvironment = {}): ManagedPaths
     legacyGithubCredential: paths.join(credentials, "github.json"),
     chatGptOAuthCredential: paths.join(credentials, "chatgpt-oauth.json"),
     legacyPiAuthCredential: paths.join(credentials, "pi-auth.json"),
+    modelApiKeyCredential: paths.join(credentials, "model-api-key.json"),
+    e2bCredential: paths.join(credentials, "e2b.json"),
+    braintrustCredential: paths.join(credentials, "braintrust.json"),
     applicationDatabase: paths.join(root, "application.sqlite"),
     flueDatabase: paths.join(root, "flue.sqlite"),
     whatsapp: paths.join(root, "whatsapp"),

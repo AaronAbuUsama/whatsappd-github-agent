@@ -27,7 +27,7 @@ Uncertain, Reconciliation, Operation Identity (footer + adapter), Managed Chat
 ## Dependency arrows
 
 Imports `@ambient-agent/engine` and `@ambient-agent/agents` (issue-repository types
-only). Imported by `apps/cli` (heaviest consumer) and `apps/server`. Never imports apps.
+only). Imported by `apps/cli` (heaviest consumer) and `apps/runtime`. Never imports apps.
 
 ## Tested by
 

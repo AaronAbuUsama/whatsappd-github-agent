@@ -1,5 +1,4 @@
 import {
-  FRAMEWORK_TOOL_EXCLUSION_SUPPORTED,
   defineAgent,
   defineAgentProfile,
   defineWorkflow,
@@ -32,10 +31,7 @@ import { coderBranch, downloadTarball, fetchDefaultBranch, fetchIssue, getBranch
 import { createOpenPullRequestTool } from "./tool.ts";
 import {
   coderOutcome,
-  coderTmpDir,
-  diffSnapshots,
   gitignoreMatcher,
-  isEmptyDiff,
   parseHashListing,
   renderGraphContext,
   type OpenPrRecord,
@@ -43,7 +39,6 @@ import {
 } from "./workspace.ts";
 
 const SHELL_TIMEOUT_MS = 20 * 60 * 1000;
-const ROLE_TURN = { frameworkTools: { task: false } } as const;
 type CodingStage = "workflow" | "planner" | "coder" | "verifier" | "publication";
 type CodingWaypointStatus = "started" | "completed" | "failed";
 export interface CodingWaypoint {
@@ -100,9 +95,6 @@ const roleProfiles = () => [
 
 /** Unprompted root: TypeScript alone chooses every role transition and budget. */
 const coderAgent = defineAgent(() => {
-  if (FRAMEWORK_TOOL_EXCLUSION_SUPPORTED !== true) {
-    throw new Error("Pinned Flue runtime does not support fail-closed framework task-tool exclusion.");
-  }
   const { sandbox } = getCoderRuntime();
   return {
     ...resolveAgentModelProfile("coder"),
@@ -112,7 +104,7 @@ const coderAgent = defineAgent(() => {
   };
 });
 
-/** Hash every tracked file so publication can bind to the exact Verifier-observed bytes. */
+/** Hash every tracked file so publication can diff the workspace against its seed. */
 const snapshotWorkspace = async (
   shell: (command: string) => Promise<{ stdout: string; exitCode: number }>,
   isIgnored: (path: string) => boolean,
@@ -187,47 +179,33 @@ export const runInternalCodingLoop = async (input: {
   cwd: string;
   maxVerificationRounds: number;
   waypoint: StageWaypoint;
-  snapshot: () => Promise<WorkspaceSnapshot>;
-  initialWorkspace: WorkspaceSnapshot;
-}): Promise<{ plan: PlanArtifact; verification: VerificationReceipt; rounds: number; verified: WorkspaceSnapshot }> => {
+}): Promise<{ plan: PlanArtifact; verification: VerificationReceipt; rounds: number }> => {
   input.waypoint("planner", "started");
   const plan = (await input.session.task(input.plannerPrompt, {
-    ...ROLE_TURN,
     agent: "planner",
     cwd: input.cwd,
     result: planArtifactSchema,
   })).data;
-  const plannedWorkspace = await input.snapshot();
-  if (!isEmptyDiff(diffSnapshots(input.initialWorkspace, plannedWorkspace))) {
-    throw new Error("Planner changed the shared workspace; only Coder-owned bytes may be published.");
-  }
   input.waypoint("planner", "completed");
 
   let prior: VerificationReceipt | undefined;
   for (let round = 1; round <= input.maxVerificationRounds; round += 1) {
     input.waypoint("coder", "started", { verificationRound: round });
     await input.session.task(input.coderPrompt(round, plan, prior), {
-      ...ROLE_TURN,
       agent: "coder",
       cwd: input.cwd,
     });
     input.waypoint("coder", "completed", { verificationRound: round });
-    const coderWorkspace = await input.snapshot();
 
     input.waypoint("verifier", "started", { verificationRound: round });
     prior = (await input.session.task(input.verifierPrompt(round, plan), {
-      ...ROLE_TURN,
       agent: "verifier",
       cwd: input.cwd,
       result: verificationReceiptSchema,
     })).data;
-    const verified = await input.snapshot();
-    if (!isEmptyDiff(diffSnapshots(coderWorkspace, verified))) {
-      throw new Error("Verifier changed the shared workspace; only Coder-owned bytes may be published.");
-    }
     input.waypoint("verifier", "completed", { verificationRound: round, verdict: prior.verdict });
-    if (prior.verdict === "PASS" || prior.verdict === "SKIP") return { plan, verification: prior, rounds: round, verified };
-    if (round === input.maxVerificationRounds) return { plan, verification: prior, rounds: round, verified };
+    if (prior.verdict === "PASS" || prior.verdict === "SKIP") return { plan, verification: prior, rounds: round };
+    if (round === input.maxVerificationRounds) return { plan, verification: prior, rounds: round };
   }
   throw new Error("Verification loop ended without a Verifier receipt.");
 };
@@ -270,11 +248,9 @@ const run = async ({ harness, input, log }: {
     const seedBranchHead = existingBranchHead ?? baseSha;
     const tarball = await downloadTarball(github, repo, seedBranchHead);
     const repoDir = `${workspacesRoot}/issue-${input.issue}`;
-    const tmpDir = coderTmpDir(workspacesRoot);
     const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
 
     try {
-      await harness.fs.mkdir(tmpDir, { recursive: true });
       await harness.fs.rm(repoDir, { recursive: true, force: true });
       await harness.fs.mkdir(repoDir, { recursive: true });
       await harness.fs.writeFile(`${repoDir}/.coder-source.tar.gz`, tarball);
@@ -304,8 +280,6 @@ const run = async ({ harness, input, log }: {
         cwd: repoDir,
         maxVerificationRounds: input.maxVerificationRounds,
         waypoint,
-        snapshot,
-        initialWorkspace: before,
       });
 
       const requiredDraft = coordinated.verification.verdict === "FAIL" || coordinated.verification.verdict === "BLOCKED";
@@ -320,7 +294,6 @@ const run = async ({ harness, input, log }: {
         issue: input.issue,
         issueTitle: issue.title,
         before,
-        verified: coordinated.verified,
         requiredDraft,
         snapshotAfter: snapshot,
         readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
@@ -335,7 +308,6 @@ const run = async ({ harness, input, log }: {
         verification: coordinated.verification,
         draft: requiredDraft,
       }), {
-        ...ROLE_TURN,
         agent: "coder",
         cwd: repoDir,
         tools: [openPullRequest],

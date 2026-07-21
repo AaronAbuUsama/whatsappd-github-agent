@@ -4,6 +4,27 @@ packages:
   - packages/*
 
 catalog:
+  # Root toolchain (authority)
   vite: npm:@voidzero-dev/vite-plus-core@0.2.4
   vitest: 4.1.10
   vite-plus: 0.2.4
+  typescript: ^5.7.2
+  # Shared control-plane deps (root pins win where they overlap)
+  hono: 4.12.30
+  dotenv: ^17.4.2
+  zod: ^4.4.3
+  better-auth: 1.6.23
+  "@polar-sh/better-auth": ^1.8.4
+  "@orpc/server": ^1.14.6
+  "@orpc/client": ^1.14.6
+  "@orpc/openapi": ^1.14.6
+  "@orpc/zod": ^1.14.6
+  # Web (Next + HeroUI) stack
+  next-themes: ^0.4.6
+  lucide-react: ^1.23.0
+  react: ^19.2.7
+  react-dom: ^19.2.7
+  "@types/react": ^19.2.17
+  "@types/react-dom": ^19.2.3
+  tailwindcss: ^4.3.2
+  "@tailwindcss/postcss": ^4.3.2

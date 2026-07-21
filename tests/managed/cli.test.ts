@@ -12,6 +12,10 @@ import { managedPaths, type ManagedPaths } from "../../packages/installation/src
 import type { ChatGptOAuthAdapter } from "../../packages/engine/src/model/chatgpt-authentication.ts";
 import { ChatGptReadinessError } from "../../packages/engine/src/model/pi-subscription.ts";
 import { WhatsAppAccountError } from "../../packages/installation/src/whatsapp-account.ts";
+import {
+  createLibsqlChatGptCredentialStore,
+  libsqlStore,
+} from "../../packages/installation/src/tenant-credentials.ts";
 import { createIssueOperationStore } from "../../packages/engine/src/github/operation-store.ts";
 import type { UncertainWorkController } from "../../packages/installation/src/uncertain-work.ts";
 
@@ -60,6 +64,7 @@ const harness = () => {
     repository: async (discovered?: string) => discovered ?? "owner/repo",
     githubApps: async () => fakeGitHubAppTriples(),
     githubApp: async (reference: GitHubAppReference) => fakeGitHubAppTriples()[reference],
+    modelApiKey: async () => "sk-pasted-model-key",
     review: async () => true,
     validationError: () => undefined,
   };
@@ -102,6 +107,180 @@ const files = async () => {
 };
 
 describe("managed CLI", () => {
+  it("initializes, inspects, starts, authenticates, and repairs with tenant credential storage", async () => {
+    const paths = await files();
+    const database = { url: `file:${join(paths.parent, "tenant.sqlite")}`, authToken: "tenant-test-token" };
+    const environment = { TENANT_DB_URL: database.url, TENANT_DB_TOKEN: database.authToken };
+    const whatsApp = libsqlStore(database);
+    const cli = harness();
+    const tenantWhatsAppFor = () => ({
+      authenticate: async () => {
+        await whatsApp.write({
+          creds: JSON.stringify({ registered: true, me: { id: "15550000000@s.whatsapp.net" } }),
+        });
+        return { jid: "15550000000@s.whatsapp.net" };
+      },
+      synchronizedChats: async () => [
+        { jid: "120363000@g.us", name: "Managed Test Chat", kind: "group" as const, lastActivityAt: 1_000 },
+      ],
+      session: () => {
+        throw new Error("not used during setup");
+      },
+      stop: async () => undefined,
+    });
+    const tenantDependencies = {
+      ...cli,
+      environment,
+      firstRunServices: { ...cli.firstRunServices, whatsappFor: tenantWhatsAppFor },
+    };
+
+    const rejectedImport = harness();
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--whatsapp-store",
+          join(paths.parent, "local-secret-copy"),
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+        ],
+        { ...rejectedImport, environment },
+      ),
+    ).toBe(1);
+    expect(rejectedImport.stderr()).toContain("--whatsapp-store is not supported with tenant credential storage");
+
+    const cancelled = harness();
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+        {
+          ...cancelled,
+          environment,
+          setupPrompts: { ...cancelled.setupPrompts, review: async () => false },
+          firstRunServices: { ...cancelled.firstRunServices, whatsappFor: tenantWhatsAppFor },
+        },
+      ),
+    ).toBe(1);
+    expect(cancelled.stderr()).toContain("Setup cancelled before promotion");
+    await expect(whatsApp.read("creds")).resolves.toBeNull();
+    await expect(createLibsqlChatGptCredentialStore(database).read("openai-codex")).resolves.toBeUndefined();
+
+    const initExitCode = await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      tenantDependencies,
+    );
+    expect(initExitCode, cli.stderr()).toBe(0);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    await expect(lstat(managed.chatGptOAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(join(managed.whatsapp, "creds.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(whatsApp.read("creds")).resolves.toContain('"registered":true');
+    await expect(createLibsqlChatGptCredentialStore(database).read("openai-codex")).resolves.toMatchObject({
+      access: "access-secret",
+      refresh: "refresh-secret",
+    });
+
+    const tenantRepairWhatsAppFor = () => {
+      const account = tenantWhatsAppFor();
+      return {
+        ...account,
+        authenticate: async () => {
+          await expect(whatsApp.read("pre-key:stale")).resolves.toBeNull();
+          return await account.authenticate();
+        },
+      };
+    };
+
+    const status = harness();
+    expect(await runCli(["--data-dir", paths.data, "status", "--json"], { ...status, environment })).toBe(0);
+    expect(JSON.parse(status.stdout())).toMatchObject({
+      state: "ready",
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "whatsapp-session", state: "paired", code: "whatsapp.paired" }),
+      ]),
+      modelAuthentication: { state: "ready" },
+    });
+
+    const start = harness();
+    const startRuntime = vi.fn(async () => undefined);
+    expect(await runCli(["--data-dir", paths.data, "start"], { ...start, environment, startRuntime })).toBe(0);
+    expect(startRuntime).toHaveBeenCalledOnce();
+
+    await whatsApp.write({
+      creds: JSON.stringify({ registered: false }),
+      "pre-key:stale": "stale-pre-key",
+    });
+    const failedRepair = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "repair", "whatsapp"], {
+        ...failedRepair,
+        environment,
+        runtimeHealthFor: async () => ({ state: "stopped", whatsapp: { phase: "stopped" } }),
+        firstRunServices: {
+          ...failedRepair.firstRunServices,
+          whatsappFor: () => ({
+            ...tenantRepairWhatsAppFor(),
+            synchronizedChats: async () => [
+              { jid: "other@g.us", name: "Wrong Chat", kind: "group" as const, lastActivityAt: 1_000 },
+            ],
+          }),
+        },
+      }),
+    ).toBe(1);
+    expect(failedRepair.stderr()).toContain("does not see the configured managed chat");
+    await expect(whatsApp.read("creds")).resolves.toContain('"registered":false');
+    await expect(whatsApp.read("pre-key:stale")).resolves.toBe("stale-pre-key");
+
+    const repair = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "repair", "whatsapp"], {
+        ...repair,
+        environment,
+        runtimeHealthFor: async () => ({ state: "stopped", whatsapp: { phase: "stopped" } }),
+        firstRunServices: { ...repair.firstRunServices, whatsappFor: tenantRepairWhatsAppFor },
+      }),
+    ).toBe(0);
+    expect(repair.stdout()).toContain("Updated the WhatsApp session in the tenant credential database");
+    await expect(whatsApp.read("creds")).resolves.toContain('"registered":true');
+    await expect(whatsApp.read("pre-key:stale")).resolves.toBeNull();
+
+    const auth = harness();
+    expect(await runCli(["--data-dir", paths.data, "auth"], { ...auth, environment })).toBe(0);
+    expect(auth.stdout()).toContain("updated in the tenant credential database");
+    expect(auth.stdout()).not.toContain(managed.chatGptOAuthCredential);
+    await expect(lstat(managed.chatGptOAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const unavailableEnvironment = {
+      TENANT_DB_URL: `file:${join(paths.parent, "missing-parent", "tenant.sqlite")}`,
+      TENANT_DB_TOKEN: "unavailable-test-token",
+    };
+    const unavailableStart = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "start"], {
+        ...unavailableStart,
+        environment: unavailableEnvironment,
+        startRuntime,
+      }),
+    ).toBe(1);
+    expect(unavailableStart.stderr()).toContain("whatsapp.store-unreadable");
+    expect(unavailableStart.stderr()).toContain("Run ambient-agent doctor");
+    expect(unavailableStart.stderr()).not.toContain("repair whatsapp");
+
+    const unavailableRepair = harness();
+    expect(
+      await runCli(["--data-dir", paths.data, "repair", "whatsapp"], {
+        ...unavailableRepair,
+        environment: unavailableEnvironment,
+      }),
+    ).toBe(1);
+    expect(unavailableRepair.stderr()).toContain("tenant WhatsApp credential store could not be read");
+    expect(unavailableRepair.stderr()).not.toContain("already paired");
+  });
+
   it("starts the generated runtime from the selected managed installation", async () => {
     const paths = await files();
     await runCli(
@@ -687,10 +866,7 @@ describe("managed CLI", () => {
       JSON.stringify({
         ...existingConfig,
         managedChats: ["120363000@g.us", "15551234567@s.whatsapp.net"],
-        runtime: {
-          port: 3000,
-          reviewerSandbox: { kind: "docker", image: "node:22-bookworm" },
-        },
+        runtime: { port: 3000 },
         github: {
           ...(existingConfig.github as Record<string, unknown>),
           allowedRepositories: ["owner/repo", "owner/other"],
@@ -712,15 +888,345 @@ describe("managed CLI", () => {
         defaultRepository: "Owner/Next",
         allowedRepositories: ["owner/repo", "owner/other", "Owner/Next"],
       },
-      runtime: {
-        port: 4321,
-        reviewerSandbox: { kind: "docker", image: "node:22-bookworm" },
-      },
+      runtime: { port: 4321 },
     });
     await expect(readFile(managed.applicationDatabase)).resolves.toEqual(beforeApplication);
     await expect(readFile(managed.flueDatabase)).resolves.toEqual(beforeFlue);
     await expect(readFile(managed.chatGptOAuthCredential, "utf8")).resolves.toBe(beforeModel);
     expect(config.stdout()).not.toContain("fake-planner-key");
+  });
+
+  it("selects the agent sandbox from the CLI and round-trips local|e2b (#251)", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    // A fresh install defaults to the local sandbox.
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({ runtime: { sandbox: { kind: "local" } } });
+
+    // Flip to e2b, then back to local — each selection is validated and persisted.
+    expect(await runCli(["--data-dir", paths.data, "config", "--sandbox", "e2b"], { ...harness(), interactive: false })).toBe(0);
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({ runtime: { sandbox: { kind: "e2b" } } });
+    expect(await runCli(["--data-dir", paths.data, "config", "--sandbox", "local"], { ...harness(), interactive: false })).toBe(0);
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({ runtime: { sandbox: { kind: "local" } } });
+
+    // An unknown selector is refused before anything is written.
+    const before = await readFile(managed.config, "utf8");
+    const bad = harness();
+    expect(await runCli(["--data-dir", paths.data, "config", "--sandbox", "docker"], { ...bad, interactive: false })).not.toBe(0);
+    expect(bad.stderr()).toContain("local or e2b");
+    await expect(readFile(managed.config, "utf8")).resolves.toBe(before);
+  });
+
+  it("re-homes E2B and Braintrust config to the CLI, pasting the keys and never taking them as flags (#252)", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    // A fresh install traces nothing and runs the local sandbox.
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({
+      runtime: { sandbox: { kind: "local" }, tracing: { enabled: false } },
+    });
+
+    const cli = harness();
+    const configured = {
+      ...cli,
+      setupPrompts: {
+        ...cli.setupPrompts,
+        e2bApiKey: async () => "e2b_sk_pasted",
+        braintrustApiKey: async () => "bt_sk_pasted",
+      },
+    };
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "config",
+          "--sandbox",
+          "e2b",
+          "--sandbox-template",
+          "flue-node",
+          "--tracing",
+          "on",
+          "--tracing-project",
+          "ambient-agent",
+          "--tracing-project-id",
+          "p42",
+        ],
+        configured,
+      ),
+    ).toBe(0);
+
+    // Config round-trips the non-secret fields identically.
+    expect(JSON.parse(await readFile(managed.config, "utf8"))).toMatchObject({
+      runtime: {
+        sandbox: { kind: "e2b", template: "flue-node" },
+        tracing: { enabled: true, project: { name: "ambient-agent", id: "p42" } },
+      },
+    });
+    // The pasted secrets land in their own 0600 credential files, referenced by name, never in config.
+    expect(JSON.parse(await readFile(managed.e2bCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "e2b",
+      apiKey: "e2b_sk_pasted",
+    });
+    expect(JSON.parse(await readFile(managed.braintrustCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "braintrust",
+      apiKey: "bt_sk_pasted",
+    });
+    expect((await lstat(managed.e2bCredential)).mode & 0o777).toBe(0o600);
+    expect((await lstat(managed.braintrustCredential)).mode & 0o777).toBe(0o600);
+    expect(await readFile(managed.config, "utf8")).not.toContain("e2b_sk_pasted");
+    expect(configured.stdout()).not.toContain("e2b_sk_pasted");
+    expect(configured.stdout()).not.toContain("bt_sk_pasted");
+
+    // Turning tracing off round-trips back and does not delete the key file.
+    expect(await runCli(["--data-dir", paths.data, "config", "--tracing", "off"], harness())).toBe(0);
+    expect(JSON.parse(await readFile(managed.config, "utf8")).runtime.tracing.enabled).toBe(false);
+
+    // A bad toggle is refused before anything is written.
+    const untouched = await readFile(managed.config, "utf8");
+    const bad = harness();
+    expect(await runCli(["--data-dir", paths.data, "config", "--tracing", "maybe"], bad)).not.toBe(0);
+    expect(bad.stderr()).toContain("on or off");
+    await expect(readFile(managed.config, "utf8")).resolves.toBe(untouched);
+  });
+
+  it("switches the model provider from the CLI, prompting for the key and never taking it as a flag", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+
+    const cli = harness();
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "config",
+          "--model-provider",
+          "openai",
+          "--model",
+          "gpt-5.4-nano",
+          "--model-coder",
+          "gpt-5.4",
+        ],
+        cli,
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    // The config references the credential by name and never carries the key itself.
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    expect(JSON.parse(written)).toMatchObject({
+      model: {
+        provider: "openai",
+        credential: "api-key",
+        profiles: {
+          speaker: { id: "gpt-5.4-nano" },
+          coder: { id: "gpt-5.4" },
+        },
+      },
+    });
+    // Mode 0600, beside the other managed credentials.
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
+    expect(cli.stdout()).not.toContain("sk-pasted-model-key");
+  });
+
+  it("refuses a model the chosen provider does not have, before writing anything", async () => {
+    const paths = await files();
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const before = await readFile(managed.config, "utf8");
+
+    const cli = harness();
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "config", "--model-provider", "openai", "--model", "claude-sonnet-4-6"],
+        cli,
+      ),
+    ).not.toBe(0);
+    expect(cli.stderr()).toContain("has no model claude-sonnet-4-6");
+    await expect(readFile(managed.config, "utf8")).resolves.toBe(before);
+    await expect(lstat(managed.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("lets an interactive first run pick an API key, a model, and a reasoning level (C1)", async () => {
+    const paths = await files();
+    const cli = harness();
+    const events: string[] = [];
+    let offered: readonly string[] = [];
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => {
+        events.push("auth");
+        return "api-key" as const;
+      },
+      selectModel: async (_provider: string, modelIds: readonly string[]) => {
+        offered = modelIds;
+        events.push("model");
+        return "gpt-5.4-mini";
+      },
+      selectThinkingLevel: async () => {
+        events.push("level");
+        return "high";
+      },
+    };
+
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    // Every catalog OpenAI model was offered, and the three selects fired in order.
+    expect(offered).toContain("gpt-5.4-mini");
+    expect(offered.length).toBeGreaterThan(20);
+    expect(events).toEqual(["auth", "model", "level"]);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    const parsed = JSON.parse(written);
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    for (const role of ["speaker", "scribe", "planner", "coder", "verifier"]) {
+      expect(parsed.model.profiles[role]).toEqual({ id: "gpt-5.4-mini", thinkingLevel: "high" });
+    }
+    // The API-key path never ran the ChatGPT device flow; the key is a file, referenced by name.
+    await expect(lstat(managed.chatGptOAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
+  });
+
+  it("keeps the subscription default when an interactive first run picks the subscription", async () => {
+    const paths = await files();
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => "subscription" as const,
+      selectModel: async () => {
+        throw new Error("the model select must not run once the subscription is chosen");
+      },
+      selectThinkingLevel: async () => {
+        throw new Error("the reasoning select must not run once the subscription is chosen");
+      },
+    };
+
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const parsed = JSON.parse(await readFile(managed.config, "utf8"));
+    expect(parsed.model).toMatchObject({ provider: "openai-codex", credential: "chatgpt-oauth" });
+    expect(parsed.model.profiles.planner).toEqual({ id: "gpt-5.6-sol", thinkingLevel: "xhigh" });
+    // The subscription path still writes the device-flow ChatGPT credential, no API key file.
+    await expect(lstat(managed.chatGptOAuthCredential)).resolves.toBeDefined();
+    await expect(lstat(managed.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips the interactive model selects when --model-provider is supplied (flag path unchanged)", async () => {
+    const paths = await files();
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => {
+        throw new Error("a supplied --model-provider must skip the interactive auth-mode select");
+      },
+    };
+
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+          "--model-provider",
+          "openai",
+          "--model",
+          "gpt-5.4-nano",
+        ],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const parsed = JSON.parse(await readFile(managed.config, "utf8"));
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    expect(parsed.model.profiles.coder).toEqual({ id: "gpt-5.4-nano", thinkingLevel: "high" });
+  });
+
+  it("reconfigures the model interactively from the config command, folding onto the current config (C1)", async () => {
+    const paths = await files();
+    // A default subscription install, created without any model flags.
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => "api-key" as const,
+      selectModel: async () => "gpt-5.4-mini",
+      selectThinkingLevel: async () => "low",
+    };
+
+    expect(
+      await runCli(["--data-dir", paths.data, "config"], { ...cli, setupPrompts }),
+      cli.stderr(),
+    ).toBe(0);
+
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    const parsed = JSON.parse(written);
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    for (const role of ["speaker", "scribe", "planner", "coder", "verifier"]) {
+      expect(parsed.model.profiles[role]).toEqual({ id: "gpt-5.4-mini", thinkingLevel: "low" });
+    }
+    // The key is a mode-0600 file, referenced from config by name only.
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toMatchObject({
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
   });
 
   it("leaves the coder credential untouched when a github-app rotation is cancelled at review", async () => {

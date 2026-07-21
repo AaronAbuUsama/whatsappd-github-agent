@@ -10,6 +10,7 @@ import {
   type IncomingMessage,
   type Outbound,
   type SendOptions,
+  type SessionStore,
   type Status,
   type Update,
   type WaIdentity,
@@ -26,6 +27,11 @@ import {
   smokeCanaryArrival,
   conversationUpdate,
 } from "@ambient-agent/engine/intake/conversation-event.ts";
+import {
+  libsqlStore,
+  tenantCredentialDatabaseFromEnvironment,
+  type TenantCredentialEnvironment,
+} from "./tenant-credentials.ts";
 
 export interface PairingProgress {
   readonly method: "qr" | "pairing_code";
@@ -71,7 +77,8 @@ export interface CreateWhatsAppAccountOptions {
   readonly archive: Pick<ConversationArchive, "append">;
   /** App-owned child logger injected through whatsappd's public seam (ADR 0016). */
   readonly logger?: Logger;
-  readonly sessionFactory?: () => WhatsAppSession;
+  readonly sessionFactory?: (store: SessionStore) => WhatsAppSession;
+  readonly environment?: TenantCredentialEnvironment;
   readonly now?: () => number;
   readonly syncTimeoutMillis?: number;
 }
@@ -117,10 +124,15 @@ const candidateName = (chat: HistoryChat, contacts: ReadonlyMap<string, HistoryC
   chat.subject?.trim() || contacts.get(chat.id)?.displayName?.trim() || chat.id;
 
 export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): ManagedWhatsAppAccount => {
+  const createStore = (): SessionStore => {
+    const tenantDatabase = tenantCredentialDatabaseFromEnvironment(options.environment ?? process.env);
+    return tenantDatabase === undefined ? fileStore(options.storeDirectory) : libsqlStore(tenantDatabase);
+  };
+  const store = createStore();
   const session =
-    options.sessionFactory?.() ??
+    options.sessionFactory?.(store) ??
     createSession({
-      store: fileStore(options.storeDirectory),
+      store,
       auth: qrAuth(),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
@@ -142,7 +154,13 @@ export const createWhatsAppAccount = (options: CreateWhatsAppAccountOptions): Ma
   let archiveQueue = Promise.resolve();
 
   const settleInitialArchive = (): void => {
-    if (!onlineObserved || !initialSyncObserved || initialArchiveReady) return;
+    // `online` is whatsappd's settled-and-ready signal: it fires only after the authenticated
+    // sync sub-state (draining → syncing) completes on a first link, and immediately on a
+    // reconnect where history sync is skipped because the store already holds it. Requiring a
+    // conversation-sync batch on top of it hung every restart — a reconnect emits no batch, so
+    // the runtime waited 60s and failed on a healthy session. The online handler chains this
+    // through archiveQueue, so any batch delivered before online is durably written first.
+    if (!onlineObserved || initialArchiveReady) return;
     initialArchiveReady = true;
     for (const settle of archiveReadyWaiters) settle();
     archiveReadyWaiters.clear();

@@ -1,5 +1,7 @@
 # Ambient Agent owns ChatGPT authentication
 
+For the SaaS tenant runtime, ADR 0018 supersedes the local-file and file-lock details below when the complete tenant database environment contract is configured.
+
 Ambient Agent starts the supported `openai-codex` headless device-code flow,
 reports its verification URI, user code, expiry and progress through an
 injectable callback interface, and stores only the complete ChatGPT OAuth

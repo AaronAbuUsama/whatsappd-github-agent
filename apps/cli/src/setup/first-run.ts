@@ -11,7 +11,14 @@ import {
   type ManagedWhatsAppAccount,
   type PairingCallbacks,
 } from "@ambient-agent/installation/whatsapp-account.ts";
-import type { GitHubAppReference, GitHubAppTriple, GitHubAppTriples } from "@ambient-agent/installation/schema.ts";
+import {
+  subscriptionModelChoice,
+  type GitHubAppReference,
+  type GitHubAppTriple,
+  type GitHubAppTriples,
+  type ManagedModelChoice,
+} from "@ambient-agent/installation/schema.ts";
+import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { normalizeGitHubRepository } from "./github.ts";
 
 /** The single line the review shows for the guided three-App paste; carries no secret material. */
@@ -21,7 +28,13 @@ export interface SetupReview {
   readonly dataDirectory: string;
   readonly chat: Pick<ChatCandidate, "jid" | "name" | "kind">;
   readonly repository: string;
-  readonly chatGptCredentialSource: "existing managed credential" | "fresh device authorization";
+  /** How model auth was satisfied. Never a key value — only its provenance. */
+  readonly chatGptCredentialSource:
+    | "existing managed credential"
+    | "fresh device authorization"
+    | "pasted API key";
+  /** The chosen provider, shown so the operator confirms which one the key was pasted for. */
+  readonly modelProvider?: string;
   readonly whatsappCredentialSource: "existing managed session" | "fresh pairing";
   readonly githubCredentialSource: string;
 }
@@ -33,6 +46,18 @@ export interface FirstRunPrompts {
   githubApps(repository: string): Promise<GitHubAppTriples>;
   /** Guided paste of a single App triple — the rotation path (`config --github-app <ref>`). */
   githubApp(reference: GitHubAppReference, repository: string): Promise<GitHubAppTriple>;
+  /** Guided paste of the model API key, at first run or via `config --model-provider <id>`. */
+  modelApiKey?(provider: string): Promise<string>;
+  /** Guided paste of the E2B API key when `config --sandbox e2b` needs `credentials/e2b.json` (#252). */
+  e2bApiKey?(): Promise<string>;
+  /** Guided paste of the Braintrust API key when `config --tracing on` needs the credential (#252). */
+  braintrustApiKey?(): Promise<string>;
+  /** First-run auth choice (C1): the subscription device flow, or a pasted API key. */
+  modelAuthMode?(): Promise<"subscription" | "api-key">;
+  /** Pick one model from the provider's catalog; applied to every agent role. */
+  selectModel?(provider: string, modelIds: readonly string[]): Promise<string>;
+  /** Pick one reasoning level; applied to every agent role. */
+  selectThinkingLevel?(levels: readonly string[]): Promise<string>;
   review(review: SetupReview): Promise<boolean>;
   validationError(field: "chat" | "repository" | "github", message: string): void;
 }
@@ -55,6 +80,13 @@ export interface ScriptedFirstRunValues {
 export interface RunFirstRunSetupInput extends ManagedPathEnvironment {
   readonly interactive: boolean;
   readonly allowFreshChatGptAuthentication?: boolean;
+  /**
+   * The model auth chosen for this install. Absent means the subscription provider and the
+   * ChatGPT device flow — the historical behaviour. Naming an API-key provider skips that
+   * flow entirely and pastes a key instead (decision 5: neither mode is required).
+   */
+  readonly modelChoice?: ManagedModelChoice;
+  readonly modelCredentialStorage?: "managed-file" | "tenant-database";
   readonly whatsappStoreSource?: string;
   readonly services: FirstRunServices;
   readonly prompts: FirstRunPrompts;
@@ -169,9 +201,11 @@ const resolveGitHub = async (
       continue;
     }
 
-    const triples = input.interactive
-      ? await input.prompts.githubApps(repository)
-      : input.scripted?.githubApps;
+    // --github-apps-file wins whenever it was supplied. Asking interactively instead made the
+    // flag unreachable on the only path that pairs WhatsApp, and the guided paste cannot carry a
+    // PEM anyway: its prompt is single-line, so a pasted multi-line key silently becomes its
+    // last line. An operator who brought the triples in a file must never be asked for them.
+    const triples = input.scripted?.githubApps ?? (input.interactive ? await input.prompts.githubApps(repository) : undefined);
     if (triples === undefined) {
       // Non-interactive setup has no guided paste; the triples must be supplied up front.
       throw new Error("Non-interactive setup requires the three GitHub App triples.");
@@ -208,13 +242,32 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
       if (input.whatsappStoreSource !== undefined) {
         await importWhatsAppStore(input.whatsappStoreSource, paths.whatsapp);
       }
-      const chatGpt = input.services.chatGptFor(paths);
-      const chatGptStatus = await chatGpt.inspect();
-      if (!input.interactive && !input.allowFreshChatGptAuthentication && chatGptStatus.state !== "ready") {
-        throw new Error("Non-interactive setup requires an existing valid managed ChatGPT credential.");
-      }
-      if (chatGptStatus.state !== "ready") {
-        await chatGpt.authenticate(input.chatGptCallbacks, input.signal);
+      // Model auth is an API key OR a subscription, and neither is required. Only the
+      // subscription provider runs the ChatGPT device flow; an API-key provider pastes a
+      // key and never touches it, so a box with no subscription can still complete setup.
+      const modelChoice = input.modelChoice ?? subscriptionModelChoice;
+      const apiKeyProvider = modelChoice.provider !== SUBSCRIPTION_PROVIDER_ID;
+      let modelApiKey: string | undefined;
+      let modelSource: SetupReview["chatGptCredentialSource"];
+      if (apiKeyProvider) {
+        if (!input.interactive || input.prompts.modelApiKey === undefined) {
+          throw new Error(
+            `Setting up the ${modelChoice.provider} model provider requires the interactive guided key paste.`,
+          );
+        }
+        modelApiKey = await input.prompts.modelApiKey(modelChoice.provider);
+        modelSource = "pasted API key";
+      } else {
+        const chatGpt = input.services.chatGptFor(paths);
+        const chatGptStatus = await chatGpt.inspect();
+        if (!input.interactive && !input.allowFreshChatGptAuthentication && chatGptStatus.state !== "ready") {
+          throw new Error("Non-interactive setup requires an existing valid managed ChatGPT credential.");
+        }
+        if (chatGptStatus.state !== "ready") {
+          await chatGpt.authenticate(input.chatGptCallbacks, input.signal);
+        }
+        modelSource =
+          chatGptStatus.state === "ready" ? "existing managed credential" : "fresh device authorization";
       }
 
       const archive = createConversationArchive(paths.applicationDatabase);
@@ -272,8 +325,8 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         dataDirectory: target.root,
         chat: { jid: selected.jid, name: selected.name, kind: selected.kind },
         repository: github.repository,
-        chatGptCredentialSource:
-          chatGptStatus.state === "ready" ? "existing managed credential" : "fresh device authorization",
+        chatGptCredentialSource: modelSource,
+        modelProvider: modelChoice.provider,
         whatsappCredentialSource: paired ? "fresh pairing" : "existing managed session",
         githubCredentialSource: GUIDED_GITHUB_APP_SOURCE,
       };
@@ -288,6 +341,7 @@ export const runFirstRunSetup = async (input: RunFirstRunSetupInput): Promise<In
         managedChats: [selected.jid],
         defaultRepository: github.repository,
         githubApps: github.triples,
+        model: { ...modelChoice, ...(modelApiKey === undefined ? {} : { apiKey: modelApiKey }) },
       };
     },
   });

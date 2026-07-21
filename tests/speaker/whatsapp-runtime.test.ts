@@ -22,7 +22,7 @@ import {
   getWhatsAppRuntimeStatus,
   runWhatsAppSession,
   startWhatsAppRuntime,
-} from "../../apps/server/src/host/whatsapp-runtime.ts";
+} from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
@@ -777,6 +777,91 @@ describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
     });
     await restartedAccount.stop();
     reopenedArchive.close();
+  });
+});
+
+describe("runtime pairing and bridge control", () => {
+  it("captures pairing for HTTP polling, preserves stdout pairing, and exposes synchronized chats", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const syncListeners = new Set<(batch: ConversationSyncBatch) => void | Promise<void>>();
+    let continueStart: () => void = () => undefined;
+    const startBarrier = new Promise<void>((resolve) => {
+      continueStart = resolve;
+    });
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync(listener: (batch: ConversationSyncBatch) => void | Promise<void>) {
+        syncListeners.add(listener);
+        return () => syncListeners.delete(listener);
+      },
+      async start() {
+        for (const listener of statusListeners) {
+          await listener({
+            phase: "pairing",
+            pairing: {
+              step: "challenge_live",
+              method: "pairing_code",
+              code: "ABCD-EFGH",
+              expiresAt: 60_000,
+            },
+          });
+        }
+        await startBarrier;
+        for (const listener of statusListeners) {
+          await listener({ phase: "authenticated", sync: { step: "syncing", progress: 50 } });
+        }
+        for (const listener of syncListeners) {
+          await listener({
+            chats: [{ id: "project-runtime@g.us", subject: "Runtime Project", isGroup: true, lastMessageAt: 3_000 }],
+            contacts: [],
+            messages: [],
+          });
+        }
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      async stop() {},
+      identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
+    } as unknown as WhatsAppSession;
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => session,
+    });
+
+    try {
+      await vi.waitFor(() =>
+        expect(getWhatsAppRuntimeStatus()).toMatchObject({
+          phase: "pairing",
+          pairing: { method: "pairing_code", code: "ABCD-EFGH", expiresAt: 60_000 },
+        }),
+      );
+      expect(stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain(
+        "WhatsApp pairing code: ABCD-EFGH",
+      );
+
+      continueStart();
+      await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+      expect(getWhatsAppRuntimeStatus()).toMatchObject({
+        accountJid: "15550000000:7@s.whatsapp.net",
+      });
+      expect(getWhatsAppRuntimeStatus()).not.toHaveProperty("pairing");
+      await expect(runtime.synchronizedChats()).resolves.toEqual([
+        { jid: "project-runtime@g.us", name: "Runtime Project", kind: "group", lastActivityAt: 3_000 },
+      ]);
+    } finally {
+      continueStart();
+      await runtime.stop();
+      stdoutSpy.mockRestore();
+    }
   });
 });
 

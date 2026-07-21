@@ -11,6 +11,7 @@ describe("resolveSpecialistReturnChat", () => {
       configuration: createManagedConfig(managedChats, defaultRepository),
       githubCredential: {} as never,
       paths: {} as never,
+      agentSandbox: {} as never,
     });
   };
 

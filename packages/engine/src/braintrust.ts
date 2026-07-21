@@ -2,11 +2,13 @@
 import { type FlueEvent, observe } from "@flue/runtime";
 import { braintrustFlueObserver, initLogger } from "braintrust";
 
-export const braintrustTracingEnabled = (
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-): boolean => environment.BRAINTRUST_TRACING === "1" && Boolean(environment.BRAINTRUST_API_KEY);
+export interface BraintrustTracingOptions {
+  /** The Braintrust API key from `credentials/braintrust.json`; absent/blank keeps tracing off. */
+  readonly apiKey?: string;
+  /** The tracing project from `runtime.tracing.project`; the name defaults to `Flue`. */
+  readonly project?: { readonly name?: string; readonly id?: string };
+}
 
-const apiKey = braintrustTracingEnabled() ? process.env.BRAINTRUST_API_KEY : undefined;
 const MAX_OBSERVED_RUNS = 10_000;
 const observedRuns = new Set<string>();
 
@@ -19,18 +21,28 @@ const rememberObservedRun = (runId: string): void => {
   observedRuns.add(runId);
 };
 
-if (apiKey) {
+/**
+ * Register the Braintrust Flue observer for production tracing (#252). Called from
+ * {@link createAmbientAgentApp} — the runtime bundle, where `@flue/runtime`'s isolate-scoped
+ * observer registry lives (the CLI is a separate bundle, see `runtime-dependencies.ts`) — rather
+ * than at module load, so no config-relevant value is read from `process.env`. With no API key
+ * (`runtime.tracing.enabled = false`, or the key credential absent) tracing stays off and nothing
+ * is registered. Returns whether tracing was configured.
+ */
+export const configureBraintrustTracing = (options: BraintrustTracingOptions = {}): boolean => {
+  const apiKey = options.apiKey?.trim();
+  if (!apiKey) return false;
   initLogger({
-    projectName: process.env.BRAINTRUST_PROJECT_NAME ?? "Flue",
-    projectId: process.env.BRAINTRUST_PROJECT_ID,
+    projectName: options.project?.name ?? "Flue",
+    projectId: options.project?.id,
     apiKey,
   });
-
   observe((event, context) => {
     const compatible = compatibleEvent(event);
     if (compatible) braintrustFlueObserver(compatible, context);
   });
-}
+  return true;
+};
 
 function compatibleEvent(event: FlueEvent): unknown {
   if (event.type === "run_start") {

@@ -215,7 +215,7 @@ describe("packed ambient-agent executable", () => {
     expect((await readFile(installedEntry, "utf8")).startsWith("#!/usr/bin/env node\n")).toBe(true);
     if (process.platform !== "win32") expect((await stat(installedEntry)).mode & 0o111).not.toBe(0);
     await expect(executeAmbientAgent(["--help"])).resolves.toMatchObject({
-      stdout: expect.stringContaining("Install and operate the Ambient Agent managed runtime"),
+      stdout: expect.stringContaining("Install and operate the coworker managed runtime"),
     });
     await expect(executeAmbientAgent(["--version"])).resolves.toMatchObject({
       stdout: `${installedManifest.version}\n`,
@@ -691,5 +691,118 @@ describe("packed ambient-agent executable", () => {
       target: { title: "Portable managed installation" },
     });
     restoredOperations.close();
+  }, 90_000);
+
+  it("exits non-zero with the credential-specific message when only the model API key is missing", async () => {
+    if (process.platform === "win32") return;
+    // The negative is scoped to API-key mode and must be more than an exit code: an
+    // unconfigured install already exits 1, so a bare exit-code assertion passes vacuously.
+    // This starts from an otherwise-ready install and removes exactly one file.
+    const dataDirectory = join(root, "api-key-missing-credential");
+    await executeAmbientAgent(initArgs(dataDirectory), fixtureEnvironment);
+    const paths = managedPaths({ dataDirectory });
+
+    // Seed the API-key provider directly: `config --model-provider` prompts for the key,
+    // which has no non-interactive form by design.
+    const config = JSON.parse(await readFile(paths.config, "utf8"));
+    await writeFile(
+      paths.config,
+      JSON.stringify({
+        ...config,
+        model: {
+          provider: "openai",
+          credential: "api-key",
+          profiles: Object.fromEntries(
+            ["speaker", "scribe", "planner", "coder", "verifier"].map((role) => [
+              role,
+              { id: "gpt-5.4-mini", thinkingLevel: "low" },
+            ]),
+          ),
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      paths.modelApiKeyCredential,
+      JSON.stringify({ schemaVersion: 1, kind: "api-key", provider: "openai", apiKey: "sk-seeded" }),
+      { mode: 0o600 },
+    );
+    // Everything is ready first — so the failure below can only be the removed file. The
+    // status exit code also reflects observed-runtime health, which is irrelevant here, so
+    // this asserts the parsed report rather than the code.
+    const ready = await executeAmbientAgent(
+      ["--data-dir", dataDirectory, "status", "--json"],
+      fixtureEnvironment,
+    ).catch((cause: { readonly stdout?: string }) => ({ stdout: cause.stdout ?? "" }));
+    expect(JSON.parse(ready.stdout)).toMatchObject({
+      state: "ready",
+      modelAuthentication: { state: "ready" },
+    });
+
+    await rm(paths.modelApiKeyCredential);
+    await expect(
+      executeAmbientAgent(["--data-dir", dataDirectory, "start"], fixtureEnvironment),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("model.provider is openai but the managed API key at"),
+    });
+  }, 90_000);
+
+  it("structural: init --model-provider reaches model auth without the ChatGPT device flow", async () => {
+    if (process.platform === "win32") return;
+    // STRUCTURAL ONLY. This drives the real init code path in the real binary up to — and
+    // not including — the pairing ceremony, which is a declared prerequisite of T2 and is
+    // never faked. Nothing here proves the auth works; that is T2's first reply.
+    //
+    // What it does prove: naming an API-key provider takes model auth off the ChatGPT
+    // device flow entirely. Before this change the same invocation demanded a ChatGPT
+    // credential, which is what made an API-key-only box impossible to set up.
+    const dataDirectory = join(root, "structural-api-key-init");
+    await expect(
+      executeAmbientAgent(
+        [...initArgs(dataDirectory), "--model-provider", "openai", "--model", "gpt-5.4-mini"],
+        fixtureEnvironment,
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      // The API-key branch, reached instead of the ChatGPT one. Both the key paste and the
+      // pairing ceremony are interactive by design, so neither has a headless form.
+      stderr: expect.stringContaining("openai model provider requires the interactive guided key paste"),
+    });
+    // It refused before creating anything, so no partial install is left behind.
+    await expect(stat(dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+
+    // The control: without --model-provider the same invocation still runs the subscription
+    // path and stops at its credential, so this is a widening rather than a swap. No
+    // --authorize, so nothing contacts the network.
+    const subscriptionArgs = initArgs(join(root, "structural-subscription-init")).filter(
+      (arg) => arg !== "--authorize",
+    );
+    await expect(executeAmbientAgent(subscriptionArgs, environment)).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("existing valid managed ChatGPT credential"),
+    });
+  }, 60_000);
+
+  it("starts a subscription-configured runtime that has no model API key at all", async () => {
+    if (process.platform === "win32") return;
+    // The mirror positive (decision 5). Without it, the negative above would be satisfied by
+    // a runtime that hard-exits on every subscription install.
+    const dataDirectory = join(root, "subscription-without-api-key");
+    await executeAmbientAgent(initArgs(dataDirectory), fixtureEnvironment);
+    const paths = managedPaths({ dataDirectory });
+    await expect(stat(paths.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await readFile(paths.config, "utf8")).model.provider).toBe("openai-codex");
+
+    const port = await availablePort();
+    await executeAmbientAgent(["--data-dir", dataDirectory, "config", "--port", String(port)], fixtureEnvironment);
+    // startPackedRuntime waits for a healthy /health and fails if the process exits early,
+    // so reaching here is the assertion: the runtime booted with no API key present.
+    const runtime = await startPackedRuntime(dataDirectory, port);
+    try {
+      expect(runtime.health).toMatchObject({ runtime: { state: "healthy" } });
+    } finally {
+      await runtime.stop();
+    }
   }, 90_000);
 });

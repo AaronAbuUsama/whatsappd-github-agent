@@ -9,6 +9,7 @@ import {
   acquireSetupLock,
   githubAppCredentialFrom,
   inspectManagedData,
+  prepareHostedManagedLayout,
   promoteReplacementWhatsAppStore,
   releaseSetupLock,
 } from "@ambient-agent/installation/installation.ts";
@@ -26,12 +27,25 @@ import {
   type ManagedDataMigration,
 } from "@ambient-agent/installation/migration.ts";
 import {
+  braintrustCredentialFrom,
+  e2bCredentialFrom,
+  modelApiKeyCredentialFrom,
+  subscriptionModelChoice,
   GITHUB_APP_REFERENCES,
   type GitHubAppReference,
   type GitHubAppTriple,
   type GitHubAppTriples,
+  type RuntimeSandbox,
+  type RuntimeTracing,
 } from "@ambient-agent/installation/schema.ts";
 import { managedPaths, type ManagedPaths } from "@ambient-agent/installation/paths.ts";
+import {
+  libsqlStore,
+  tenantCredentialDatabaseFromEnvironment,
+  type TenantCredentialEnvironment,
+  withTenantCredentialRollback,
+  withTenantWhatsAppCredentialRollback,
+} from "@ambient-agent/installation/tenant-credentials.ts";
 import {
   probeAmbientRuntimeHealth,
   runtimeInstallationId,
@@ -48,6 +62,13 @@ import {
 } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import type { ChatGptReadinessReceipt } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
+  modelSelectionFrom,
+  promptInteractiveModelSelection,
+  resolveModelSelection,
+  withUniformThinkingLevel,
+} from "./model-configuration.ts";
+import { readSuppliedPrivateKey } from "./private-key.ts";
+import {
   discoverOriginRepository,
   normalizeGitHubRepository,
   verifyGitHubAppRepositoryAccess,
@@ -59,6 +80,8 @@ import { createScribeBackfillStore } from "@ambient-agent/engine/intake/scribe-b
 import { createDeviceCodeCallbacks, createWhatsAppCallbacks, defaultSetupPrompts, type SetupPrompts } from "./prompts.ts";
 import {
   parseRuntimePort,
+  parseSandboxKind,
+  parseTracingToggle,
   startGeneratedRuntime,
   type ImportRuntime,
   type RuntimeLoggingOptions,
@@ -102,6 +125,8 @@ export interface CliDependencies {
   readonly smokeCanaryFor?: SmokeCanary;
   readonly smokeTimeoutMillis?: number;
   readonly createNonce?: () => string;
+  /** Injectable tenant database environment for self-contained CLI tests. */
+  readonly environment?: TenantCredentialEnvironment;
 }
 
 export type { ImportRuntime, StartRuntime } from "./lifecycle.ts";
@@ -110,6 +135,16 @@ export type { WindowDeliveryCounts } from "./rendering.ts";
 const defaultOutput: CliOutput = {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
+};
+
+/** True when a regular file already exists at `path`; a broken/other node counts as present. */
+const regularFileExists = async (path: string): Promise<boolean> => {
+  try {
+    return (await lstat(path)).isFile();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw cause;
+  }
 };
 
 
@@ -124,13 +159,17 @@ const readGitHubAppTriplesFile = async (path: string): Promise<GitHubAppTriples>
   const triples = {} as Record<GitHubAppReference, GitHubAppTriple>;
   for (const reference of GITHUB_APP_REFERENCES) {
     const entry = (parsed as Record<string, unknown> | null)?.[reference] as Partial<GitHubAppTriple> | undefined;
-    const appId = entry?.appId?.trim();
-    const installationId = entry?.installationId?.trim();
-    const privateKey = entry?.privateKey?.trim();
-    if (!appId || !installationId || !privateKey) {
+    // Coerced, not required as strings: a hand-written triples file naturally carries the two
+    // IDs as JSON numbers, and failing that on `.trim is not a function` helps nobody.
+    const appId = String(entry?.appId ?? "").trim();
+    const installationId = String(entry?.installationId ?? "").trim();
+    const suppliedKey = String(entry?.privateKey ?? "").trim();
+    if (!appId || !installationId || !suppliedKey) {
       throw new Error(`The ${reference} App triple in ${path} needs a non-empty appId, installationId, and privateKey.`);
     }
-    triples[reference] = { appId, installationId, privateKey };
+    // privateKey may be the key itself or a path to the downloaded .pem. The planner key is
+    // proven for real by verifyGitHub before promotion, so this does not re-parse it here.
+    triples[reference] = { appId, installationId, privateKey: await readSuppliedPrivateKey(reference, suppliedKey) };
   }
   return triples;
 };
@@ -158,12 +197,13 @@ const bareDataDirectory = (args: readonly string[]): { readonly dataDirectory?: 
 
 export const runCli = async (argv: readonly string[], dependencies: CliDependencies = {}): Promise<number> => {
   const output = dependencies.output ?? defaultOutput;
+  const environment = dependencies.environment ?? process.env;
   const setupPrompts = dependencies.setupPrompts ?? defaultSetupPrompts;
   const interactive =
     dependencies.interactive ??
     (dependencies.setupPrompts !== undefined || (process.stdin.isTTY === true && process.stdout.isTTY === true));
   const authenticationFor = (paths: ManagedPaths) =>
-    createManagedChatGptAuthentication(paths, dependencies.chatGptOAuth);
+    createManagedChatGptAuthentication(paths, dependencies.chatGptOAuth, environment);
   const serviceOverrides = dependencies.firstRunServices ?? {};
   const firstRunServices: FirstRunServices = {
     chatGptFor: serviceOverrides.chatGptFor ?? authenticationFor,
@@ -174,6 +214,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           storeDirectory: paths.whatsapp,
           archive,
           logger: upstreamWhatsAppLogger(),
+          environment,
         })),
     discoverRepository: serviceOverrides.discoverRepository ?? (() => discoverOriginRepository()),
     verifyGitHub:
@@ -206,7 +247,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   let exitCode = 0;
   const program = new Command()
     .name("ambient-agent")
-    .description("Install and operate the Ambient Agent managed runtime")
+    .description("Install and operate the coworker managed runtime")
     .version(packageManifest.version)
     .option("--data-dir <path>", "override the managed data directory")
     .configureOutput({ writeOut: output.stdout, writeErr: output.stderr })
@@ -220,6 +261,10 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   });
   const readyManagedPaths = async (verb: string): Promise<ManagedPaths> => {
     const paths = managedPaths({ dataDirectory: program.opts().dataDir });
+    // Hosted volumes come from Docker, not `init`; repair the private layout before the gate.
+    if (process.env.AMBIENT_AGENT_RUNTIME_PROFILE?.trim() === "operate") {
+      await prepareHostedManagedLayout(paths);
+    }
     const inspection = await inspectManagedData({ dataDirectory: paths.root });
     if (inspection.state !== "ready") {
       throw new Error(
@@ -239,8 +284,36 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--github-apps-file <path>", "read the three GitHub App triples from a private JSON file")
     .option("--whatsapp-store <path>", "copy a stopped local WhatsApp store into setup")
     .option("--authorize", "allow explicit headless ChatGPT device authorization")
+    .option("--model-provider <id>", "model provider ID; the API key is pasted at the prompt, never a flag")
+    .option("--model <id>", "model ID for every agent role")
+    .option("--model-speaker <id>", "model ID for the Speaker (a cheap model is fine here)")
+    .option("--model-scribe <id>", "model ID for the Scribe")
+    .option("--model-planner <id>", "model ID for the Planner")
+    .option("--model-coder <id>", "model ID for the Coder")
+    .option("--model-verifier <id>", "model ID for the Verifier")
     .action(async (options) => {
       const global = program.opts();
+      // With no --model-provider flag, an interactive first run picks the auth mode (subscription
+      // vs API key) and, for an API key, a model and one reasoning level for every agent. A
+      // supplied --model-provider (or a non-interactive/scripted run) skips the prompts and keeps
+      // the historical flag path exactly. The choice is resolved before anything is created, so a
+      // bad provider or model ID fails before the operator sits through pairing.
+      const baseSelection = modelSelectionFrom(options);
+      const { selection, thinkingLevel } =
+        interactive && options.modelProvider === undefined
+          ? await promptInteractiveModelSelection(baseSelection, setupPrompts)
+          : { selection: baseSelection, thinkingLevel: undefined };
+      const resolved = resolveModelSelection(
+        { ...subscriptionModelChoice, credential: "chatgpt-oauth" },
+        selection,
+      );
+      const modelChoice = {
+        provider: resolved.provider,
+        profiles:
+          thinkingLevel === undefined
+            ? resolved.profiles
+            : withUniformThinkingLevel(resolved.profiles, thinkingLevel),
+      };
       const current = await inspectManagedData({ dataDirectory: global.dataDir });
       output.stdout(`Data directory: ${current.dataDirectory}\n`);
       if (current.state === "ready") {
@@ -252,24 +325,35 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           `Refusing to replace ${current.state} managed data at ${current.dataDirectory}; run ambient-agent doctor.`,
         );
       }
+      const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
+      if (tenantDatabase !== undefined && options.whatsappStore !== undefined) {
+        throw new Error(
+          "--whatsapp-store is not supported with tenant credential storage; pair directly into the tenant database.",
+        );
+      }
       const scriptedApps =
         options.githubAppsFile === undefined ? undefined : await readGitHubAppTriplesFile(options.githubAppsFile);
-      const result = await runFirstRunSetup({
-        dataDirectory: global.dataDir,
-        interactive,
-        allowFreshChatGptAuthentication: options.authorize ?? false,
-        ...(options.whatsappStore === undefined ? {} : { whatsappStoreSource: resolve(options.whatsappStore) }),
-        services: firstRunServices,
-        prompts: setupPrompts,
-        scripted: {
-          ...(options.chat === undefined ? {} : { chat: options.chat }),
-          ...(options.repository === undefined ? {} : { repository: options.repository }),
-          ...(scriptedApps === undefined ? {} : { githubApps: scriptedApps }),
-        },
-        chatGptCallbacks: deviceCodeCallbacks,
-        whatsappCallbacks,
-        signal: authenticationSignal(),
-      });
+      const setup = async () =>
+        await runFirstRunSetup({
+          dataDirectory: global.dataDir,
+          interactive,
+          allowFreshChatGptAuthentication: options.authorize ?? false,
+          modelChoice,
+          modelCredentialStorage: tenantDatabase === undefined ? "managed-file" : "tenant-database",
+          ...(options.whatsappStore === undefined ? {} : { whatsappStoreSource: resolve(options.whatsappStore) }),
+          services: firstRunServices,
+          prompts: setupPrompts,
+          scripted: {
+            ...(options.chat === undefined ? {} : { chat: options.chat }),
+            ...(options.repository === undefined ? {} : { repository: options.repository }),
+            ...(scriptedApps === undefined ? {} : { githubApps: scriptedApps }),
+          },
+          chatGptCallbacks: deviceCodeCallbacks,
+          whatsappCallbacks,
+          signal: authenticationSignal(),
+        });
+      const result =
+        tenantDatabase === undefined ? await setup() : await withTenantCredentialRollback(tenantDatabase, setup);
       output.stdout(
         result.created
           ? `Created secure managed installation at ${result.inspection.dataDirectory}.\n`
@@ -282,22 +366,33 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .description("authenticate ChatGPT for an existing managed installation")
     .action(async () => {
       const paths = await readyManagedPaths("authenticate against");
+      const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
       // Fail before the device flow when the credential path can never persist a login.
-      try {
-        if (!(await lstat(paths.chatGptOAuthCredential)).isFile()) {
-          throw new Error(
-            `The managed ChatGPT credential path at ${paths.chatGptOAuthCredential} is not a regular file; run ambient-agent doctor.`,
-          );
+      if (tenantDatabase === undefined) {
+        try {
+          if (!(await lstat(paths.chatGptOAuthCredential)).isFile()) {
+            throw new Error(
+              `The managed ChatGPT credential path at ${paths.chatGptOAuthCredential} is not a regular file; run ambient-agent doctor.`,
+            );
+          }
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
         }
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
-      await authenticationFor(paths).authenticate(deviceCodeCallbacks, authenticationSignal());
+      const authentication = authenticationFor(paths);
+      await authentication.authenticate(deviceCodeCallbacks, authenticationSignal());
+      if ((await authentication.inspect()).state !== "ready") {
+        throw new Error("ChatGPT authentication was saved, but the managed credential store did not verify it.");
+      }
       const verified = await inspectManagedData({ dataDirectory: paths.root });
       if (verified.state !== "ready") {
         throw new Error(`ChatGPT authentication was saved, but managed data verification failed at ${paths.root}.`);
       }
-      output.stdout(`ChatGPT authentication updated at ${paths.chatGptOAuthCredential}.\n`);
+      output.stdout(
+        tenantDatabase === undefined
+          ? `ChatGPT authentication updated at ${paths.chatGptOAuthCredential}.\n`
+          : "ChatGPT authentication updated in the tenant credential database.\n",
+      );
     });
 
   program
@@ -307,7 +402,19 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--canary-chat <jid>", "dedicated managed WhatsApp group for live smoke canaries")
     .option("--repository <owner/name>", "default GitHub repository")
     .option("--port <port>", "foreground runtime HTTP port")
+    .option("--sandbox <kind>", "agent sandbox for the Coder and Reviewer: local or e2b")
+    .option("--sandbox-template <name>", "E2B template to boot (absent uses the account default)")
+    .option("--tracing <on|off>", "Braintrust production tracing")
+    .option("--tracing-project <name>", "Braintrust tracing project name")
+    .option("--tracing-project-id <id>", "Braintrust tracing project id")
     .option("--github-app <reference>", "rotate one GitHub App (coder|reviewer|planner) by pasting a fresh triple")
+    .option("--model-provider <id>", "model provider ID; the API key is pasted at the prompt, never a flag")
+    .option("--model <id>", "model ID for every agent role")
+    .option("--model-speaker <id>", "model ID for the Speaker (a cheap model is fine here)")
+    .option("--model-scribe <id>", "model ID for the Scribe")
+    .option("--model-planner <id>", "model ID for the Planner")
+    .option("--model-coder <id>", "model ID for the Coder")
+    .option("--model-verifier <id>", "model ID for the Verifier")
     .action(async (options) => {
       const paths = managedPaths({ dataDirectory: program.opts().dataDir });
       const rotateReference = options.githubApp as GitHubAppReference | undefined;
@@ -414,6 +521,28 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           rotatedSpecialist = { path: paths.githubAppCredentials[rotateReference], credential: rotated };
         }
       }
+      // Resolved before the review so a bad provider or model ID is refused here, not after the
+      // operator has confirmed. With no --model-provider flag, an interactive reconfigure offers
+      // the same auth-mode / model / reasoning selects as first-run, folding the choice onto the
+      // current config; a supplied flag (or a non-interactive run) keeps the historical flag path.
+      // The key itself is prompted, never a flag and never an environment variable; it is written
+      // to credentials/model-api-key.json at mode 0600 and referenced from config by name only.
+      const { selection: modelSelection, thinkingLevel: modelThinkingLevel } =
+        interactive && options.modelProvider === undefined
+          ? await promptInteractiveModelSelection(modelSelectionFrom(options), setupPrompts)
+          : { selection: modelSelectionFrom(options), thinkingLevel: undefined };
+      const model = resolveModelSelection(currentConfig.model, modelSelection);
+      const modelProfiles =
+        modelThinkingLevel === undefined
+          ? model.profiles
+          : withUniformThinkingLevel(model.profiles, modelThinkingLevel);
+      let modelCredential: ReturnType<typeof modelApiKeyCredentialFrom> | undefined;
+      if (model.needsApiKey) {
+        if (!interactive || setupPrompts.modelApiKey === undefined) {
+          throw new Error(`Selecting the ${model.provider} model provider requires the interactive guided key paste.`);
+        }
+        modelCredential = modelApiKeyCredentialFrom(model.provider, await setupPrompts.modelApiKey(model.provider));
+      }
       // The runtime's own identity is the Planner App, so it proves access to the repository.
       const plannerCredential = rotatedPlanner ?? currentCredential;
       const verifiedRepository = await firstRunServices.verifyGitHub(
@@ -447,18 +576,63 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           all.findIndex((candidate) => candidate.toLowerCase() === repository.toLowerCase()) === index,
       );
       const runtimePort = options.port === undefined ? currentConfig.runtime.port : parseRuntimePort(options.port);
+      // sandbox.template: NonBlankString or absent — an empty --sandbox-template clears it (back to
+      // the E2B account default), so an operator can undo a template without hand-editing config.json.
+      const runtimeSandbox: RuntimeSandbox = {
+        ...currentConfig.runtime.sandbox,
+        ...(options.sandbox === undefined ? {} : { kind: parseSandboxKind(options.sandbox) }),
+        ...(options.sandboxTemplate === undefined
+          ? {}
+          : options.sandboxTemplate.trim() === ""
+            ? { template: undefined }
+            : { template: options.sandboxTemplate.trim() }),
+      };
+      const currentTracing = currentConfig.runtime.tracing;
+      const tracingEnabled =
+        options.tracing === undefined ? currentTracing.enabled : parseTracingToggle(options.tracing);
+      const tracingProject = {
+        ...currentTracing.project,
+        ...(options.tracingProject === undefined ? {} : { name: options.tracingProject.trim() || undefined }),
+        ...(options.tracingProjectId === undefined ? {} : { id: options.tracingProjectId.trim() || undefined }),
+      };
+      const runtimeTracing: RuntimeTracing = {
+        enabled: tracingEnabled,
+        ...(tracingProject.name === undefined && tracingProject.id === undefined ? {} : { project: tracingProject }),
+      };
+      // The E2B key lives in credentials/e2b.json (#252), pasted when e2b is selected and the file is
+      // absent; a headless run leaves provisioning to the file mount and start fails clearly if unset.
+      if (runtimeSandbox.kind === "e2b" && !(await regularFileExists(paths.e2bCredential))) {
+        if (interactive && setupPrompts.e2bApiKey !== undefined) {
+          await atomicWriteManagedConfig(paths.e2bCredential, e2bCredentialFrom(await setupPrompts.e2bApiKey()));
+        }
+      }
+      // The Braintrust key lives in credentials/braintrust.json (#252), pasted when tracing is turned
+      // on and the file is absent; same headless fallback as the E2B key.
+      if (runtimeTracing.enabled && !(await regularFileExists(paths.braintrustCredential))) {
+        if (interactive && setupPrompts.braintrustApiKey !== undefined) {
+          await atomicWriteManagedConfig(
+            paths.braintrustCredential,
+            braintrustCredentialFrom(await setupPrompts.braintrustApiKey()),
+          );
+        }
+      }
       // The verified coder/reviewer credential is committed only now that the review passed.
       if (rotatedSpecialist !== undefined) {
         await atomicWriteManagedConfig(rotatedSpecialist.path, rotatedSpecialist.credential);
+      }
+      // Written before the config that references it, so the referenced file always exists.
+      if (modelCredential !== undefined) {
+        await atomicWriteManagedConfig(paths.modelApiKeyCredential, modelCredential);
       }
       await writeManagedConfiguration(
         paths.config,
         paths.githubAppCredentials.planner,
         {
           ...currentConfig,
+          model: { provider: model.provider, credential: model.credential, profiles: modelProfiles },
           managedChats,
           ...(canaryChat === undefined ? {} : { smoke: { canaryChat } }),
-          runtime: { ...currentConfig.runtime, port: runtimePort },
+          runtime: { ...currentConfig.runtime, port: runtimePort, sandbox: runtimeSandbox, tracing: runtimeTracing },
           github: {
             ...currentConfig.github,
             defaultRepository: verifiedRepository,
@@ -479,7 +653,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         throw new Error(`Unknown repair component "${component}"; only whatsapp re-pairing is supported.`);
       }
       const paths = await readyManagedPaths("repair components of");
-      if ((await inspectWhatsAppSession(paths)).state !== "re-pair-required") {
+      const tenantDatabase = tenantCredentialDatabaseFromEnvironment(environment);
+      const sessionCheck = await inspectWhatsAppSession(paths, environment);
+      if (sessionCheck.state === "failed") {
+        throw new Error(`${sessionCheck.message} ${sessionCheck.remediation ?? "Run ambient-agent doctor."}`);
+      }
+      if (sessionCheck.state !== "re-pair-required") {
         throw new Error(
           "The managed WhatsApp store is already paired; nothing to repair. To pair a different account, unlink this device from the phone first (Linked devices), then run the repair again.",
         );
@@ -508,29 +687,40 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         await chmod(stagingPaths.whatsapp, 0o700);
         // The staging archive absorbs the pairing sync and is discarded; the application
         // database, credentials, configuration, and unresolved work are never touched.
-        const archive = createConversationArchive(stagingPaths.applicationDatabase);
-        const account = firstRunServices.whatsappFor(stagingPaths, archive);
-        try {
-          const identity = await account.authenticate(whatsappCallbacks, authenticationSignal());
-          const candidates = await account.synchronizedChats(authenticationSignal());
-          const managedChat = configuration.managedChats[0]!;
-          if (!candidates.some((candidate) => candidate.jid.toLowerCase() === managedChat.toLowerCase())) {
-            throw new Error(
-              `The newly paired WhatsApp account (${identity.jid}) does not see the configured managed chat ${managedChat}; nothing was replaced.`,
+        const repair = async () => {
+          if (tenantDatabase !== undefined) await libsqlStore(tenantDatabase).clear();
+          const archive = createConversationArchive(stagingPaths.applicationDatabase);
+          const account = firstRunServices.whatsappFor(stagingPaths, archive);
+          try {
+            const identity = await account.authenticate(whatsappCallbacks, authenticationSignal());
+            const candidates = await account.synchronizedChats(authenticationSignal());
+            const managedChat = configuration.managedChats[0]!;
+            if (!candidates.some((candidate) => candidate.jid.toLowerCase() === managedChat.toLowerCase())) {
+              throw new Error(
+                `The newly paired WhatsApp account (${identity.jid}) does not see the configured managed chat ${managedChat}; nothing was replaced.`,
+              );
+            }
+            output.stdout(`Paired WhatsApp as ${identity.jid}; the configured managed chat is visible.\n`);
+          } finally {
+            try {
+              await account.stop();
+            } finally {
+              archive.close();
+            }
+          }
+          if (tenantDatabase === undefined) {
+            await promoteReplacementWhatsAppStore(paths, stagingPaths.whatsapp);
+            output.stdout(
+              `Replaced the managed WhatsApp store at ${paths.whatsapp}; configuration, credentials, and history are unchanged.\n`,
+            );
+          } else {
+            output.stdout(
+              "Updated the WhatsApp session in the tenant credential database; configuration and local history are unchanged.\n",
             );
           }
-          output.stdout(`Paired WhatsApp as ${identity.jid}; the configured managed chat is visible.\n`);
-        } finally {
-          try {
-            await account.stop();
-          } finally {
-            archive.close();
-          }
-        }
-        await promoteReplacementWhatsAppStore(paths, stagingPaths.whatsapp);
-        output.stdout(
-          `Replaced the managed WhatsApp store at ${paths.whatsapp}; configuration, credentials, and history are unchanged.\n`,
-        );
+        };
+        if (tenantDatabase === undefined) await repair();
+        else await withTenantWhatsAppCredentialRollback(tenantDatabase, repair);
       } finally {
         try {
           await rm(lock.stagingRoot, { recursive: true, force: true });
@@ -579,12 +769,12 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       // Application schema migrations must run before diagnostics compare the
       // on-disk version with the current owned schema.
       migrateConversationArchiveSchema(paths.applicationDatabase);
-      const blockingCheck = (await inspectManagedServices(paths)).find(
+      const blockingCheck = (await inspectManagedServices(paths, environment)).find(
         ({ state }) => state !== "ready" && state !== "paired",
       );
       if (blockingCheck !== undefined) {
         throw new Error(
-          blockingCheck.name === "whatsapp-session"
+          blockingCheck.name === "whatsapp-session" && blockingCheck.state === "re-pair-required"
             ? `WhatsApp requires re-pairing (${blockingCheck.code}). Run ambient-agent repair whatsapp; the rest of the managed installation is preserved.`
             : `Refusing to start managed data at ${paths.root}: ${blockingCheck.code}. Run ambient-agent doctor.`,
         );
@@ -692,7 +882,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
       else if (
         inspection.state === "ready" &&
         interactive &&
-        (await inspectWhatsAppSession(managedPaths({ dataDirectory: bare.dataDirectory }))).state ===
+        (await inspectWhatsAppSession(managedPaths({ dataDirectory: bare.dataDirectory }), environment)).state ===
           "re-pair-required"
       ) {
         args.push("repair", "whatsapp");

@@ -43,6 +43,9 @@ jobs:
         run: pnpm run build
         env:
           GITHUB_WEBHOOK_SECRET: ci-build-only-secret
+          # Public URL baked into the web build; overridden per deployment.
+          # CI-only placeholder so `next build` passes env validation.
+          NEXT_PUBLIC_SERVER_URL: http://localhost:3000
 
       - name: Open release PR or publish
         uses: changesets/action@v1

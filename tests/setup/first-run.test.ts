@@ -13,6 +13,7 @@ import {
   type FirstRunServices,
   type SetupReview,
 } from "../../apps/cli/src/setup/first-run.ts";
+import { DEFAULT_AGENT_MODEL_PROFILES as SUBSCRIPTION_PROFILES } from "../../packages/engine/src/model/pi-subscription.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -93,6 +94,10 @@ const setup = (events: string[]) => {
       return fakeGitHubAppTriples();
     },
     githubApp: async (reference) => fakeGitHubAppTriples()[reference],
+    modelApiKey: async (provider) => {
+      events.push(`prompt.modelApiKey:${provider}`);
+      return "sk-pasted-key-must-not-leak";
+    },
     review: async (review) => {
       reviews.push(review);
       events.push("prompt.review");
@@ -138,6 +143,9 @@ describe("transactional first-run setup", () => {
         chat: { jid: "recent@g.us", name: "Recent Project", kind: "group" },
         repository: "owner/discovered",
         chatGptCredentialSource: "fresh device authorization",
+        // Setup without --model-provider keeps the subscription default, so the review names
+        // it and the device flow still runs. Neither mode is required (decision 5).
+        modelProvider: "openai-codex",
         whatsappCredentialSource: "fresh pairing",
         githubCredentialSource: GUIDED_GITHUB_APP_SOURCE,
       },
@@ -147,6 +155,84 @@ describe("transactional first-run setup", () => {
     const config = await readFile(join(paths.dataDirectory, "config.json"), "utf8");
     expect(config).toContain("recent@g.us");
     expect(config).toContain("owner/discovered");
+  });
+
+  it("creates an API-key installation without ever running the ChatGPT device flow", async () => {
+    // The defect this fixes: a fresh box with only an API key could not complete setup at
+    // all, because promotion demanded a staged ChatGPT credential. Decision 5 — API key OR
+    // subscription, neither required.
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts, reviews } = setup(events);
+
+    const result = await runFirstRunSetup({
+      dataDirectory: paths.dataDirectory,
+      interactive: true,
+      modelChoice: {
+        provider: "openai",
+        profiles: {
+          speaker: { id: "gpt-5.4-mini", thinkingLevel: "low" },
+          scribe: { id: "gpt-5.4-mini", thinkingLevel: "medium" },
+          planner: { id: "gpt-5.4", thinkingLevel: "high" },
+          coder: { id: "gpt-5.4", thinkingLevel: "high" },
+          verifier: { id: "gpt-5.4", thinkingLevel: "high" },
+        },
+      },
+      services,
+      prompts,
+      chatGptCallbacks: { onDeviceCode: () => undefined },
+      whatsappCallbacks: {},
+    });
+
+    expect(result).toMatchObject({ created: true, inspection: { state: "ready" } });
+    // The device flow never ran, and the key was pasted instead.
+    expect(events).not.toContain("chatgpt.authenticate");
+    expect(events).toContain("prompt.modelApiKey:openai");
+    expect(reviews).toMatchObject([{ chatGptCredentialSource: "pasted API key", modelProvider: "openai" }]);
+    expect(JSON.stringify(reviews)).not.toContain("must-not-leak");
+
+    // No ChatGPT credential exists, and the config references the key by name only.
+    await expect(lstat(join(paths.dataDirectory, "credentials", "chatgpt-oauth.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    const config = await readFile(join(paths.dataDirectory, "config.json"), "utf8");
+    expect(config).not.toContain("must-not-leak");
+    expect(JSON.parse(config).model).toMatchObject({
+      provider: "openai",
+      credential: "api-key",
+      profiles: { speaker: { id: "gpt-5.4-mini" }, coder: { id: "gpt-5.4" } },
+    });
+
+    const keyPath = join(paths.dataDirectory, "credentials", "model-api-key.json");
+    await expect(lstat(keyPath)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(keyPath, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-key-must-not-leak",
+    });
+  });
+
+  it("refuses to promote an API-key installation whose key was never pasted", async () => {
+    // The promotion gate must still fail closed: it checks the credential the config
+    // references, so a widened gate cannot become no gate.
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts } = setup(events);
+    prompts.modelApiKey = undefined;
+
+    await expect(
+      runFirstRunSetup({
+        dataDirectory: paths.dataDirectory,
+        interactive: true,
+        modelChoice: { provider: "openai", profiles: SUBSCRIPTION_PROFILES },
+        services,
+        prompts,
+        chatGptCallbacks: { onDeviceCode: () => undefined },
+        whatsappCallbacks: {},
+      }),
+    ).rejects.toThrow(/interactive guided key paste/u);
+    await expect(lstat(paths.dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("honors an explicit chat during interactive setup instead of prompting for another", async () => {
@@ -170,6 +256,34 @@ describe("transactional first-run setup", () => {
     ).resolves.toMatchObject({ created: true });
 
     expect(reviews).toMatchObject([{ chat: { jid: "older@g.us", name: "Older Project", kind: "group" } }]);
+  });
+
+  it("honors GitHub App triples supplied as a file during interactive setup", async () => {
+    // --github-apps-file was only read when setup was non-interactive, and non-interactive setup
+    // refuses to pair WhatsApp — so the flag was unreachable on the only path that completes a
+    // first run, and the operator was sent to a guided paste whose single-line prompt reduces a
+    // pasted PEM to its last line. An operator who brought the triples must never be asked.
+    const paths = await fixture();
+    const events: string[] = [];
+    const { services, prompts, reviews } = setup(events);
+    prompts.githubApps = async () => {
+      throw new Error("the guided paste must not run when --github-apps-file was supplied");
+    };
+
+    await expect(
+      runFirstRunSetup({
+        dataDirectory: paths.dataDirectory,
+        interactive: true,
+        scripted: { githubApps: fakeGitHubAppTriples() },
+        services,
+        prompts,
+        chatGptCallbacks: { onDeviceCode: () => undefined },
+        whatsappCallbacks: {},
+      }),
+    ).resolves.toMatchObject({ created: true });
+
+    expect(events).not.toContain("prompt.githubApps:owner/discovered");
+    expect(reviews.length).toBe(1);
   });
 
   it("retries invalid chat and GitHub fields without repeating provider authentication", async () => {

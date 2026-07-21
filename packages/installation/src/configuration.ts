@@ -4,11 +4,18 @@ import { chmod, open, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import * as v from "valibot";
 
+import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
+  BraintrustCredentialSchema,
+  E2BCredentialSchema,
   GitHubAppCredentialSchema,
   ManagedConfigSchema,
+  ModelApiKeyCredentialSchema,
+  type BraintrustCredential,
+  type E2BCredential,
   type GitHubAppCredential,
   type ManagedConfig,
+  type ModelApiKeyCredential,
 } from "./schema.ts";
 
 const FILE_MODE = 0o600;
@@ -39,6 +46,47 @@ export const readManagedConfig = async (path: string): Promise<ManagedConfig> =>
 
 export const readManagedGitHubAppCredential = async (path: string): Promise<GitHubAppCredential> =>
   await readPrivateJson(path, GitHubAppCredentialSchema);
+
+/**
+ * Read a Specialist's (Coder/Reviewer) GitHub App credential, or throw a clear, actionable error
+ * (#247, #251). A missing or mispasted App credential must fail the runtime loudly at start rather
+ * than silently mounting a dead capability — the configured-but-inert failure the one-box plan bans
+ * for the Speaker, and which used to boot green with a dead Coder.
+ */
+export const readProvisionedGitHubAppCredential = async (
+  path: string,
+  role: "coder" | "reviewer",
+): Promise<GitHubAppCredential> => {
+  try {
+    return await readManagedGitHubAppCredential(path);
+  } catch (cause) {
+    throw new Error(
+      `The ${role} GitHub App credential at ${path} is missing or malformed; the ${role} cannot start. Run ambient-agent config --github-app ${role} and paste a fresh triple.`,
+      { cause },
+    );
+  }
+};
+
+/**
+ * The model API key. A missing or damaged file throws: the runtime must fail loudly at start
+ * rather than boot green with no inference (#250).
+ */
+export const readManagedModelApiKey = async (path: string): Promise<ModelApiKeyCredential> =>
+  await readPrivateJson(path, ModelApiKeyCredentialSchema);
+
+/**
+ * The E2B API key from `credentials/e2b.json` (#252). A missing or damaged file throws: an `e2b`
+ * sandbox with no key must fail the runtime loudly at start rather than boot with a dead Coder.
+ */
+export const readManagedE2BApiKey = async (path: string): Promise<E2BCredential> =>
+  await readPrivateJson(path, E2BCredentialSchema);
+
+/**
+ * The Braintrust API key from `credentials/braintrust.json` (#252). A missing or damaged file
+ * throws: tracing that is configured on but has no key must fail loudly rather than boot silent.
+ */
+export const readManagedBraintrustApiKey = async (path: string): Promise<BraintrustCredential> =>
+  await readPrivateJson(path, BraintrustCredentialSchema);
 
 export const atomicWriteManagedConfig = async (path: string, value: unknown): Promise<void> => {
   const directory = dirname(path);
@@ -116,7 +164,10 @@ export const migrateManagedChatGptCredentialReference = async (path: string): Pr
     if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT") return;
     throw cause;
   }
-  if (config.model.credential === "chatgpt-oauth") return;
+  // Only the legacy `pi-auth` reference is walked forward. An API-key install owns a
+  // different credential file, and rewriting it to a ChatGPT one would break the pairing
+  // check it is about to be re-validated against.
+  if (config.model.provider !== SUBSCRIPTION_PROVIDER_ID || config.model.credential === "chatgpt-oauth") return;
   await atomicWriteManagedConfig(path, {
     ...config,
     model: { ...config.model, credential: "chatgpt-oauth" },
