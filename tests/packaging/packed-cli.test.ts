@@ -215,7 +215,7 @@ describe("packed ambient-agent executable", () => {
     expect((await readFile(installedEntry, "utf8")).startsWith("#!/usr/bin/env node\n")).toBe(true);
     if (process.platform !== "win32") expect((await stat(installedEntry)).mode & 0o111).not.toBe(0);
     await expect(executeAmbientAgent(["--help"])).resolves.toMatchObject({
-      stdout: expect.stringContaining("Install and operate the Ambient Agent managed runtime"),
+      stdout: expect.stringContaining("Install and operate the coworker managed runtime"),
     });
     await expect(executeAmbientAgent(["--version"])).resolves.toMatchObject({
       stdout: `${installedManifest.version}\n`,

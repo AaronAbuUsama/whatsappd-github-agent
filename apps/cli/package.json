@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Ambient Agent CLI application: init/auth/config/repair/start/status/doctor/smoke and the first-run setup. Bundled by vp pack into the published ambient-agent bin.",
+  "description": "coworker CLI application: init/auth/config/repair/start/status/doctor/smoke and the first-run setup. Bundled by vp pack into the published ambient-agent bin.",
   "dependencies": {
     "@clack/prompts": "1.7.0",
     "@commander-js/extra-typings": "15.0.0",

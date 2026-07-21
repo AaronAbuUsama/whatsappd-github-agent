@@ -2,7 +2,7 @@
   "name": "ambient-agent",
   "version": "0.4.0",
   "private": false,
-  "description": "Speaker: a continuing ambient agent on Flue for managed WhatsApp chats and authorized GitHub issue management.",
+  "description": "Speaker: a continuing coworker on Flue for managed WhatsApp chats and authorized GitHub issue management.",
   "keywords": [
     "ai-agents",
     "chatbot",

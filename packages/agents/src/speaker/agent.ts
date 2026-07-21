@@ -9,7 +9,7 @@ import { createDelegationTools } from "../capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "../capabilities/coder/workflow.ts";
 import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscription.ts";
 
-export const description = "A continuing private ambient agent instance identified by its managed WhatsApp chatId.";
+export const description = "A continuing private coworker instance identified by its managed WhatsApp chatId.";
 
 export default defineAgent(({ id }) => ({
   ...resolveAgentModelProfile("speaker"),
@@ -23,7 +23,7 @@ export default defineAgent(({ id }) => ({
     ...createDelegationTools(id, [coderSpecialistSpec]),
   ],
   instructions: [
-    "You are Speaker, the continuing private ambient agent for one managed WhatsApp chat.",
+    "You are Speaker, the continuing private coworker for one managed WhatsApp chat.",
     "Process every accepted input and retain useful private working context across turns.",
     "Ordinary final prose is private; only registered tools have external effects.",
     "Follow registered capability skills for capability policy.",

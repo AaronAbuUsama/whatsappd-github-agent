@@ -2,12 +2,12 @@
 
   <img src="./assets/brand/ambient-agent-readme-banner.png" alt="Ambient Agent — an agentic software engineer that lives in your WhatsApp group" width="100%">
 
-  <h1>Ambient Agent</h1>
+  <h1>Coworker</h1>
 
   <p><strong>An agentic software engineer that lives in your WhatsApp group.</strong></p>
 
   <p>
-    Ambient Agent follows the team conversation, remembers the work, decides when to contribute,
+    Coworker follows the team conversation, remembers the work, decides when to contribute,
     and uses explicit capabilities to move software forward like a regular teammate.
   </p>
 
@@ -22,17 +22,17 @@
 </div>
 
 > [!WARNING]
-> Ambient Agent is a super-alpha release. It proves the smallest useful version of the product: a continuing
+> Coworker is a super-alpha release. It proves the smallest useful version of the product: a continuing
 > WhatsApp participant with durable GitHub Issue Management. Use a WhatsApp account and GitHub repository you can
 > safely test with.
 
-## What is Ambient Agent?
+## What is Coworker?
 
-Ambient Agent is an experimental, extensible agentic engineer for WhatsApp. Add it to a group where software work is
+Coworker is an experimental, extensible agentic engineer for WhatsApp. Add it to a group where software work is
 already being discussed and it becomes part of that conversation: it reads the shared context, retains useful working
 memory, stays quiet when it has nothing to add, and acts when the team needs help.
 
-Today, that help is deliberately narrow. Ambient Agent can develop a bug report or feature request with the group,
+Today, that help is deliberately narrow. Coworker can develop a bug report or feature request with the group,
 search for duplicates, create and organize a GitHub issue, participate in its discussion, and close or reopen it. Issue
 Management is the first complete Capability, not the final product.
 
@@ -54,7 +54,7 @@ merge authority remains a human decision until a narrower, auditable policy is d
 
 ## What makes it ambient?
 
-Most chat agents wait for a command, answer once, and forget. Ambient Agent is designed around a different pattern.
+Most chat agents wait for a command, answer once, and forget. Coworker is designed around a different pattern.
 
 ### It participates without requiring invocation
 
@@ -82,7 +82,7 @@ The Speaker does not receive one universal command Tool. Each kind of work arriv
 Skill explains the judgment and policy, typed Tools provide direct abilities, and provider adapters remain private.
 
 This is the reusable design pattern. The current product applies it to software delivery in WhatsApp, but the same
-Ambient Agent + Capability + Admission pattern can support other ambient agentic systems.
+Coworker + Capability + Admission pattern can support other ambient agentic systems.
 
 ## How it works
 
@@ -134,7 +134,7 @@ rewriting the Agent.
 - Node.js 22.19 or newer
 - a ChatGPT Plus or Pro account
 - a WhatsApp account that can be linked as a companion device
-- a fine-grained GitHub token scoped to the repository Ambient Agent may manage
+- a fine-grained GitHub token scoped to the repository Coworker may manage
 
 Install the CLI:
 
@@ -172,7 +172,7 @@ single-host CLI leaves that list empty and never executes untrusted PR code loca
 `start` runs in the foreground. Use `Ctrl-C` for a clean stop; let systemd or another process manager own background
 supervision in a deployment.
 
-No model API key or application `.env` file is required. Ambient Agent owns its managed configuration and credentials.
+No model API key or application `.env` file is required. Coworker owns its managed configuration and credentials.
 The default data directory is `~/.ambient-agent` on every platform (ADR 0015). Override it with
 `--data-dir <absolute-path>`. An installation created at the former platform-native default
 (`~/Library/Application Support/ambient-agent` on macOS, `${XDG_DATA_HOME:-~/.local/share}/ambient-agent` on Linux)
@@ -212,11 +212,11 @@ always emit valid JSON there — while diagnostics go to stderr and to rotating 
   message text is logged at debug level only.
 
 Output printed before the application starts is outside its control: `npm exec`/`npx` install confirmations and
-deprecation notices, and Node.js process warnings, cannot be reformatted by Ambient Agent. Suppress the npm install
+deprecation notices, and Node.js process warnings, cannot be reformatted by Coworker. Suppress the npm install
 confirmation with `npm exec --yes ambient-agent` (or `npx -y ambient-agent`); silence Node process warnings, if you
 must, with `NODE_OPTIONS=--no-warnings`.
 
-## Extend Ambient Agent
+## Extend Coworker
 
 Capabilities are the canonical extension unit. The two shipped examples live together:
 
@@ -360,7 +360,7 @@ This release does not yet provide the internal Planner/Coder/Verifier loop, plan
 cross-chat Agent memory, media understanding, active-active ownership, horizontal failover, or cross-host recovery. The
 supported runtime is one foreground Node process owning one managed local installation.
 
-Ambient Agent uses `whatsappd`, which ultimately connects through the unofficial WhatsApp Web protocol. Automated use
+Coworker uses `whatsappd`, which ultimately connects through the unofficial WhatsApp Web protocol. Automated use
 may carry account risk. Use a dedicated account and a repository with appropriately restricted permissions while the
 project remains alpha.
 

@@ -232,7 +232,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
   let exitCode = 0;
   const program = new Command()
     .name("ambient-agent")
-    .description("Install and operate the Ambient Agent managed runtime")
+    .description("Install and operate the coworker managed runtime")
     .version(packageManifest.version)
     .option("--data-dir <path>", "override the managed data directory")
     .configureOutput({ writeOut: output.stdout, writeErr: output.stderr })
