@@ -202,6 +202,9 @@ three separate, working things.
   `apps/runtime/src/app.ts:187-199`). This needs an in-flight Coder run to
   interrupt, so per the plan it is a T2 gate **re-run after T3 lands** (#251). It
   was not exercised here and is **not** claimed.
+  **Update 2026-07-21:** re-run attempted post-T3. The sweep mechanism was observed
+  end-to-end, but the window was polluted by gpt-5.4-mini 429s, so per #246 the leg
+  is **INCONCLUSIVE**, not flipped to ✅. See the dated follow-up at the end.
 
 ## Follow-ups found while standing this up (not gate blockers)
 
@@ -225,3 +228,62 @@ issue, restart + full reboot without re-pairing with a real post-reboot reply, a
 conversational memory persisted across the reboot. All three assertable negatives
 were observed. The `kill -9` → `interrupted` leg is deferred to a T2 gate re-run
 after T3, as the plan directs.
+
+---
+
+## Follow-up — 2026-07-21: `kill -9` gate re-run (INCONCLUSIVE under 429)
+
+Re-run of the deferred `kill -9` leg on `capxul-vps`, post-T3 (#269 already proved
+the box is provisioned). **Verdict: INCONCLUSIVE, not a fail.** The
+`sweepUnsettledLaunches` mechanism was observed working end-to-end on the run I
+killed, but the whole window was under heavy gpt-5.4-mini rate-limiting, so per the
+`#246 rate-limited ⇒ inconclusive` rule this leg is **not** scored green. The
+deferred ❌ is **not** flipped to ✅. A clean re-run under TPM headroom is needed.
+
+**Build under test:** `ambient-agent@0.4.0`, runtimeId `jQDCA0ofejoze5MWDSSe1x`
+(persisted install identity — stable across boots, not per-process).
+
+**Pre-step — WhatsApp receive path was wedged.** The unit had run since Jul 20
+20:50 with its last log a `stream:error` code `503` at Jul 20 21:41:41 and then 8h
+of silence, while `/health` still reported `whatsapp: online` (stale phase — a real
+health-reporting gap: online reported while the socket is dead). A clean
+`systemctl restart` recovered it — fresh `agent.online` at 05:53:49. Only after
+this did the trigger reach the Speaker.
+
+**Timeline (UTC 2026-07-21):**
+
+| time | event |
+|------|-------|
+| 05:58:12 | Trigger processed. Speaker split it into **two** issues #270 + #271 and launched **two** coder runs: `run_01KY1M1PS74Y2NE14XQ25X01DF` (A, 05:58:13.553) and `run_01KY1M1RPXV1WX4NMP195C89GQ` (B, 05:58:15.524). |
+| 05:58:33–53 | gpt-5.4-mini **429s** — TPM limit 200000 exceeded (5 `Rate limit reached` hits). Run **A errored on a 429** and settled 05:58:53.195 (its result delivery swallowed by 429s — no message for it reached Tst). |
+| 05:59:00 | Verified run **B** still unsettled (in-flight, ~45s). |
+| ~05:59:2x | `sudo systemctl kill -s SIGKILL ambient-agent` → `/health` = **DOWN**. (systemctl warned `Failed to kill ... auxiliary processes: Invalid argument` — KillMode quirk; the main PID took the signal, health went DOWN.) |
+| — | `Restart=always` auto-restarted the unit (new PID 863810). Boot sweep ran. |
+| 05:59:27.888 | Ledger row for run B flipped unsettled → **settled by the sweep** (post-kill; the SIGKILLed process could not have delivered in-process). |
+| 05:59:31 | Speaker `agent.say` to Tst: **"The duration formatter run was interrupted. Want me to retry it?"** — offers retry, does **not** auto-relaunch. |
+
+**Assertions:**
+
+1. **Run settled `interrupted`** — ✅ (run B; ledger settled by boot sweep at
+   05:59:27.888, `settled_at` post-dates the kill).
+2. **Interrupted message reached Tst** — ✅ (`agent.say` above; screenshot held by
+   operator).
+3. **No PR / no relaunch without a user turn** — ✅ (`0` unsettled after; no coder
+   launch after B; `gh pr list` open coder PRs are #185/#162 from Jul 18, nothing
+   from run B; the "retry?" offer sits unanswered by design).
+
+**Why INCONCLUSIVE despite 3/3:** the mechanism chain for run B is 429-independent
+and held, but (a) run A errored on a **429**, not a clean crash; (b) run B, launched
+into an exhausted TPM, was likely stalling on 429 retries rather than doing
+productive coder work when killed — so "hard crash of a *genuinely working* in-flight
+job" was not cleanly exercised; (c) the trigger split into two runs. Per #246 and the
+runbook caveat ("if gpt-5.4-mini 429s anywhere, INCONCLUSIVE"), this is not scored.
+
+**Test debris:** issues **#270** and **#271** were filed by the bot from the trigger
+and left open; the interrupted run left no branch/PR. Operator to triage/close.
+
+**Box left:** unit `active`, `/health` `ok:true`, whatsapp `online`, `0` unsettled.
+No PR merged or touched. The `#270`/`#271` retry offer was **not** answered.
+
+**To close the leg:** re-run when TPM has headroom, with a single-task trigger so it
+does not split, and confirm run B does real work before the kill.
