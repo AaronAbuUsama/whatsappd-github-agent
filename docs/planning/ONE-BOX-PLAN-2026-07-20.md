@@ -1,6 +1,6 @@
 # One box, working end to end — THE plan
 
-**2026-07-20, revision 3.** This is the **only active plan**. Every other document under
+**2026-07-21, revision 4.** This is the **only active plan**. **The go-forward is § _Revision 4_ below — read it first; it supersedes the T1–T6 stage sections on scope.** Every other document under
 `docs/planning/` is either findings (evidence, which accumulates) or superseded (bannered). If a
 document tells you what to build and it is not this one, it is wrong.
 
@@ -21,10 +21,112 @@ GitHub issue, and opens a real PR — and survives a reboot.**
 **T2 and T3 green together constitute the goal**; `docs/proof/coder-green-local.md` is the
 milestone receipt.
 
+**Status (revision 4, 2026-07-21): this milestone is MET**, including the `kill -9` → `interrupted`
+leg (owner-run 2026-07-21). **§ Revision 4** is the go-forward and the current authority on scope.
+
 Deferred: multi-tenancy (dropped), the web app, E2B (config flip), billing, backup/restore, two
 GitHub orgs (#243/#249 — **no second company chat before #249**, it is a live cross-company leak),
 the graph viewer, the ADR-0020 self-approval 422 configuration test (#242), subscription token
 refresh (#248).
+
+## Revision 4 — the go-forward (2026-07-21): relocation, rebrand, dashboard-ready
+
+**The milestone is MET.** T1+T2+T3 are green together on capxul-vps — a WhatsApp message produced a
+real reply, a real `ambient-planner[bot]` issue (#262) and a real green Coder PR (#269 from
+Planner-issue #267); it survived reboot and a hard `kill -9` (the interrupted leg, owner-run
+2026-07-21). **This section is the authority on scope; where the T1–T6 sections below disagree with
+it, this wins.**
+
+**What changed (owner, 2026-07-21).** The permanent home moves off capxul-vps to the **code-factory
+VPS** (`ssh code-factory`, already provisioned). We **rebrand ambient-agent → "coworker"** (surface
+only) and reuse the **co-worker.tech** domain. Ingress becomes a **Cloudflare Tunnel** — no
+Dokploy/Traefik. The bot pairs a **new WhatsApp number**. Model selection gets real: any OpenAI
+model, any reasoning level, an interactive **API-key-vs-subscription** choice — **no fallback**.
+
+### North star (future — NOT this plan)
+A hosted **web dashboard** for coworker: fully configurable and observable — add/remove chats
+(groups), enable repos per chat, configure each agent, watch live activity; possibly multiple
+instances later. We do **not** build it now — we build so it stays **additive**.
+
+### Non-goals for this plan (explicit)
+The dashboard itself; multi-instance / tenancy (standing decision: **one instance, multi-chat** —
+unchanged); the **deep rename** (repo, npm packages, and the `ambient-*[bot]` App logins all stay);
+model **fallback**; the Planner-identity redesign (**parked** — below).
+
+### Seams we preserve so the future is a UI, not a rewrite
+1. **Config is the single source of truth.** Every agent/chat/repo setting flows through the managed
+   config schema + `writeManagedConfiguration` (atomic, re-validated — `configuration.ts:66`). A
+   dashboard is just another writer of the same validated config. → this is why **T4 (env→CLI) is
+   load-bearing, not an optional nicety.**
+2. **The runtime already has the HTTP+SSE surface** (`/health`, participation port, the dark
+   `/runs/:runId` + `/agents/:name/:id` routes). **T6** lights these read-only; the dashboard later
+   *consumes* them. Do not invent a parallel telemetry path.
+3. **The Cloudflare Tunnel is the hosting surface.** It fronts the box for the webhook today; the
+   same tunnel can route `agent.coworker.tech` to the runtime for the dashboard later. No new infra.
+4. **Multi-chat is already the grain** — `managedChats` and `reviewRepositories` are lists. Keep new
+   config as lists/maps keyed by chat, never singletons, so "more groups / enable repos per group"
+   is additive.
+5. **Model config stays through `config.model` + per-agent `profiles`** (`schema.ts:80`) so a
+   dashboard can later expose per-agent model/reasoning without a schema change.
+
+### The re-derived DAG
+```
+  ── code track (box-independent, parallel; PRs → claude/single-box-working) ──
+  C1  model + reasoning + auth selection ─┐
+  C2  surface rebrand → coworker ─────────┤   land BOTH before M (the new box inits once)
+  T4  env → CLI config (#252) ────────────┤
+                                          ▼
+  ── on code-factory VPS ───────────────► M  relocate + stand up the BRANDED instrument
+                                          │   (new number, real pairing, re-run T2 gates;
+                                          │    kill the co-worker.tech container, KEEP the zone)
+                                          ▼
+                                   T5a  Cloudflare Tunnel → agent.coworker.tech
+                                          /channels/github/webhook   (#254a)
+                                          ▼
+                            ┌─────────────┴─────────────┐
+                          T5b  Reviewer's first review    T6  observability
+                          (#245 + reviewRepos; +T3)       (needs T4 + T3)
+```
+**Critical path: C1·C2 → M → T5a → T5b / T6.** T4 is parallel but gates T6.
+
+### New / changed stages
+**C1 · Model & reasoning selection + interactive auth choice.** The config *already* carries
+provider + OpenAI model id + `thinkingLevel` + profiles (`schema.ts:46-80`); the gap is the
+**interactive surface**. In the first-run wizard and the `config` command add: (a) an
+API-key-vs-subscription `select` — today it is a silent subscription default gated on the
+`--model-provider` flag (`program.ts:276-278`); (b) a provider-catalog model picker
+(`pi-ai/dist/providers/openai.models.js`); (c) a reasoning-level `select` from
+`MODEL_THINKING_LEVELS`. **No fallback logic.** _Acceptance:_ each choice round-trips into
+config.json and back; the non-interactive flag path is unchanged; a bad model id / level is rejected
+by the schema. **No gate** (code-level). Parallel-safe.
+
+**C2 · Surface rebrand → coworker.** Product/CLI name, help text, the bot's presented persona/name,
+docs, and the tunnel hostname (`*.coworker.tech`). **Unchanged:** repo `AaronAbuUsama/ambient-agent`,
+npm package names, the `ambient-*[bot]` App logins — renaming any of these breaks the Apps' install
+target, the Coder's PR base, and every ticket URL. _Acceptance:_ no functional change; grep shows no
+user-facing "ambient-agent" left in CLI / persona / docs; build + tests green. Parallel-safe.
+
+**M · Relocate & stand up the branded instrument — the new measuring instrument.** On
+`ssh code-factory`: deploy the post-C1/C2 tarball; run `init` with the **new number** (real pairing
+ceremony — never simulated), pick the managed chat, install the three Apps; then **re-run the full
+T2 gate suite here** (reply, issue, reboot, kill-9). Tear down the stale **co-worker.tech** Dokploy
+container; **keep the Cloudflare zone.** This replaces capxul-vps as the instrument for every gate
+below. _Gate:_ the T2 suite, green, on code-factory under the new number.
+
+**T5a (rewritten) · Inbound webhook via Cloudflare Tunnel.** A `cloudflared` systemd unit beside the
+runtime: `agent.coworker.tech` → `127.0.0.1:<port>/channels/github/webhook`; point the **Planner
+App** webhook at it. App code is unchanged (signature verify + `ensureManagedGitHubWebhookSecret`
+already exist). Zero inbound ports; Tailscale-only SSH stays. The proven shape, gate, and negative
+in the T5a section below are unchanged — only the middle proxy box changed.
+
+### Parked (follow-ups — NOT this plan)
+- **Identity/naming smell: the "Planner" is overloaded** — runtime identity + issue-writer + the
+  single webhook sink. The WhatsApp voice (Speaker, non-blocking) is arguably the identity the
+  inbound door should wear. Revisit the naming *and* the identity model together. File a ticket; do
+  not act now.
+- **Speaker tool-authority** — narrate + delegate vs. execute inline; create-issue as a handoff.
+  Earlier board item, still open (see #265 for the ack-then-act half).
+- **The web dashboard + multi-group / repo / instance configurability** — the north star above.
 
 ## Acceptance vs gate — the distinction the last revision lacked
 
@@ -159,7 +261,7 @@ Receipt: `docs/proof/one-box-instance-live.md`.
 
 # Stages
 
-## T1 · Model auth is API key OR subscription — #250
+## T1 · Model auth is API key OR subscription — #250 · ✅ DONE (merged #257)
 
 The only code standing between us and an instrument. Three parts:
 
@@ -208,7 +310,7 @@ asserting the reply text is **non-empty** — `request:"complete"` alone passes 
 
 **T1 has no gate.** Its end-to-end proof is T2's first reply.
 
-## T2 · Stand up the instrument — capxul-vps — #253
+## T2 · Stand up the instrument — capxul-vps — #253 · ✅ DONE (incl kill-9, 2026-07-21) — instrument now RELOCATING to code-factory, see § Revision 4 (M)
 
 **Depends on #250 only.** T3's gate depends on this ticket, not the reverse.
 
@@ -260,7 +362,7 @@ transcript.
 > **STATUS: DONE 2026-07-20** — see "The instrument is LIVE" above. The `kill -9` leg is the only
 > deferred negative; it re-runs here after T3 (#251) produces a Coder run to interrupt.
 
-## T3 · Sandbox selector → the Coder's first green PR — #251
+## T3 · Sandbox selector → the Coder's first green PR — #251 · ✅ DONE (merged #266; Coder green PR #269)
 
 **Code parallel-safe now; the gate runs on the instrument (#253).**
 
@@ -330,6 +432,11 @@ reason.)
 `kind=local` box the env path is already dead after T3, so it could not fail.)*
 
 ## T5a · Inbound webhook delivery — #254
+
+> **Rev 4:** ingress is a **Cloudflare Tunnel** on code-factory (`agent.coworker.tech` →
+> `127.0.0.1:<port>/channels/github/webhook`), **not** Traefik/Dokploy — see **§ Revision 4**. Zero
+> inbound ports. The proven shape, gate, and negative below are unchanged; only the middle proxy box
+> changed. "What owns 443 on the box" no longer applies.
 
 Only the **Planner** App sends webhooks; Coder/Reviewer are actors. Proven shape: Cloudflare
 proxied record → reverse proxy → `127.0.0.1:<port>`, route `/channels/github/webhook`,

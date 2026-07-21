@@ -17,22 +17,37 @@ dispatches to implementing agents.** Aaron runs the agents and does the human ce
 **One VPS, one instance, one operator. A WhatsApp message produces a real reply, files a real
 GitHub issue, and opens a real PR — and survives a reboot.** T2 + T3 green together = the goal.
 
-## The DAG (revision 3, gate dependencies)
+## The DAG (revision 4, 2026-07-21 — milestone MET; go-forward)
+
+**Milestone (T1+T2+T3, incl kill-9) is MET on capxul-vps.** Go-forward = relocate to code-factory,
+rebrand to *coworker* (surface), harden T5/T6, add model selection — built dashboard-ready. Full
+rationale + forward frame: **`ONE-BOX-PLAN-2026-07-20.md` § Revision 4**.
 
 ```
-T1 ──▶ T2 ──▶ T3 ──▶ T5b        T2 ──▶ T4 ──▶ T6
-              ├──▶ T6            T2 ──▶ T5a ──▶ T5b
-              └──▶ (T2 kill-9 re-run)
+  C1 model+reasoning+auth ─┐
+  C2 surface rebrand ──────┤  (both before M; new box inits once)   PRs → claude/single-box-working
+  T4 env→CLI (#252) ───────┤
+                           ▼
+                           M  relocate + brand + stand up on code-factory (new number,
+                           │  re-run T2 gates; kill co-worker.tech container, KEEP zone)
+                           ▼
+                    T5a Cloudflare Tunnel → agent.coworker.tech /channels/github/webhook (#254a)
+                           ▼
+                ┌──────────┴──────────┐
+              T5b Reviewer review        T6 observability
+              (#245 + reviewRepos, +T3)  (needs T4 + T3)
 ```
-- **T1 #250 — model auth API-key OR subscription + #246.** ✅ DONE (merged #257, verified).
-- **T2 #253 — stand up the instrument on capxul-vps.** ✅ DONE (verified, receipt #263).
-- **T3 #251 — sandbox selector → Coder's first green PR.** ◀ **NEXT.** Prompt written (below).
-- **T4 #252 — env→CLI config.** Parallel-safe; deferred (owner chose T3 solo).
-- **T5a #254 — inbound webhook delivery.** Needs T2 (have it). Not started.
-- **T5b #254 — Reviewer's first review + #245 discriminator.** Needs T3 (Coder PR) + T5a.
-- **T6 #255 — observability.** Needs T3 (a Coder run) + T4 (Braintrust config).
-- **#245 fabricated-review discriminator** — owned inside T5b.
-- **#246 rate-limited reason** — was owned inside T1, ✅ shipped in #257.
+Critical path: **C1·C2 → M → T5a → T5b/T6.** T4 parallel, gates T6.
+
+- **T1 #250** ✅ DONE (merged #257). **T2 #253** ✅ DONE — incl **kill-9 → interrupted (owner-run 2026-07-21)**, receipt #263. **T3 #251** ✅ DONE (merged #266; Coder green PR **#269** from Planner-issue #267).
+- **C1 — model & reasoning selection + interactive auth choice.** ◀ **NEXT.** Config already holds it (`schema.ts:46-80`); gap is the interactive `select`s. No fallback. Parallel-safe. New ticket.
+- **C2 — surface rebrand → coworker.** Repo/packages/`ambient-*[bot]` logins UNCHANGED. Parallel-safe. New ticket.
+- **T4 #252 — env→CLI config.** Parallel-safe; now **load-bearing** (config = the dashboard's future write path).
+- **M — relocate & stand up the branded instrument on code-factory** (new number). Needs C1+C2. Replaces capxul-vps as the measuring instrument. New ticket.
+- **T5a #254a — inbound webhook via Cloudflare Tunnel.** Needs M. (Rewritten — no Dokploy/Traefik.)
+- **T5b #254 — Reviewer's first review + #245 discriminator.** Needs T5a + T3.
+- **T6 #255 — observability.** Needs T3 + T4. Lights the read-only SSE routes the dashboard will consume.
+- **Parked (not this plan):** Planner-identity overload (naming + identity model); Speaker tool-authority / create-issue-as-handoff (+#265); the web dashboard + multi-group/repo/instance config.
 
 ## Core decisions + rationale (the "why", so it survives)
 
@@ -81,7 +96,12 @@ Branch flow: `claude/single-box-working` → PR #256 → `integration/unify-trac
 
 Grill/plan history (earlier): PR #240 (closed, carried into #256), grill report, ADR banners.
 
-## THE LIVE INSTRUMENT (for T3+ gate re-runs)
+## THE LIVE INSTRUMENT (capxul-vps — being RETIRED)
+
+> **Rev 4:** the instrument is relocating to **code-factory** (`ssh code-factory`) under a **new
+> WhatsApp number** at stage **M**. capxul-vps stays only until M re-proves the T2 gates on the new
+> box, then it is retired. The coords below are the *current* capxul-vps instrument — do not build
+> new gates against it.
 
 - **Host:** `capxul-vps` — SSH alias works, Tailscale `100.80.138.56`, user `abuusama`, key
   `~/.ssh/id_ed25519`. (Tailscale-only SSH; if `ssh capxul-vps` fails, Tailscale is down.)
@@ -96,22 +116,34 @@ Grill/plan history (earlier): PR #240 (closed, carried into #256), grill report,
   Coder run does NOT validate #172, and a Coder FAILURE here is NOT #172 (it'd be the model, the
   workspace wiring, or the App-credential path). Keep the workspace-local TMPDIR fix regardless — it
   is load-bearing for portability to noexec boxes (the code-factory rig).
-- **Port 443/80 owned by docker-proxy (Traefik/Dokploy)** → T5a routes through Traefik, NOT Caddy.
-  Use a NEW hostname; `ambient-agent.co-worker.tech` points at the code-factory rig and repointing
-  it kills the one proven webhook path.
+- **Ingress (rev 4): Cloudflare Tunnel, NOT Traefik/Dokploy.** On code-factory, `cloudflared` routes
+  **`agent.coworker.tech`** → `127.0.0.1:<port>/channels/github/webhook` (zero inbound ports).
+  co-worker.tech is stale on Dokploy → kill the container at M, **KEEP the Cloudflare zone** and
+  reuse it for the hostname. (The old capxul-vps 443-ownership question no longer applies.)
 - **GitHub App triples** live at `~/ambient-apps.json` on the Mac (0600) and were used for init;
   the copy on the box should have been deleted post-init. App slugs: ambient-coder[bot] (id
   306398670), ambient-reviewer[bot] (306401437), ambient-planner[bot] (306402753). Repo owner is a
   User (AaronAbuUsama), not an org — App IDs/installation IDs are NOT API-derivable, must come from
   the settings UI.
 
-## Immediate next step: dispatch T3 (#251)
+## Immediate next step: C1 (then C2 / T4 in parallel) → M
 
-**Owner decisions locked:** Coder's first green PR targets `AaronAbuUsama/ambient-agent` (real PR,
-Aaron reviews before any merge, Coder can't self-merge). T3 runs solo (T4 deferred).
+**T3 is DONE** (merged #266; Coder green PR #269). **The verbatim T3 prompt below is spent — kept as
+a record of the dispatch shape.** Next is the code track:
 
-**New prerequisite vs T2:** a **throwaway repo with the three Apps installed** for T3's pre-flight
-live test. Aaron provides this before dispatch.
+- **C1 — model & reasoning selection + interactive auth choice** is the recommended first dispatch:
+  it makes the new box's one-time init the good one (any OpenAI model, any reasoning level,
+  API-key-vs-subscription `select`, **no fallback**). Config already carries it (`schema.ts:46-80`);
+  the gap is the interactive surface (`first-run.ts`, `program.ts:276-278`, `model-configuration.ts`).
+- **C2 (surface rebrand) and T4 (env→CLI)** run in parallel with C1; all three PR into
+  `claude/single-box-working`.
+- Then **M** stands up the branded instrument on code-factory under the new number (real pairing),
+  re-runs the T2 gate suite, and kills the co-worker.tech container (keep the zone).
+
+**Owner decisions locked (rev 4):** rebrand **surface only**; webhook host **`agent.coworker.tech`**;
+**Cloudflare Tunnel** ingress; code-factory is provisioned + SSH-reachable (`ssh code-factory`);
+co-worker.tech is stale (kill container, keep zone). Coder PRs still target
+`AaronAbuUsama/ambient-agent` (Aaron reviews; Coder can't self-merge).
 
 **T3 has a redeploy step T2 didn't:** the live box runs pre-T3 code, so T3 must land → re-pack →
 `npm i -g` on the box → `config --sandbox local` → `systemctl restart` before its gate can run.
