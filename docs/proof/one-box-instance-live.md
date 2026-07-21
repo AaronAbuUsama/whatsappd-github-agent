@@ -202,9 +202,10 @@ three separate, working things.
   `apps/runtime/src/app.ts:187-199`). This needs an in-flight Coder run to
   interrupt, so per the plan it is a T2 gate **re-run after T3 lands** (#251). It
   was not exercised here and is **not** claimed.
-  **Update 2026-07-21:** re-run attempted post-T3. The sweep mechanism was observed
-  end-to-end, but the window was polluted by gpt-5.4-mini 429s, so per #246 the leg
-  is **INCONCLUSIVE**, not flipped to ✅. See the dated follow-up at the end.
+  **Update 2026-07-21: ✅ NOW OBSERVED.** Attempt 1 was inconclusive under gpt-5.4-mini
+  429s; attempt 2 on **gpt-5.6-luna/minimal** killed a genuinely in-flight coder run
+  with zero 429s → settled `interrupted`, message reached Tst, no relaunch, no PR. The
+  leg is **GREEN**. See the dated follow-up at the end.
 
 ## Follow-ups found while standing this up (not gate blockers)
 
@@ -231,7 +232,16 @@ after T3, as the plan directs.
 
 ---
 
-## Follow-up — 2026-07-21: `kill -9` gate re-run (INCONCLUSIVE under 429)
+## Follow-up — 2026-07-21: `kill -9` gate re-run — ✅ PASS (attempt 2, gpt-5.6-luna)
+
+> **Outcome: the leg is GREEN.** Attempt 1 (below) was INCONCLUSIVE because the
+> box was on `gpt-5.4-mini` and the window was saturated by 429s. Root cause of the
+> 429s was addressed by switching the runtime to **`gpt-5.6-luna` at `minimal`
+> reasoning**; attempt 2 then killed a genuinely in-flight coder run with **zero
+> 429s** and settled it `interrupted` cleanly. The clean-pass record is the last
+> subsection here. The deferred ❌ is now **flipped to ✅**.
+
+### Attempt 1 — INCONCLUSIVE under 429
 
 Re-run of the deferred `kill -9` leg on `capxul-vps`, post-T3 (#269 already proved
 the box is provisioned). **Verdict: INCONCLUSIVE, not a fail.** The
@@ -287,3 +297,52 @@ No PR merged or touched. The `#270`/`#271` retry offer was **not** answered.
 
 **To close the leg:** re-run when TPM has headroom, with a single-task trigger so it
 does not split, and confirm run B does real work before the kill.
+
+### Attempt 2 — ✅ CLEAN PASS (gpt-5.6-luna, minimal reasoning, zero 429s)
+
+The 429 pressure was a token-budget problem, so the runtime model was switched from
+`gpt-5.4-mini` to **`gpt-5.6-luna` at `thinkingLevel: "minimal"` across all five role
+profiles** (config-only change in `~/.ambient-agent/config.json`, restart — no
+redeploy; the deployed build `a22ba01` accepts the id). The trigger was sent and the
+interrupted reply read directly by the operator via a second WhatsApp account in the
+Tst group (operator `Abdullah`), so no phone dependency.
+
+- **Luna smoke test:** operator sent "reply OK if you're online"; Speaker replied
+  **`OK`** in ~6s, no model error, no 429 — luna does inference.
+- **Trigger (single task):** *"Please add a single helper `formatDuration(ms)` … Open
+  exactly one PR for it."* Speaker acked: *"Using the existing issue #271 and retrying
+  the workflow. I'll open exactly one PR for it."* (reused #271 — no new issue debris).
+- **Kill:** coder run `run_01KY1Q6QTHNHVS1H3SS387KV34` launched `06:53:24.183`. A
+  watch-and-kill script detected the unsettled ledger row, dwelled 6s, **re-confirmed
+  the row still unsettled (run genuinely active — not a 429 stall)**, then
+  `sudo systemctl kill -s SIGKILL ambient-agent`.
+- **Sweep:** `Restart=always` auto-restarted; boot sweep settled the run at
+  `06:53:40.357` (post-kill) → `interrupted`.
+- **Message to Tst:** *"The duration formatter retry was interrupted again. No PR was
+  opened. Want me to retry once more?"* — offers retry, **no** auto-relaunch. Read and
+  screenshotted directly by the operator in WhatsApp Web.
+
+**Assertions (all ✅, 429-free):**
+
+1. Run settled `interrupted` — ✅ (boot sweep, `settled_at` post-kill; `0` unsettled after).
+2. Interrupted message reached Tst — ✅ (`agent.say` above, captured in WhatsApp Web).
+3. No PR / no relaunch — ✅ (`0` launches after the killed run; open coder PRs are only
+   #185/#162 from Jul 18; the "retry once more?" offer left unanswered).
+4. **No 429s** — ✅ (`0` `Rate limit reached` in the window), so this is scored, not
+   inconclusive.
+
+**Caveat (honest):** the run was in-flight ~12s before the kill (luna+minimal is fast),
+shorter than the 20–60s the runbook suggests — but the 6s-dwell re-check proved the run
+was still active/unsettled at kill time, so "in-flight hard crash" is genuinely
+exercised. A longer-dwell re-run with a bigger task would pad this further if desired.
+
+**Operational findings:**
+- **`config.json` must be mode `0600`** — a `jq`-rewrite left it `0664`, and the runtime
+  crash-loops with *"Refusing to start incomplete managed data … run ambient-agent
+  doctor"* (`doctor` pinpoints `[permissions.file]`). `chmod 600` fixes it. Editing
+  config in place must preserve `0600`.
+- The instance now runs **`gpt-5.6-luna` / `minimal`** live (all roles). Pre-change
+  config backed up at `~/.ambient-agent/config.json.bak-premodel-*`.
+
+**Box left:** unit `active`, `/health` `ok:true` on `openai/gpt-5.6-luna`, whatsapp
+`online`, `0` unsettled. No PR merged or touched. Retry offer unanswered.
