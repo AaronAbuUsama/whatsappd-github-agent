@@ -99,6 +99,33 @@ export const defaultSetupPrompts: SetupPrompts = {
     await requiredPrompt(`${provider} API key`, () =>
       prompts.password({ message: `${provider} API key (paste the value; it is never echoed)`, mask: "*" }),
     ),
+  modelAuthMode: async () =>
+    await promptValue(
+      prompts.select({
+        message: "How should Ambient Agent authenticate to the model provider?",
+        options: [
+          { value: "subscription" as const, label: "Log in with a ChatGPT subscription", hint: "device authorization" },
+          { value: "api-key" as const, label: "Paste an OpenAI API key", hint: "pick a model and reasoning level" },
+        ],
+        initialValue: "subscription" as const,
+      }),
+    ),
+  selectModel: async (provider, modelIds) =>
+    await promptValue(
+      prompts.select({
+        message: `Select the ${provider} model for every agent`,
+        options: modelIds.map((id) => ({ value: id })),
+        maxItems: 12,
+      }),
+    ),
+  selectThinkingLevel: async (levels) =>
+    await promptValue(
+      prompts.select({
+        message: "Select the reasoning level for every agent",
+        options: levels.map((level) => ({ value: level })),
+        initialValue: "medium",
+      }),
+    ),
   review: async (review: SetupReview) => {
     prompts.note(
       [

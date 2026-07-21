@@ -992,6 +992,165 @@ describe("managed CLI", () => {
     await expect(lstat(managed.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("lets an interactive first run pick an API key, a model, and a reasoning level (C1)", async () => {
+    const paths = await files();
+    const cli = harness();
+    const events: string[] = [];
+    let offered: readonly string[] = [];
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => {
+        events.push("auth");
+        return "api-key" as const;
+      },
+      selectModel: async (_provider: string, modelIds: readonly string[]) => {
+        offered = modelIds;
+        events.push("model");
+        return "gpt-5.4-mini";
+      },
+      selectThinkingLevel: async () => {
+        events.push("level");
+        return "high";
+      },
+    };
+
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    // Every catalog OpenAI model was offered, and the three selects fired in order.
+    expect(offered).toContain("gpt-5.4-mini");
+    expect(offered.length).toBeGreaterThan(20);
+    expect(events).toEqual(["auth", "model", "level"]);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    const parsed = JSON.parse(written);
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    for (const role of ["speaker", "scribe", "planner", "coder", "verifier"]) {
+      expect(parsed.model.profiles[role]).toEqual({ id: "gpt-5.4-mini", thinkingLevel: "high" });
+    }
+    // The API-key path never ran the ChatGPT device flow; the key is a file, referenced by name.
+    await expect(lstat(managed.chatGptOAuthCredential)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toEqual({
+      schemaVersion: 1,
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
+  });
+
+  it("keeps the subscription default when an interactive first run picks the subscription", async () => {
+    const paths = await files();
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => "subscription" as const,
+      selectModel: async () => {
+        throw new Error("the model select must not run once the subscription is chosen");
+      },
+      selectThinkingLevel: async () => {
+        throw new Error("the reasoning select must not run once the subscription is chosen");
+      },
+    };
+
+    expect(
+      await runCli(
+        ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const parsed = JSON.parse(await readFile(managed.config, "utf8"));
+    expect(parsed.model).toMatchObject({ provider: "openai-codex", credential: "chatgpt-oauth" });
+    expect(parsed.model.profiles.planner).toEqual({ id: "gpt-5.6-sol", thinkingLevel: "xhigh" });
+    // The subscription path still writes the device-flow ChatGPT credential, no API key file.
+    await expect(lstat(managed.chatGptOAuthCredential)).resolves.toBeDefined();
+    await expect(lstat(managed.modelApiKeyCredential)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips the interactive model selects when --model-provider is supplied (flag path unchanged)", async () => {
+    const paths = await files();
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => {
+        throw new Error("a supplied --model-provider must skip the interactive auth-mode select");
+      },
+    };
+
+    expect(
+      await runCli(
+        [
+          "--data-dir",
+          paths.data,
+          "init",
+          "--chat",
+          "120363000@g.us",
+          "--repository",
+          "owner/repo",
+          "--model-provider",
+          "openai",
+          "--model",
+          "gpt-5.4-nano",
+        ],
+        { ...cli, setupPrompts },
+      ),
+      cli.stderr(),
+    ).toBe(0);
+
+    const managed = managedPaths({ dataDirectory: paths.data });
+    const parsed = JSON.parse(await readFile(managed.config, "utf8"));
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    expect(parsed.model.profiles.coder).toEqual({ id: "gpt-5.4-nano", thinkingLevel: "high" });
+  });
+
+  it("reconfigures the model interactively from the config command, folding onto the current config (C1)", async () => {
+    const paths = await files();
+    // A default subscription install, created without any model flags.
+    await runCli(
+      ["--data-dir", paths.data, "init", "--chat", "120363000@g.us", "--repository", "owner/repo"],
+      harness(),
+    );
+    const managed = managedPaths({ dataDirectory: paths.data });
+
+    const cli = harness();
+    const setupPrompts = {
+      ...cli.setupPrompts,
+      modelAuthMode: async () => "api-key" as const,
+      selectModel: async () => "gpt-5.4-mini",
+      selectThinkingLevel: async () => "low",
+    };
+
+    expect(
+      await runCli(["--data-dir", paths.data, "config"], { ...cli, setupPrompts }),
+      cli.stderr(),
+    ).toBe(0);
+
+    const written = await readFile(managed.config, "utf8");
+    expect(written).not.toContain("sk-pasted-model-key");
+    const parsed = JSON.parse(written);
+    expect(parsed.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    for (const role of ["speaker", "scribe", "planner", "coder", "verifier"]) {
+      expect(parsed.model.profiles[role]).toEqual({ id: "gpt-5.4-mini", thinkingLevel: "low" });
+    }
+    // The key is a mode-0600 file, referenced from config by name only.
+    await expect(lstat(managed.modelApiKeyCredential)).resolves.toMatchObject({ mode: 0o100600 });
+    expect(JSON.parse(await readFile(managed.modelApiKeyCredential, "utf8"))).toMatchObject({
+      kind: "api-key",
+      provider: "openai",
+      apiKey: "sk-pasted-model-key",
+    });
+  });
+
   it("leaves the coder credential untouched when a github-app rotation is cancelled at review", async () => {
     const paths = await files();
     await runCli(
