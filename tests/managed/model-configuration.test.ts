@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as v from "valibot";
 
-import { resolveModelSelection } from "../../apps/cli/src/model-configuration.ts";
-import { DEFAULT_AGENT_MODEL_PROFILES } from "../../packages/engine/src/model/pi-subscription.ts";
+import {
+  promptInteractiveModelSelection,
+  resolveModelSelection,
+  withUniformThinkingLevel,
+} from "../../apps/cli/src/model-configuration.ts";
+import {
+  AGENT_MODEL_ROLES,
+  DEFAULT_AGENT_MODEL_PROFILES,
+} from "../../packages/engine/src/model/pi-subscription.ts";
+import { createManagedConfig, ManagedConfigSchema } from "../../packages/installation/src/schema.ts";
 
 const CURRENT = {
   provider: "openai-codex",
@@ -84,5 +93,132 @@ describe("resolveModelSelection", () => {
     expect(resolved.needsApiKey).toBe(false);
     expect(resolved.credential).toBe("api-key");
     expect(resolved.profiles.coder.id).toBe("gpt-5.4");
+  });
+});
+
+describe("withUniformThinkingLevel", () => {
+  it("stamps one level onto every role while keeping each role's model", () => {
+    const stamped = withUniformThinkingLevel(DEFAULT_AGENT_MODEL_PROFILES, "minimal");
+    for (const role of AGENT_MODEL_ROLES) {
+      expect(stamped[role].thinkingLevel).toBe("minimal");
+      expect(stamped[role].id).toBe(DEFAULT_AGENT_MODEL_PROFILES[role].id);
+    }
+  });
+});
+
+describe("promptInteractiveModelSelection", () => {
+  it("keeps the base selection when the prompts are unavailable — no prompt fires", async () => {
+    const base = { roleModels: {} };
+    const { selection, thinkingLevel } = await promptInteractiveModelSelection(base, {});
+    expect(selection).toBe(base);
+    expect(thinkingLevel).toBeUndefined();
+  });
+
+  it("keeps the base selection and asks nothing more when the operator keeps the subscription", async () => {
+    let modelAsked = false;
+    let levelAsked = false;
+    const { selection, thinkingLevel } = await promptInteractiveModelSelection(
+      { roleModels: {} },
+      {
+        modelAuthMode: async () => "subscription",
+        selectModel: async () => {
+          modelAsked = true;
+          return "gpt-5.4";
+        },
+        selectThinkingLevel: async () => {
+          levelAsked = true;
+          return "high";
+        },
+      },
+    );
+    expect(selection).toEqual({ roleModels: {} });
+    expect(thinkingLevel).toBeUndefined();
+    expect(modelAsked).toBe(false);
+    expect(levelAsked).toBe(false);
+  });
+
+  it("folds the API-key choice into an OpenAI selection over the real catalog", async () => {
+    let offered: readonly string[] = [];
+    const { selection, thinkingLevel } = await promptInteractiveModelSelection(
+      { roleModels: {} },
+      {
+        modelAuthMode: async () => "api-key",
+        selectModel: async (provider, modelIds) => {
+          expect(provider).toBe("openai");
+          offered = modelIds;
+          return "gpt-5.4-mini";
+        },
+        selectThinkingLevel: async () => "high",
+      },
+    );
+    // The select is handed OpenAI's full catalog, not a hand-kept subset.
+    expect(offered).toContain("gpt-5.4-mini");
+    expect(offered).toContain("gpt-4o");
+    expect(offered.length).toBeGreaterThan(20);
+    expect(selection).toEqual({ roleModels: {}, provider: "openai", model: "gpt-5.4-mini" });
+    expect(thinkingLevel).toBe("high");
+  });
+
+  it("refuses a level the build does not ship, guarding a misbehaving prompt", async () => {
+    await expect(
+      promptInteractiveModelSelection(
+        { roleModels: {} },
+        {
+          modelAuthMode: async () => "api-key",
+          selectModel: async () => "gpt-5.4-mini",
+          selectThinkingLevel: async () => "extreme",
+        },
+      ),
+    ).rejects.toThrow(/not a reasoning level/u);
+  });
+
+  it("round-trips the interactive API-key choice through the config schema, write then read identical", async () => {
+    const { selection, thinkingLevel } = await promptInteractiveModelSelection(
+      { roleModels: {} },
+      {
+        modelAuthMode: async () => "api-key",
+        selectModel: async () => "gpt-5.4-mini",
+        selectThinkingLevel: async () => "high",
+      },
+    );
+    const resolved = resolveModelSelection(
+      { provider: "openai-codex", credential: "chatgpt-oauth", profiles: DEFAULT_AGENT_MODEL_PROFILES },
+      selection,
+    );
+    const profiles = withUniformThinkingLevel(resolved.profiles, thinkingLevel!);
+    const config = createManagedConfig(["120363000@g.us"], "owner/repo", { provider: resolved.provider, profiles });
+    const written = v.parse(ManagedConfigSchema, config);
+    // Write → read is identical, and every role carries the chosen model and reasoning level.
+    expect(v.parse(ManagedConfigSchema, written)).toEqual(written);
+    expect(written.model).toMatchObject({ provider: "openai", credential: "api-key" });
+    for (const role of AGENT_MODEL_ROLES) {
+      expect(written.model.profiles[role]).toEqual({ id: "gpt-5.4-mini", thinkingLevel: "high" });
+    }
+  });
+
+  it("rejects a bad model id and a bad reasoning level at the schema, before any write", () => {
+    const good = createManagedConfig(["120363000@g.us"], "owner/repo", {
+      provider: "openai",
+      profiles: withUniformThinkingLevel(
+        resolveModelSelection(
+          { provider: "openai-codex", credential: "chatgpt-oauth", profiles: DEFAULT_AGENT_MODEL_PROFILES },
+          { provider: "openai", model: "gpt-5.4-mini", roleModels: {} },
+        ).profiles,
+        "high",
+      ),
+    });
+    // A provider-prefixed (slashed) model id and an off-catalog reasoning level are both refused.
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...good,
+        model: { ...good.model, profiles: { ...good.model.profiles, coder: { id: "openai/gpt-5.4", thinkingLevel: "high" } } },
+      }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...good,
+        model: { ...good.model, profiles: { ...good.model.profiles, coder: { id: "gpt-5.4-mini", thinkingLevel: "extreme" } } },
+      }).success,
+    ).toBe(false);
   });
 });

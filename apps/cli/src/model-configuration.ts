@@ -4,9 +4,11 @@ import {
   isCatalogModel,
   isModelProvider,
   modelProviders,
+  MODEL_THINKING_LEVELS,
   SUBSCRIPTION_PROVIDER_ID,
   type AgentModelProfiles,
   type AgentModelRole,
+  type ModelThinkingLevel,
 } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { MODEL_API_KEY_CREDENTIAL_REFERENCE } from "@ambient-agent/installation/schema.ts";
 
@@ -105,4 +107,60 @@ export const resolveModelSelection = (
     // Naming an API-key provider always re-pastes the key, the same idiom as --github-app.
     needsApiKey: apiKeyProvider && options.provider !== undefined,
   };
+};
+
+/** Stamp one reasoning level onto every role, keeping each role's model. */
+export const withUniformThinkingLevel = (
+  profiles: AgentModelProfiles,
+  thinkingLevel: ModelThinkingLevel,
+): AgentModelProfiles =>
+  Object.fromEntries(
+    AGENT_MODEL_ROLES.map((role) => [role, { ...profiles[role], thinkingLevel }]),
+  ) as unknown as AgentModelProfiles;
+
+/**
+ * The three interactive first-run prompts, structurally a subset of the CLI's prompt object.
+ * All optional: a scripted or test harness that omits them keeps the historical subscription
+ * default with no prompt.
+ */
+export interface InteractiveModelPrompts {
+  readonly modelAuthMode?: () => Promise<"subscription" | "api-key">;
+  readonly selectModel?: (provider: string, modelIds: readonly string[]) => Promise<string>;
+  readonly selectThinkingLevel?: (levels: readonly string[]) => Promise<string>;
+}
+
+/**
+ * pi's OpenAI API-key provider. The interactive first-run API-key path targets it and offers its
+ * full catalog. ponytail: OpenAI-only interactive path (the ticket's scope); every other provider
+ * still routes through `--model-provider <id>`, whose flow is unchanged.
+ */
+const INTERACTIVE_API_KEY_PROVIDER = "openai";
+
+/**
+ * Fold the interactive first-run model choice (auth mode → model → reasoning level) into a
+ * {@link ModelSelectionOptions} the flag resolver already understands, plus the single reasoning
+ * level to stamp on every role. Returns `base` unchanged — no prompt fired — when the prompts are
+ * unavailable or the operator keeps the subscription. The API-key branch names the provider and a
+ * catalog model, so {@link resolveModelSelection} validates and builds the per-role profiles.
+ */
+export const promptInteractiveModelSelection = async (
+  base: ModelSelectionOptions,
+  prompts: InteractiveModelPrompts,
+): Promise<{ readonly selection: ModelSelectionOptions; readonly thinkingLevel?: ModelThinkingLevel }> => {
+  if (
+    prompts.modelAuthMode === undefined ||
+    prompts.selectModel === undefined ||
+    prompts.selectThinkingLevel === undefined
+  ) {
+    return { selection: base };
+  }
+  if ((await prompts.modelAuthMode()) !== "api-key") return { selection: base };
+  const provider = INTERACTIVE_API_KEY_PROVIDER;
+  const model = await prompts.selectModel(provider, catalogModelIds(provider));
+  const level = await prompts.selectThinkingLevel(MODEL_THINKING_LEVELS);
+  // The select can only surface a catalog level, so this guards a misbehaving prompt, not a human.
+  if (!(MODEL_THINKING_LEVELS as readonly string[]).includes(level)) {
+    throw new Error(`${level} is not a reasoning level this build supports.`);
+  }
+  return { selection: { ...base, provider, model }, thinkingLevel: level as ModelThinkingLevel };
 };

@@ -48,6 +48,12 @@ export interface FirstRunPrompts {
   githubApp(reference: GitHubAppReference, repository: string): Promise<GitHubAppTriple>;
   /** Guided paste of the model API key, at first run or via `config --model-provider <id>`. */
   modelApiKey?(provider: string): Promise<string>;
+  /** First-run auth choice (C1): the subscription device flow, or a pasted API key. */
+  modelAuthMode?(): Promise<"subscription" | "api-key">;
+  /** Pick one model from the provider's catalog; applied to every agent role. */
+  selectModel?(provider: string, modelIds: readonly string[]): Promise<string>;
+  /** Pick one reasoning level; applied to every agent role. */
+  selectThinkingLevel?(levels: readonly string[]): Promise<string>;
   review(review: SetupReview): Promise<boolean>;
   validationError(field: "chat" | "repository" | "github", message: string): void;
 }

@@ -57,7 +57,12 @@ import {
   type ChatGptAuthentication,
 } from "@ambient-agent/engine/model/chatgpt-authentication.ts";
 import type { ChatGptReadinessReceipt } from "@ambient-agent/engine/model/pi-subscription.ts";
-import { modelSelectionFrom, resolveModelSelection } from "./model-configuration.ts";
+import {
+  modelSelectionFrom,
+  promptInteractiveModelSelection,
+  resolveModelSelection,
+  withUniformThinkingLevel,
+} from "./model-configuration.ts";
 import { readSuppliedPrivateKey } from "./private-key.ts";
 import {
   discoverOriginRepository,
@@ -273,13 +278,27 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     .option("--model-verifier <id>", "model ID for the Verifier")
     .action(async (options) => {
       const global = program.opts();
-      // Resolved before anything is created, so a bad provider or model ID fails before the
-      // operator sits through pairing. Omitting --model-provider keeps the subscription
-      // default and the ChatGPT device flow — neither mode is required.
-      const modelChoice = resolveModelSelection(
+      // With no --model-provider flag, an interactive first run picks the auth mode (subscription
+      // vs API key) and, for an API key, a model and one reasoning level for every agent. A
+      // supplied --model-provider (or a non-interactive/scripted run) skips the prompts and keeps
+      // the historical flag path exactly. The choice is resolved before anything is created, so a
+      // bad provider or model ID fails before the operator sits through pairing.
+      const baseSelection = modelSelectionFrom(options);
+      const { selection, thinkingLevel } =
+        interactive && options.modelProvider === undefined
+          ? await promptInteractiveModelSelection(baseSelection, setupPrompts)
+          : { selection: baseSelection, thinkingLevel: undefined };
+      const resolved = resolveModelSelection(
         { ...subscriptionModelChoice, credential: "chatgpt-oauth" },
-        modelSelectionFrom(options),
+        selection,
       );
+      const modelChoice = {
+        provider: resolved.provider,
+        profiles:
+          thinkingLevel === undefined
+            ? resolved.profiles
+            : withUniformThinkingLevel(resolved.profiles, thinkingLevel),
+      };
       const current = await inspectManagedData({ dataDirectory: global.dataDir });
       output.stdout(`Data directory: ${current.dataDirectory}\n`);
       if (current.state === "ready") {
@@ -304,7 +323,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           dataDirectory: global.dataDir,
           interactive,
           allowFreshChatGptAuthentication: options.authorize ?? false,
-          modelChoice: { provider: modelChoice.provider, profiles: modelChoice.profiles },
+          modelChoice,
           modelCredentialStorage: tenantDatabase === undefined ? "managed-file" : "tenant-database",
           ...(options.whatsappStore === undefined ? {} : { whatsappStoreSource: resolve(options.whatsappStore) }),
           services: firstRunServices,
@@ -483,11 +502,21 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
           rotatedSpecialist = { path: paths.githubAppCredentials[rotateReference], credential: rotated };
         }
       }
-      // Resolved before the review so a bad provider or model ID is refused here, not after
-      // the operator has confirmed. The key itself is prompted, never a flag and never an
-      // environment variable; it is written to credentials/model-api-key.json at mode 0600
-      // and referenced from config by name only.
-      const model = resolveModelSelection(currentConfig.model, modelSelectionFrom(options));
+      // Resolved before the review so a bad provider or model ID is refused here, not after the
+      // operator has confirmed. With no --model-provider flag, an interactive reconfigure offers
+      // the same auth-mode / model / reasoning selects as first-run, folding the choice onto the
+      // current config; a supplied flag (or a non-interactive run) keeps the historical flag path.
+      // The key itself is prompted, never a flag and never an environment variable; it is written
+      // to credentials/model-api-key.json at mode 0600 and referenced from config by name only.
+      const { selection: modelSelection, thinkingLevel: modelThinkingLevel } =
+        interactive && options.modelProvider === undefined
+          ? await promptInteractiveModelSelection(modelSelectionFrom(options), setupPrompts)
+          : { selection: modelSelectionFrom(options), thinkingLevel: undefined };
+      const model = resolveModelSelection(currentConfig.model, modelSelection);
+      const modelProfiles =
+        modelThinkingLevel === undefined
+          ? model.profiles
+          : withUniformThinkingLevel(model.profiles, modelThinkingLevel);
       let modelCredential: ReturnType<typeof modelApiKeyCredentialFrom> | undefined;
       if (model.needsApiKey) {
         if (!interactive || setupPrompts.modelApiKey === undefined) {
@@ -545,7 +574,7 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
         paths.githubAppCredentials.planner,
         {
           ...currentConfig,
-          model: { provider: model.provider, credential: model.credential, profiles: model.profiles },
+          model: { provider: model.provider, credential: model.credential, profiles: modelProfiles },
           managedChats,
           ...(canaryChat === undefined ? {} : { smoke: { canaryChat } }),
           runtime: { ...currentConfig.runtime, port: runtimePort, sandbox: runtimeSandbox },
