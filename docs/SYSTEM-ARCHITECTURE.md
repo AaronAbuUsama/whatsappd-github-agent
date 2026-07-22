@@ -144,8 +144,8 @@ responsibilities, each detailed later:
 - **Owns all work** (§7): every issue, PR, job, and task is dispatched by the Brain, which
   therefore owns each work item's full lifecycle — including where its result returns and
   when a loop (e.g. a PR needing refinement) must be re-kicked.
-- **Chooses the surface and the voice** (§8): whether to say something in a group room, as
-  a DM, or across rooms — and which Speaker carries it.
+- **Chooses the surface and the voice** (§8): which chat should carry a communication and which
+  Speaker expresses it.
 
 The Brain is deliberately kept *out of every hot path*. It reasons and decides; it does
 not sit between a person and a reply, nor between the ingestion clock and a graph write.
@@ -175,14 +175,13 @@ stable application identity and exactly one continuing Speaker. Its provider cha
 a replaceable **Surface Binding**, not the Surface's identity.
 
 Discovery and authorization are separate. Provider sync may observe and archive any chat but
-does not activate it. Operator-configured groups seed the registry. To prompt a Speaker, the
-Brain selects either an existing Surface or a known Person. Trusted application code resolves a
-Person target to an existing direct Surface or atomically materializes an ordinary direct
-Surface as part of that same prompt admission; the model never supplies a raw chat address.
-This is one routing operation, not a separate "open Surface" effect or DM lifecycle. Intake and
-Say both revalidate an active binding and fail closed. Re-pairing the same provider account
-preserves Surface/Speaker identity; replacing the account retires old bindings rather than
-silently moving them.
+does not activate it. Every operator-configured chat seeds the same registry, whether WhatsApp
+labels its JID as group or direct. The Brain prompts a Speaker by selecting an existing
+`surfaceId`; it never supplies a raw chat address or a Person in place of a Surface. Group versus
+direct remains adapter metadata needed for provider envelope details, not a domain type,
+authorization branch, target-resolution path, or lifecycle. Intake and Say both revalidate an
+active binding and fail closed. Re-pairing the same provider account preserves Surface/Speaker
+identity; replacing the account retires old bindings rather than silently moving them.
 
 ### 3.5 The Scribe (global ingestion clock)
 
@@ -257,7 +256,7 @@ flowchart TB
 
   INBOX --> DECIDE[Brain decides<br/>reasons over the Graph]
 
-  DECIDE --> D1[Prompt a chosen Surface or known Person<br/>context + directive]
+  DECIDE --> D1[Prompt a chosen Surface<br/>context + directive]
   DECIDE --> D2[Dispatch bounded work<br/>Coder / Reviewer / Planner]
   DECIDE --> D3[Append an Attestation or ruling<br/>confirm · overrule · merge]
   DECIDE --> D4[Schedule a future wake]
@@ -526,13 +525,12 @@ Two identity facts hold simultaneously, and the architecture is built to keep bo
   and that team is visible. The backstage multiplicity and the front-of-house singularity
   are not in conflict; they are two views of one system.
 
-The Brain chooses **surface and voice** as part of every decision (§4, D1): say it in the
-group room, continue a DM with a specific person, or carry information across rooms. Because a
-surface is just a place with a Speaker, "DM someone" and "reply in the group" share one prompt
-operation. The target is either an existing stable Surface or a known Person whom trusted code
-resolves to the same ordinary Surface registry during prompt admission. Configured groups remain
-operator-authorized. Discovery alone never grants participation, and a source Surface is
-provenance rather than a forced return address.
+The Brain chooses **surface and voice** as part of every decision (§4, D1): say it in one chat or
+carry information to another. Every group or direct chat is the same kind of Surface and uses
+the same prompt operation with an existing stable `surfaceId`. WhatsApp-specific address and
+participant fields stay inside the adapter. Configured chats remain operator-authorized,
+discovery alone never grants participation, and a source Surface is provenance rather than a
+forced return address.
 
 Note that no infrastructural role *is* the identity. Owning a webhook secret, or filing
 issues under a particular app, are jobs done by parts of the team; they are not the
@@ -659,7 +657,7 @@ meant to be. "Distance" is descriptive, not a plan.
 | **Brain** | Single global mind: up-inbox, two clocks, owns state + work | **Does not exist as an actor.** Its would-be jobs are scattered: routing lives in webhook broadcast (`github/ingress.ts`), work-launch lives on the Speaker, ontology-write on Speaker/Scribe | **Introduce the Brain**; move routing, work-dispatch, and ontology curation onto it |
 | **Control loop** | One up-inbox; events + intents up; push down | Partial and split: inbound GitHub events **broadcast to every surface**, each Speaker self-judging relevance (`ingress.ts`); uncorrelated events are **dropped** (`ingress.ts`); intents aren't a concept | **Replace broadcast + drop with the single up-inbox**; add intent as an input |
 | **Two clocks** | Reactive + proactive (cron floor + event wakes + self-schedule) | Only the reactive clock exists. Overdue commitments are *flagged* in the digest but nothing acts on them | **Add the proactive clock**; reuse the durable-ledger + boot-sweep pattern for self-scheduled wakes |
-| **Surfaces** | Stable registry + account-scoped bindings + one Speaker + durable delivery evidence | Config already accepts group/DM JIDs, but authorization is an in-memory `managedChats` set, Speaker id is the chat JID, and specialist return is hard-coded to the first chat; outbound archive evidence exists but no Surface/Directive ledger correlates it | **Seed configured Surfaces; resolve known-Person prompt targets through that same registry; route by Surface UUID; fail closed; record Surface Delivery** |
+| **Surfaces** | Stable registry + account-scoped bindings + one Speaker + durable delivery evidence | Config already treats group/DM JIDs as one `managedChats` set, but Speaker id is the chat JID and specialist return is hard-coded to the first chat; outbound archive evidence exists but no Surface/Directive ledger correlates it | **Seed every configured chat as the same Surface type; route only by Surface UUID; fail closed; record Surface Delivery** |
 | **Work / delegation** | All work dispatched by the Brain; Brain owns each lifecycle incl. refinement | Async delegation + durable return + boot reconciliation are built and solid (`capabilities/delegation/*`), but launched **by the Speaker**, returning to the launching **chat** | **Move the launcher to the Brain**; return address becomes the Brain, which owns the loop |
 | **Specialists / Bounded Workflows** | Backstage team, distinct GitHub identities, results up | Built and matches (Coder/Reviewer/Planner as Specialists; distinct app identities) | **None** conceptually — rewire the launcher/return only |
 | **Coalescer** | Modelless timing for Speakers and Scribe | Built and matches: `engine/src/coalescer/*` (Speaker Windows + Scribe batch) | **None** — the Scribe instance goes global (see Scribe row) |

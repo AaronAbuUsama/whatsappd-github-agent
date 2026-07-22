@@ -36,12 +36,11 @@ _Avoid_: Ambience, the voice, sub-bot, one-to-one assistant
 **Surface**:
 One place the coworker can listen and speak: a group chat, a DM with one person, or any
 future channel. It has stable application identity, exactly one continuing Speaker, and one
-current provider binding. Discovery never authorizes participation: configured groups seed
-the registry. When the Brain prompts a known Person directly, trusted application code resolves
-or materializes an ordinary DM Surface inside that same prompt admission. This is target
-resolution, not a second kind of Surface or a separate open-surface action. Generalizes Managed
-Chat to any authorized place with a Speaker.
-_Avoid_: Channel plumbing, allowed group, Brain-opened Surface
+current provider binding. Every configured chat seeds the same registry and the Brain addresses
+all of them by Surface identity; group versus direct is provider metadata, never a different
+Surface type, target, admission path, or lifecycle. Discovery alone never authorizes
+participation. Generalizes Managed Chat to any authorized place with a Speaker.
+_Avoid_: Channel plumbing, allowed group, Group Surface, DM Surface, Person target
 
 **Surface Binding**:
 The active mapping from a Surface to one authenticated provider account and provider chat

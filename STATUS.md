@@ -29,8 +29,8 @@ with the same read shape derived as the Belief Projection.
 - Reduce the **Speaker** to a dumb mouth — remove issue/delegation/ontology-write, add intent escalation.
 - Replace GitHub webhook broadcast + drop with the single up-inbox.
 - Replace fixed Managed Chat routing with stable **Surfaces**, account-scoped bindings, and
-  archive-backed delivery outcomes; configured groups remain fail-closed and known-Person DM
-  targets resolve through the same registry during prompt admission.
+  archive-backed delivery outcomes; every configured chat uses the same Surface type and the
+  Brain routes only by Surface UUID.
 - Extend the existing live Digest projector with Projection version/evidence/bounds and compose
   bounded Brain-selected seeds over the same `graphContext` channel.
 
