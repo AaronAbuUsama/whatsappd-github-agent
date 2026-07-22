@@ -5,6 +5,8 @@
   "type": "module",
   "description": "Everything that thinks: one folder per agent. Each agent owns its identity skill, layered domain skills (mind: SKILL.md bundles; machine: tools; ports at the seam), composition, and dispatch.",
   "exports": {
+    "./brain/agent.ts": "./src/brain/agent.ts",
+    "./brain/dispatch.ts": "./src/brain/dispatch.ts",
     "./speaker/activity-reporter.ts": "./src/speaker/activity-reporter.ts",
     "./speaker/agent.ts": "./src/speaker/agent.ts",
     "./speaker/compose.ts": "./src/speaker/compose.ts",

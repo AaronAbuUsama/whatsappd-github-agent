@@ -10,6 +10,7 @@ import {
 } from "../../packages/installation/src/schema.ts";
 
 const EXPECTED_DEFAULT_PROFILES = {
+  brain: { id: "gpt-5.6-luna", thinkingLevel: "high" },
   speaker: { id: "gpt-5.6-luna", thinkingLevel: "low" },
   scribe: { id: "gpt-5.6-luna", thinkingLevel: "medium" },
   planner: { id: "gpt-5.6-sol", thinkingLevel: "xhigh" },
@@ -83,6 +84,13 @@ describe("managed schemas", () => {
     const { profiles: _profiles, ...legacyModel } = config.model;
     const legacy = v.parse(ManagedConfigSchema, { ...config, model: legacyModel });
     expect(legacy.model.profiles).toEqual(EXPECTED_DEFAULT_PROFILES);
+
+    const { brain: _brain, ...preBrainProfiles } = config.model.profiles;
+    const preBrain = v.parse(ManagedConfigSchema, {
+      ...config,
+      model: { ...config.model, profiles: preBrainProfiles },
+    });
+    expect(preBrain.model.profiles.brain).toEqual(EXPECTED_DEFAULT_PROFILES.brain);
 
     expect(
       v.parse(ManagedConfigSchema, {

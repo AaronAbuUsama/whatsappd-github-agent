@@ -58,6 +58,7 @@ describe("resolveModelSelection", () => {
       resolveModelSelection(CURRENT, {
         provider: "openai",
         roleModels: {
+          brain: "gpt-5.4",
           speaker: "gpt-5.4-nano",
           scribe: "gpt-5.4-nano",
           planner: "gpt-5.4",

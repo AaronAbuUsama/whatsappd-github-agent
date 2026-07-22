@@ -86,6 +86,8 @@ const AgentModelProfileSchema = v.strictObject({
   thinkingLevel: v.picklist(MODEL_THINKING_LEVELS),
 });
 const AgentModelProfilesSchema = v.strictObject({
+  // Existing installations predate the Brain role; parsing stamps its default profile.
+  brain: v.optional(AgentModelProfileSchema, DEFAULT_AGENT_MODEL_PROFILES.brain),
   speaker: AgentModelProfileSchema,
   scribe: AgentModelProfileSchema,
   planner: AgentModelProfileSchema,

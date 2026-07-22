@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 import type { ConversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
+import { wakeBrain } from "../../packages/agents/src/brain/dispatch.ts";
 
 const SURFACE = "surface:team";
 const CHAT = "team@g.us";
@@ -96,6 +97,70 @@ describe("Speaker Intent admission", () => {
     expect(reopened.intent(admitted.id)).toEqual(admitted);
     expect(reopened.pendingIntents()).toEqual([admitted]);
     reopened.close();
+  });
+
+  it("claims one immutable Brain Batch and recovers its exact membership after restart", () => {
+    const databasePath = fixture();
+    const inbox = openInbox(databasePath);
+    const firstIntent = inbox.admitIntent({
+      sourceSurfaceId: SURFACE,
+      interpretation: "Investigate the first failure.",
+      evidenceIds: ["evidence:1"],
+    });
+    const secondIntent = inbox.admitIntent({
+      sourceSurfaceId: SURFACE,
+      interpretation: "Investigate the second failure.",
+      evidenceIds: ["evidence:2"],
+    });
+
+    const claimed = inbox.claimBatch(1);
+    expect(claimed).toEqual({
+      id: expect.stringMatching(/^brain-batch:[a-f0-9]{64}$/u),
+      createdAt: "2026-07-22T12:00:00.000Z",
+      intents: [firstIntent],
+    });
+    expect(inbox.pendingIntents()).toEqual([secondIntent]);
+    inbox.close();
+
+    const reopened = openInbox(databasePath, () => "2099-01-01T00:00:00.000Z");
+    expect(reopened.claimBatch(50)).toEqual(claimed);
+    expect(reopened.pendingIntents()).toEqual([secondIntent]);
+    reopened.close();
+  });
+
+  it("wakes the one global Brain once for an admitted Batch", async () => {
+    const inbox = openInbox(fixture());
+    const intent = inbox.admitIntent({
+      sourceSurfaceId: SURFACE,
+      interpretation: "Ask what failure the team means.",
+      evidenceIds: ["evidence:1"],
+    });
+    const requests: unknown[] = [];
+
+    const first = await wakeBrain(inbox, async (request) => {
+      requests.push(request);
+      return { dispatchId: "dispatch:brain:1", acceptedAt: "2026-07-22T12:01:00.000Z" };
+    });
+    expect(requests).toEqual([{
+      id: "global",
+      input: {
+        type: "brain.batch",
+        batch: {
+          id: expect.stringMatching(/^brain-batch:[a-f0-9]{64}$/u),
+          createdAt: "2026-07-22T12:00:00.000Z",
+          intents: [intent],
+        },
+      },
+    }]);
+    expect(first?.dispatch).toEqual({
+      dispatchId: "dispatch:brain:1",
+      acceptedAt: "2026-07-22T12:01:00.000Z",
+    });
+
+    expect(await wakeBrain(inbox, async () => {
+      throw new Error("an admitted wake must not be dispatched twice");
+    })).toEqual(first);
+    inbox.close();
   });
 
   it("rolls back the immutable Intent when its inbox reference cannot be inserted", () => {
