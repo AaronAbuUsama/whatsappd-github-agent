@@ -147,6 +147,17 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
       "snapshot_occurred_at_ms", "snapshot_sequence", "after_sequence", "run_id", "last_error", "updated_at_ms",
     ],
   ],
+  ["surfaces", ["surface_id", "created_at"]],
+  [
+    "surface_bindings",
+    ["surface_id", "provider_account_id", "provider_chat_id", "bound_at", "retired_at"],
+  ],
+  [
+    "brain_intents",
+    ["intent_id", "source_surface_id", "interpretation", "evidence_ids_json", "admitted_at"],
+  ],
+  ["brain_batches", ["batch_id", "created_at", "dispatch_id", "accepted_at", "settled_at"]],
+  ["brain_inbox_inputs", ["input_id", "kind", "intent_id", "admitted_at", "batch_id"]],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;
 const LEGACY_APPLICATION_SCHEMA = new Map<string, readonly string[]>([
   ...LEGACY_APPLICATION_CORE_SCHEMA,

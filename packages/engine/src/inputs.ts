@@ -36,6 +36,7 @@ const whatsappWindowInputSchema = v.object({
   messages: v.array(
     v.object({
       id: nonEmptyString,
+      evidenceId: v.optional(nonEmptyString),
       chatId: nonEmptyString,
       from: nonEmptyString,
       pushName: v.optional(v.string()),
@@ -225,7 +226,10 @@ export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowI
     windowId: window.id,
     chatId: window.chatId,
     reason: window.reason,
-    messages: window.messages,
+    messages: window.messages.map((message) => ({
+      ...message,
+      evidenceId: `arrival:${message.chatId}:${message.id}`,
+    })),
     updates: window.updates,
     ...(window.eventOrder === undefined ? {} : { eventOrder: window.eventOrder }),
   });

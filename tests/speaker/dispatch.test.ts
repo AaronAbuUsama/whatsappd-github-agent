@@ -95,8 +95,8 @@ describe("production Coalescer-to-Speaker dispatch", () => {
                 chatId: CHAT,
                 reason: "debounce",
                 messages: [
-                  expect.objectContaining({ text: "first", pushName: "Alice" }),
-                  expect.objectContaining({ text: "second", pushName: "Alice" }),
+                  expect.objectContaining({ text: "first", pushName: "Alice", evidenceId: `arrival:${CHAT}:m-1` }),
+                  expect.objectContaining({ text: "second", pushName: "Alice", evidenceId: `arrival:${CHAT}:m-2` }),
                 ],
                 updates: [],
               },

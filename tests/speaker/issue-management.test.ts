@@ -1008,6 +1008,7 @@ describe("production Issue Management tools", () => {
       "say",
       "whatsapp_read_thread",
       "whatsapp_search",
+      "escalate_intent",
       "github_search_issues",
       "github_read_issue",
       "github_list_issue_options",

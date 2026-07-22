@@ -12,6 +12,7 @@
     "./speaker/compose.ts": "./src/speaker/compose.ts",
     "./speaker/dispatch.ts": "./src/speaker/dispatch.ts",
     "./speaker/observer.ts": "./src/speaker/observer.ts",
+    "./capabilities/intent-escalation/runtime.ts": "./src/capabilities/intent-escalation/runtime.ts",
  "./scribe/agent.ts": "./src/scribe/agent.ts",
     "./scribe/direct-access.ts": "./src/scribe/direct-access.ts",
     "./scribe/input.ts": "./src/scribe/input.ts",
