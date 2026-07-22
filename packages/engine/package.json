@@ -32,6 +32,7 @@
     "./model/chatgpt-authentication.ts": "./src/model/chatgpt-authentication.ts",
     "./model/pi-subscription.ts": "./src/model/pi-subscription.ts",
     "./shared/errors.ts": "./src/shared/errors.ts",
+    "./shared/format-duration.ts": "./src/shared/format-duration.ts",
     "./shared/flue-global.ts": "./src/shared/flue-global.ts",
     "./shared/whatsapp-jid.ts": "./src/shared/whatsapp-jid.ts"
   },

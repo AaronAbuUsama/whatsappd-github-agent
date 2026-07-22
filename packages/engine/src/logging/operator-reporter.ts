@@ -1,5 +1,7 @@
 import { Writable } from "node:stream";
 
+import { formatDuration } from "../shared/format-duration.ts";
+
 export type OperatorEvent =
   | "agent.online"
   | "chat.received"
@@ -92,12 +94,6 @@ const timeFormatter = new Intl.DateTimeFormat("en-US", {
 });
 
 const formatTime = (time: number | undefined): string => timeFormatter.format(new Date(time ?? Date.now()));
-
-const formatDuration = (durationMs: number | undefined): string => {
-  const milliseconds = durationMs ?? 0;
-  if (milliseconds < 1_000) return `${milliseconds}ms`;
-  return `${Number((milliseconds / 1_000).toFixed(1))}s`;
-};
 
 const semanticBody = (record: OperatorLogRecord): { readonly color: keyof typeof ANSI; readonly body: string } => {
   const actor = actorName(record.actor) || "AGENT";
