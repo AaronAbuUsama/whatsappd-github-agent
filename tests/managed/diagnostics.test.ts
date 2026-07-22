@@ -7,7 +7,11 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
-import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "../../packages/engine/src/intake/database-versions.ts";
+import { createSurfaceDeliveryStore } from "../../packages/engine/src/surfaces/delivery.ts";
+import {
+  APPLICATION_DATABASE_ID,
+  APPLICATION_DATABASE_SCHEMA_VERSION,
+} from "../../packages/engine/src/intake/database-versions.ts";
 import { inspectManagedServices } from "../../packages/installation/src/diagnostics.ts";
 import { managedPaths } from "../../packages/installation/src/paths.ts";
 
@@ -167,6 +171,7 @@ describe("managed service diagnostics", () => {
     createConversationArchive(paths.applicationDatabase).close();
     createSurfaceRegistry(paths.applicationDatabase).close();
     createBrainInbox(paths.applicationDatabase, { providerChatIdForSurface: () => undefined }).close();
+    createSurfaceDeliveryStore(paths.applicationDatabase, { providerChatIdForSurface: () => undefined }).close();
 
     await expect(inspectManagedServices(paths)).resolves.toContainEqual(
       expect.objectContaining({ name: "application-database", state: "ready", code: "database.ready" }),

@@ -1,7 +1,7 @@
 import { observe } from "@flue/runtime";
 import type { Logger } from "pino";
 
-import type { SpeakerObserver, SpeakerSpokeEvent } from "./observer.ts";
+import type { DirectiveObserver, SpeakerObserver, SpeakerSpokeEvent } from "./observer.ts";
 import { createDispatchCorrelator } from "@ambient-agent/engine/dispatch/dispatch-correlator.ts";
 import { getLogger } from "@ambient-agent/engine/logging/logging.ts";
 
@@ -14,6 +14,12 @@ interface DispatchInputLike {
   readonly windowId?: string;
   readonly chatId?: string;
   readonly messages?: readonly unknown[];
+  readonly directive?: {
+    readonly id: string;
+    readonly surfaceId: string;
+    readonly objective?: string;
+    readonly brief?: unknown;
+  };
 }
 
 export interface AgentDispatchContext {
@@ -23,6 +29,11 @@ export interface AgentDispatchContext {
 }
 
 export type AgentDispatchResolver = (dispatchId: string) => AgentDispatchContext | undefined;
+export interface DirectiveDispatchContext {
+  readonly directiveId: string;
+  readonly surfaceId: string;
+}
+export type DirectiveDispatchResolver = (dispatchId: string) => DirectiveDispatchContext | undefined;
 type ActivityLogger = Pick<Logger, "info" | "error">;
 
 /**
@@ -33,13 +44,29 @@ type ActivityLogger = Pick<Logger, "info" | "error">;
 export const createAgentActivityReporter = (logger?: ActivityLogger, initialResolver?: AgentDispatchResolver) => {
   const spoken = new Set<string>();
   const subscribers = new Set<SpeakerObserver>();
+  const directiveSubscribers = new Set<DirectiveObserver>();
   const activityLog = (): ActivityLogger => logger ?? getLogger("agent");
-  const notify = <Method extends keyof SpeakerObserver>(method: Method, event: Parameters<SpeakerObserver[Method]>[0]) => {
+  const notify = <Method extends keyof SpeakerObserver>(
+    method: Method,
+    event: Parameters<SpeakerObserver[Method]>[0],
+  ) => {
     for (const subscriber of subscribers) {
       try {
         (subscriber[method] as (value: typeof event) => void)(event);
       } catch {
         // Observer diagnostics must never change the agent lifecycle they observe.
+      }
+    }
+  };
+  const notifyDirective = <Method extends keyof DirectiveObserver>(
+    method: Method,
+    event: Parameters<DirectiveObserver[Method]>[0],
+  ) => {
+    for (const subscriber of directiveSubscribers) {
+      try {
+        (subscriber[method] as (value: typeof event) => void)(event);
+      } catch {
+        // Durable outcome observers must not change the Flue lifecycle they observe.
       }
     }
   };
@@ -76,6 +103,7 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
     keyOf: ({ chatId }) => chatId,
     ...(initialResolver === undefined ? {} : { resolver: initialResolver }),
   });
+  const directiveCorrelator = createDispatchCorrelator<DirectiveDispatchContext>();
 
   correlator.subscribe((event, context, dispatchId) => {
     const correlation = { windowId: context.windowId, chatId: context.chatId, dispatchId };
@@ -109,12 +137,39 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
         return;
     }
   });
+  directiveCorrelator.subscribe((event, context, dispatchId) => {
+    const correlation = { ...context, dispatchId };
+    switch (event.kind) {
+      case "dispatched":
+        activityLog().info(
+          { operatorEvent: "agent.directive_processing", ...correlation },
+          "Speaker processing a Brain Directive",
+        );
+        notifyDirective("dispatched", correlation);
+        return;
+      case "failed":
+        activityLog().error(
+          { operatorEvent: "agent.directive_failed", detail: event.error, ...correlation },
+          "Speaker Directive processing failed",
+        );
+        notifyDirective("settledFailed", { ...correlation, error: event.error });
+        return;
+      case "completed":
+      case "settled":
+        notifyDirective("settledWithoutSay", correlation);
+        return;
+    }
+  });
 
   return {
     ...observer,
     subscribe(subscriber: SpeakerObserver): () => void {
       subscribers.add(subscriber);
       return () => subscribers.delete(subscriber);
+    },
+    subscribeDirectives(subscriber: DirectiveObserver): () => void {
+      directiveSubscribers.add(subscriber);
+      return () => directiveSubscribers.delete(subscriber);
     },
     accepted(receipt: DispatchReceiptLike, input: DispatchInputLike): void {
       correlator.accepted(
@@ -123,9 +178,19 @@ export const createAgentActivityReporter = (logger?: ActivityLogger, initialReso
           ? null
           : { windowId: input.windowId, chatId: input.chatId, messageCount: input.messages?.length ?? 0 },
       );
+      directiveCorrelator.accepted(
+        receipt.dispatchId,
+        input.type !== "brain.directive" || input.directive === undefined
+          ? null
+          : { directiveId: input.directive.id, surfaceId: input.directive.surfaceId },
+      );
     },
-    observed: correlator.ingest,
+    observed(event: Parameters<typeof correlator.ingest>[0]): void {
+      correlator.ingest(event);
+      directiveCorrelator.ingest(event);
+    },
     recoverWith: correlator.recoverWith,
+    recoverDirectivesWith: directiveCorrelator.recoverWith,
     spokeForChat(chatId: string, text: string, messageId?: string): boolean {
       const dispatchId = correlator.activeDispatchFor(chatId);
       if (dispatchId === undefined) return false;

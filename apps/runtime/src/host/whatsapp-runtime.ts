@@ -1,8 +1,14 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
-import { configureScribeBackfillGate, dispatchSpeaker, makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import {
+  configureScribeBackfillGate,
+  dispatchSpeaker,
+  makeSpeakerWindowDispatcher,
+  type DispatchSpeaker,
+} from "@ambient-agent/agents/speaker/dispatch.ts";
 import { configureIntentEscalationRuntime } from "@ambient-agent/agents/capabilities/intent-escalation/runtime.ts";
+import { configureDirectiveDeliveryRuntime } from "@ambient-agent/agents/capabilities/directive-delivery/runtime.ts";
 import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
 import { configureBrainEffectsRuntime, recoverPendingPrompts } from "@ambient-agent/agents/brain/effects-runtime.ts";
 import { invoke } from "@flue/runtime";
@@ -35,6 +41,7 @@ import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import { isGroupJid } from "@ambient-agent/engine/shared/whatsapp-jid.ts";
 import { createSurfaceRegistry } from "@ambient-agent/engine/surfaces/registry.ts";
+import { createSurfaceDeliveryStore } from "@ambient-agent/engine/surfaces/delivery.ts";
 import {
   createWhatsAppAccount,
   WhatsAppAccountError,
@@ -139,47 +146,52 @@ export interface WhatsAppSessionRuntimeOptions {
    * the seam the delegation boot sweep hangs on, so its `interrupted` notifications can
    * actually be voiced (the Speaker's `say` needs the port). Errors are the callback's own.
    */
-  readonly afterParticipationReady?: () => void;
+  readonly afterParticipationReady?: () => void | Promise<void>;
 }
 
 /** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Speaker dispatch. */
 export const runWhatsAppSession = (
   session: WhatsAppSession,
   options: WhatsAppSessionRuntimeOptions,
-): Effect.Effect<void, never, Scope.Scope> => {
-  const outbound = createWhatsAppHost(session, (chatId, messageId) => {
-    const message = options.history.messageState(chatId, messageId);
-    return message === undefined
-      ? undefined
-      : {
-          id: message.id,
-          chatId: message.chatId,
-          fromMe: message.direction === "outbound",
-          ...(isGroupJid(message.chatId) && message.senderId !== undefined ? { participant: message.senderId } : {}),
-        };
-  });
-  configureWhatsAppParticipationPort({
-    say: outbound.say,
-    react: outbound.react,
-    readThread: (chatId, limit) => options.history.readThread(chatId, limit),
-    search: (chatId, query, limit) => options.history.search(chatId, query, limit),
-  });
-  options.afterParticipationReady?.();
-  const botIds = botIdsOf(session, options.botLid);
-  return Coalescer.run.pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        whatsappEventSource(session, options.gate.allowed, {
-          replay: () => options.inbox.unwindowed(),
-          accepted: (event) => options.inbox.pending(event),
-        }),
-        makeSpeakerWindowDispatcher(options.inbox, options.dispatch),
-        managedChatWindowStore(options.inbox),
-        configLayer({ ...options.coalescer, botIds }),
+): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const outbound = createWhatsAppHost(session, (chatId, messageId) => {
+      const message = options.history.messageState(chatId, messageId);
+      return message === undefined
+        ? undefined
+        : {
+            id: message.id,
+            chatId: message.chatId,
+            fromMe: message.direction === "outbound",
+            ...(isGroupJid(message.chatId) && message.senderId !== undefined ? { participant: message.senderId } : {}),
+          };
+    });
+    yield* Effect.sync(() =>
+      configureWhatsAppParticipationPort({
+        say: outbound.say,
+        react: outbound.react,
+        readThread: (chatId, limit) => options.history.readThread(chatId, limit),
+        search: (chatId, query, limit) => options.history.search(chatId, query, limit),
+      }),
+    );
+    if (options.afterParticipationReady !== undefined) {
+      yield* Effect.promise(() => Promise.resolve(options.afterParticipationReady!()));
+    }
+    const botIds = botIdsOf(session, options.botLid);
+    yield* Coalescer.run.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          whatsappEventSource(session, options.gate.allowed, {
+            replay: () => options.inbox.unwindowed(),
+            accepted: (event) => options.inbox.pending(event),
+          }),
+          makeSpeakerWindowDispatcher(options.inbox, options.dispatch),
+          managedChatWindowStore(options.inbox),
+          configLayer({ ...options.coalescer, botIds }),
+        ),
       ),
-    ),
-  );
-};
+    );
+  });
 
 const WHATSAPP_RUNTIME_STATUS = Symbol.for("ambient-agent.whatsapp-runtime-status");
 const runtimeGlobal = globalThis as typeof globalThis & { [WHATSAPP_RUNTIME_STATUS]?: WhatsAppRuntimeStatus };
@@ -239,6 +251,10 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const brainInbox = createBrainInbox(options.applicationDatabase, {
     providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
   });
+  const deliveries = createSurfaceDeliveryStore(options.applicationDatabase, {
+    providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+  });
+  configureDirectiveDeliveryRuntime({ deliveries });
   const scribeBackfills = createScribeBackfillStore(options.applicationDatabase);
   configureScribeBackfillGate(scribeBackfills);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
@@ -248,6 +264,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       ? undefined
       : { windowId: window.id, chatId: window.chatId, messageCount: window.messages.length };
   });
+  speakerActivity.recoverDirectivesWith((dispatchId) => deliveries.directiveForDispatch(dispatchId));
   let activeCanary: { readonly chatId: string; readonly text: string } | undefined;
   const account = createWhatsAppAccount({
     storeDirectory: storeDir,
@@ -256,6 +273,23 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     ...(options.sessionFactory === undefined ? {} : { sessionFactory: options.sessionFactory }),
   });
   const log = getLogger("whatsapp");
+  const unsubscribeDirectiveOutcomes = speakerActivity.subscribeDirectives({
+    dispatched: () => undefined,
+    settledWithoutSay: ({ directiveId }) => {
+      try {
+        deliveries.settleWithoutSay(directiveId, "Speaker completed without calling say_directive.");
+      } catch (cause) {
+        log.error({ directiveId, error: errorMessage(cause) }, "Failed to persist settled-without-Saying Outcome");
+      }
+    },
+    settledFailed: ({ directiveId, error }) => {
+      try {
+        deliveries.failWithoutSay(directiveId, error);
+      } catch (cause) {
+        log.error({ directiveId, error: errorMessage(cause) }, "Failed to persist failed Directive Outcome");
+      }
+    },
+  });
   setRuntimeStatus({ phase: "starting", chatTarget: gate.describe() });
   let stopping = false;
 
@@ -263,6 +297,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     yield* Effect.addFinalizer(() => Effect.sync(() => archive.close()));
     yield* Effect.addFinalizer(() => Effect.sync(() => surfaces.close()));
     yield* Effect.addFinalizer(() => Effect.sync(() => brainInbox.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(() => deliveries.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(unsubscribeDirectiveOutcomes));
     yield* Effect.addFinalizer(() => Effect.sync(() => scribeBackfills.close()));
     yield* Effect.addFinalizer(() => Effect.promise(() => account.stop()));
     if (!gate.hasTarget) {
@@ -311,8 +347,6 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
-    yield* Effect.promise(() => recoverPendingPrompts());
-    yield* Effect.promise(() => wakeBrain(brainInbox));
     if (account.initialArchiveReady !== undefined && options.sessionFactory === undefined) {
       yield* Effect.promise(() => account.initialArchiveReady!());
       for (const state of scribeBackfills.states()) {
@@ -320,13 +354,14 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       }
       for (const chatId of options.managedChats) {
         const state = scribeBackfills.get(chatId);
-        const admission = state === undefined
-          ? scribeBackfills.admit(chatId)
-          : state.mode === "catching_up"
-            ? { admitted: true as const }
-            : state.mode === "disabled"
-              ? scribeBackfills.retry(chatId)
-              : { admitted: false as const };
+        const admission =
+          state === undefined
+            ? scribeBackfills.admit(chatId)
+            : state.mode === "catching_up"
+              ? { admitted: true as const }
+              : state.mode === "disabled"
+                ? scribeBackfills.retry(chatId)
+                : { admitted: false as const };
         if (admission.admitted) {
           // Empty archives need no detached Flue run. Capture the same durable
           // snapshot and cross the snapshot/tail boundary synchronously; the
@@ -367,9 +402,11 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       botLid: options.botLid,
       ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
       ...(options.coalescer === undefined ? {} : { coalescer: options.coalescer }),
-      ...(options.afterParticipationReady === undefined
-        ? {}
-        : { afterParticipationReady: options.afterParticipationReady }),
+      afterParticipationReady: async () => {
+        await recoverPendingPrompts();
+        await wakeBrain(brainInbox);
+        await options.afterParticipationReady?.();
+      },
     });
   });
 
