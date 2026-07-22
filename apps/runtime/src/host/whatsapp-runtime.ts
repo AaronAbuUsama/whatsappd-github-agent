@@ -2,6 +2,8 @@ import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
 import { configureScribeBackfillGate, makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import { configureIntentEscalationRuntime } from "@ambient-agent/agents/capabilities/intent-escalation/runtime.ts";
+import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
 import { invoke } from "@flue/runtime";
 import scribeBackfill from "../workflows/scribe-backfill.ts";
 import type { SpeakerDispatchEvent, SpeakerObserver } from "@ambient-agent/agents/speaker/observer.ts";
@@ -18,6 +20,7 @@ import * as Coalescer from "@ambient-agent/engine/coalescer/coalescer.ts";
 import { configLayer, type CoalescerConfigValues } from "@ambient-agent/engine/coalescer/config.ts";
 import { botIdsOf, whatsappEventSource } from "@ambient-agent/engine/coalescer/whatsapp.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
+import { createBrainInbox } from "@ambient-agent/engine/brain/inbox.ts";
 import { createScribeBackfillStore } from "@ambient-agent/engine/intake/scribe-backfill.ts";
 import {
   createManagedChatInbox,
@@ -30,6 +33,7 @@ import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import { isGroupJid } from "@ambient-agent/engine/shared/whatsapp-jid.ts";
+import { createSurfaceRegistry } from "@ambient-agent/engine/surfaces/registry.ts";
 import {
   createWhatsAppAccount,
   WhatsAppAccountError,
@@ -230,6 +234,10 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const storeDir = options.storeDirectory;
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
+  const surfaces = createSurfaceRegistry(options.applicationDatabase);
+  const brainInbox = createBrainInbox(options.applicationDatabase, {
+    providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+  });
   const scribeBackfills = createScribeBackfillStore(options.applicationDatabase);
   configureScribeBackfillGate(scribeBackfills);
   const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
@@ -252,6 +260,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
 
   const program = Effect.gen(function* () {
     yield* Effect.addFinalizer(() => Effect.sync(() => archive.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(() => surfaces.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(() => brainInbox.close()));
     yield* Effect.addFinalizer(() => Effect.sync(() => scribeBackfills.close()));
     yield* Effect.addFinalizer(() => Effect.promise(() => account.stop()));
     if (!gate.hasTarget) {
@@ -270,6 +280,15 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
+    yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, options.managedChats));
+    yield* Effect.sync(() =>
+      configureIntentEscalationRuntime({
+        inbox: brainInbox,
+        surfaceIdForSpeaker: (speakerId) => surfaces.activeSurface(authenticatedAccount.jid, speakerId)?.id,
+        wake: () => wakeBrain(brainInbox),
+      }),
+    );
+    yield* Effect.promise(() => wakeBrain(brainInbox));
     if (account.initialArchiveReady !== undefined && options.sessionFactory === undefined) {
       yield* Effect.promise(() => account.initialArchiveReady!());
       for (const state of scribeBackfills.states()) {

@@ -25,6 +25,7 @@ import {
 } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
+import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
 import {
   createReactTool,
@@ -854,6 +855,13 @@ describe("runtime pairing and bridge control", () => {
         accountJid: "15550000000:7@s.whatsapp.net",
       });
       expect(getWhatsAppRuntimeStatus()).not.toHaveProperty("pairing");
+      const surfaces = createSurfaceRegistry(applicationDatabase);
+      expect(surfaces.activeSurface("15550000000:7@s.whatsapp.net", CHAT)).toMatchObject({
+        id: expect.stringMatching(/^surface:[0-9a-f-]{36}$/u),
+        providerAccountId: "15550000000:7@s.whatsapp.net",
+        providerChatId: CHAT,
+      });
+      surfaces.close();
       await expect(runtime.synchronizedChats()).resolves.toEqual([
         { jid: "project-runtime@g.us", name: "Runtime Project", kind: "group", lastActivityAt: 3_000 },
       ]);
