@@ -51,12 +51,47 @@ Durably admitting an Intent to the Brain's up-inbox without waiting for the Brai
 The Speaker remains free to converse locally, but cannot claim that any global action happened.
 _Avoid_: Dispatch, delegation, synchronous hand-off
 
+**Brain Batch**:
+The immutable set of ready up-inbox inputs claimed for one Brain decision. Inputs arriving
+after the claim wait for another Brain Batch. A crash recovers the same Batch and membership;
+settlement consumes exactly those inputs in one local transaction.
+_Avoid_: Model turn, recomputed window, queue drain
+
+**Brain Effect**:
+One semantic consequence chosen while deciding a Brain Batch. Trusted application code gives
+it stable identity, records it before asynchronous delivery, and returns a typed receipt. Its
+downstream module owns execution; the Brain's effect record is correlation and a durable
+outbox, not a second workflow engine.
+_Avoid_: Generic command envelope, Flue dispatch id, orchestration job
+
+**Scheduled Wake**:
+An independent, durable future prompt for the Brain to reconsider a stated concern. It is identified by the Brain batch effect that scheduled it; a reschedule explicitly cancels the named predecessor and creates a replacement. A Scheduled Wake is admitted to the Brain's up-inbox at least once when due, remains recoverable until that Brain batch settles, and is consumed in the same local settlement transaction. It is never a process timer.
+_Avoid_: In-memory timer, global next wake, generic scheduled job
+
+**Proactive Sweep**:
+One coalesced liveness input that tells the Brain to inspect the global Belief Projection for open loops. Boot recovery and the deployment cron may request it, but they never decide or speak; one outstanding sweep is enough until the Brain settles it.
+_Avoid_: Cron job history, Graph watcher, a second Brain
+
 **Digest**:
 A read-projection of the Graph, filtered to what a turn needs, delivered over one
 `graphContext` channel at two intensities: mechanical *pull* by default (deterministic
 one-hop, no model, no cache, recomputed live every Speaker turn) and deliberate *push* when
 the Brain attaches a richer cross-surface projection. Same mechanism, two intensities.
 _Avoid_: Cache, snapshot, context dump
+
+**Directive**:
+An authoritative Brain instruction for a chosen Speaker to communicate an objective. The Brain owns the substance and target; the Speaker must attempt it and owns the local expression.
+_Avoid_: Suggested context, final message, Brain speech
+
+**Directive Outcome**:
+The durable result returned to the Brain after a Speaker accepts a Directive: delivered with
+provider evidence, failed, Uncertain, or failed because the Speaker settled without Saying.
+Acceptance alone is never fulfillment.
+_Avoid_: Speaker transcript, dispatch receipt, best-effort log
+
+**Brief**:
+A Brain-assembled, Directive-specific packet of selected context that names its origins and links each important item to durable source evidence. It may combine source excerpts, provider facts, workflow results, and Graph beliefs; unlike a Digest, it explains this decision rather than ambient memory.
+_Avoid_: Second Digest, context dump, unprovenanced summary
 
 **Capability**:
 A cohesive kind of work the coworker can perform. Capabilities are a canonical way the
@@ -76,6 +111,12 @@ _Avoid_: Managed-chat history, mutable transcript, listener log
 **Conversation Event**:
 An immutable, normalized fact about a WhatsApp message: its arrival, edit, revocation, reaction, or delivery receipt. Later facts supersede earlier state in projections but never erase the original fact.
 _Avoid_: Database row, raw provider event, message snapshot
+
+**Historical Replay**:
+The initial reconstruction of the coworker's understanding from archived observations across
+all Surfaces, ordered by when the observations occurred and fed through the same
+Scribe-to-Brain loop as live ingestion.
+_Avoid_: Per-chat backfill, transcript import
 
 **Managed Chat**:
 A WhatsApp chat the coworker is explicitly configured to participate in. Events from other chats remain in the Conversation Archive but are not admitted to the coworker, fail-closed.
@@ -99,25 +140,57 @@ _Avoid_: Reply, respond, send
 ### Shared graph
 
 **The Graph**:
-The shared, cross-thread, cross-agent memory of the multi-agent suite — a typed knowledge graph in `application.sqlite`, beside the Conversation Archive. A *derived-meaning layer* above two raw sources (the Conversation Archive locally, GitHub remotely), never a store of truth and never a mirror of either. It holds only what agents need cheaply that those layers can't answer: who is who across platforms, what connects to what, and the social facts GitHub never records. The Scribe *proposes* to it (low-Confidence, provenanced writes); the Brain *owns and curates* it (the single authority — confirm, merge, promote, overwrite); the Digest *reads* it live for each Speaker turn.
-_Avoid_: Knowledge base, cache, GitHub mirror, second transcript
+The shared, cross-thread memory of the coworker: an append-only Attestation log plus its
+derived Belief Projection. Raw sources remain truth; Scribe proposals, deterministic ingester
+claims, and Brain rulings remain permanently attributable and never overwrite one another.
+_Avoid_: Knowledge base, mutable fact table, GitHub mirror, second transcript
 
 **Scribe**:
-The coworker's single, silent, *global* ingestion clock. It reads the fact-stream from all Surfaces through one shared Coalescer, batches it, and on each settled batch proposes Entities and Relations as low-Confidence facts, each tagged with its Provenance. It never speaks and holds no external identity; it writes *proposals*, not verdicts — the Brain owns curation. It records *honestly* rather than *certainly*: an ambiguity it cannot resolve at write time becomes a low-Confidence fact, not a blocked write. (Sharpened from the former silent *per-thread* agent; scope is now system-wide.)
-_Avoid_: Extractor, indexer, logger, second Speaker
+The coworker's single, silent, global ingestion arm. Stateless Scribe attempts may run
+concurrently to turn cross-Surface Scribe Batches into low-Confidence Attestations; they hold
+no memory or authority, and their durable proposals return to the Brain for integration.
+_Avoid_: Per-thread Scribe, second mind, logger, second Speaker
+
+**Scribe Batch**:
+A bounded, cross-Surface group of raw observations presented to one stateless Scribe attempt
+with a fresh relevant Digest and immutable evidence references. It is one extraction context,
+not a conversation or an authority boundary.
+_Avoid_: Chat window, Scribe memory, ontology transaction
+
+**Attestation**:
+An immutable claim by an identified author, carrying that author's Confidence, a non-empty
+Evidence Set, and when it was made. Correction or disagreement creates another Attestation;
+it never edits an earlier one.
+_Avoid_: Graph row, mutable fact, verdict
+
+**Evidence Set**:
+The non-empty set of immutable raw-source references that jointly support one Attestation.
+_Avoid_: Optional metadata, model-authored source id
+
+**Belief Projection**:
+The coworker's current ontology, deterministically folded from Attestations and rebuilt
+whenever needed. It is the Graph's read surface, not another source of truth.
+_Avoid_: Truth table, mutable Graph, model memory
 
 **Entity**:
-A typed node in the Graph — one of Person, Agent, Thread, Topic, Commitment, Repository, Issue, PullRequest, Project, Milestone, Goal. Carries typed properties, a Confidence, and Provenance.
+A typed node resolved in the Belief Projection — one of Person, Agent, Thread, Topic,
+Commitment, Repository, Issue, PullRequest, Project, Milestone, Goal.
 
 **Relation**:
-A typed, directed edge between two Entities (e.g. `discusses`, `made_by`, `blocks`). An edge is a single fact, stated once; restating it updates its Confidence. Every relation exists to power a named consumer query — facts GitHub already serves fresh are not edges.
+A typed, directed connection between two Entities (for example `discusses`, `made_by`,
+`blocks`) represented by claims in the Attestation log and resolved in the Belief Projection.
+Every Relation exists to power a named read; facts a raw source already serves fresh are not
+Relations.
 
 **Confidence**:
-A 0–1 score on every Entity and Relation recording how sure the Scribe is of a derived fact. The Graph is deliberately tentative: an uncertain memory is not a hazard but a question the Speaker may raise in conversation, and the answer raises the Confidence.
+A 0–1 score expressing one author's certainty in one Attestation; the Belief Projection
+derives its current confidence without treating repeated use of the same Evidence Set as
+independent support.
 _Avoid_: Certainty, weight, score (unqualified)
 
 **Provenance**:
-The pointer from a Graph row back to the raw fact that produced it — a Conversation Archive message (`source_chat_id`, `source_message_id`) or a GitHub webhook delivery (`source_delivery_id`). The Graph derives; provenance keeps the derivation traceable to its source.
+The permanent evidence trail from an Attestation back to the raw observations that support
+it, represented by its Evidence Set.
 
 **Commitment**:
 A *social* fact in the Graph — a person told the group they would do something (status open/done/dropped, made by exactly one Person or Agent, optionally about an Issue, PR, or Topic). Distinct from an Issue: a Commitment is conversational and may never touch GitHub; it may *link* to an Issue but is never the same thing.
@@ -128,6 +201,10 @@ The rule that one real actor (human or Agent) is a single Entity however many pl
 _Avoid_: Account (as the primary noun), duplicate person
 
 ### Agent anatomy
+
+**Conversation lifetime**:
+The boundary for retaining an Agent's private working conversation: continuing across activations, fresh per attempt, or limited to one Bounded Workflow run. It never implies ownership of the Graph, queues, or work state.
+_Avoid_: Stateful/stateless (without naming the lifetime), state ownership
 
 **Instructions**:
 The agent's identity and standing constraints — who it is. Short and stable.
@@ -154,6 +231,7 @@ _Avoid_: Prompt test, golden response, vibe check
 
 **Bounded Workflow**:
 A finite, autonomous unit of work with validated input, its own run record, and a terminal result. It does not pause for human conversation; results, failures, and rare Milestones return up to the Brain, which owns the work's lifecycle.
+Every invocation is a fresh run with a fresh Specialist conversation. Follow-up work starts another run from current durable provider state; it never resumes a finished or interrupted run's private conversation.
 _Avoid_: Interactive workflow, suspended conversation
 
 **Specialist**:
