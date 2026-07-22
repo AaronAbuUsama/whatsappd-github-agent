@@ -158,6 +158,10 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
   ],
   ["brain_batches", ["batch_id", "created_at", "dispatch_id", "accepted_at", "settled_at"]],
   ["brain_inbox_inputs", ["input_id", "kind", "intent_id", "admitted_at", "batch_id"]],
+  [
+    "brain_effects",
+    ["effect_id", "batch_id", "kind", "payload_json", "status", "dispatch_id", "accepted_at", "completed_at", "created_at"],
+  ],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;
 const LEGACY_APPLICATION_SCHEMA = new Map<string, readonly string[]>([
   ...LEGACY_APPLICATION_CORE_SCHEMA,

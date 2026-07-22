@@ -30,7 +30,11 @@ export const dispatchSpeaker = async ({ id, input }: SpeakerDispatchRequest): Pr
   const enriched = attachGraphContext(input);
   const receipt = await dispatch(speaker, { id, input: enriched });
   speakerActivity.accepted(receipt, enriched);
-  const scribeInput = input.type === "whatsapp.window" ? (scribeBackfills?.liveSlice(input) ?? (scribeBackfills === undefined ? input : undefined)) : input;
+  const scribeInput = input.type === "brain.directive"
+    ? undefined
+    : input.type === "whatsapp.window"
+      ? (scribeBackfills?.liveSlice(input) ?? (scribeBackfills === undefined ? input : undefined))
+      : input;
   if (scribeInput !== undefined) scribeCoalescer.offer({ id, input: scribeInput });
   return receipt;
 };

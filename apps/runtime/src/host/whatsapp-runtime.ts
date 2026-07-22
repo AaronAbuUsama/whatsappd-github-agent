@@ -1,9 +1,10 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
-import { configureScribeBackfillGate, makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import { configureScribeBackfillGate, dispatchSpeaker, makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
 import { configureIntentEscalationRuntime } from "@ambient-agent/agents/capabilities/intent-escalation/runtime.ts";
 import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
+import { configureBrainEffectsRuntime, recoverPendingPrompts } from "@ambient-agent/agents/brain/effects-runtime.ts";
 import { invoke } from "@flue/runtime";
 import scribeBackfill from "../workflows/scribe-backfill.ts";
 import type { SpeakerDispatchEvent, SpeakerObserver } from "@ambient-agent/agents/speaker/observer.ts";
@@ -288,6 +289,29 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         wake: () => wakeBrain(brainInbox),
       }),
     );
+    yield* Effect.sync(() =>
+      configureBrainEffectsRuntime({
+        inbox: brainInbox,
+        wake: () => wakeBrain(brainInbox),
+        deliverPrompt: (effect) => {
+          const binding = surfaces.activeBinding(effect.directive.surfaceId);
+          if (binding === undefined) {
+            throw new Error(`Surface ${effect.directive.surfaceId} has no active provider binding.`);
+          }
+          return (options.dispatch ?? dispatchSpeaker)({
+            id: binding.providerChatId,
+            input: {
+              type: "brain.directive",
+              directive: {
+                ...effect.directive,
+                brief: { ...effect.directive.brief, evidenceIds: [...effect.directive.brief.evidenceIds] },
+              },
+            },
+          });
+        },
+      }),
+    );
+    yield* Effect.promise(() => recoverPendingPrompts());
     yield* Effect.promise(() => wakeBrain(brainInbox));
     if (account.initialArchiveReady !== undefined && options.sessionFactory === undefined) {
       yield* Effect.promise(() => account.initialArchiveReady!());

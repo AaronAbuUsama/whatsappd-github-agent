@@ -218,7 +218,23 @@ export const specialistMilestoneInputSchema = v.object({
 export type SpecialistMilestoneInput = v.InferOutput<typeof specialistMilestoneInputSchema>;
 export type SpecialistInput = SpecialistResultInput | SpecialistMilestoneInput;
 
-export type SpeakerInput = WhatsAppWindowInput | GitHubIngressInput | SpecialistInput;
+export const brainDirectiveInputSchema = v.object({
+  type: v.literal("brain.directive"),
+  directive: v.object({
+    id: nonEmptyString,
+    surfaceId: nonEmptyString,
+    objective: nonEmptyString,
+    brief: v.object({
+      summary: nonEmptyString,
+      evidenceIds: v.pipe(v.array(nonEmptyString), v.minLength(1)),
+    }),
+  }),
+  graphContext,
+});
+
+export type BrainDirectiveInput = v.InferOutput<typeof brainDirectiveInputSchema>;
+
+export type SpeakerInput = WhatsAppWindowInput | GitHubIngressInput | SpecialistInput | BrainDirectiveInput;
 
 export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowInput =>
   v.parse(whatsappWindowInputSchema, {
@@ -256,6 +272,7 @@ export const speakerDigestSeeds = (input: SpeakerInput): DigestSeeds => {
   if (input.type === "specialist.result" || input.type === "specialist.milestone") {
     return { ...(input.chatId === undefined ? {} : { chatId: input.chatId }), identities: [] };
   }
+  if (input.type === "brain.directive") return { identities: [] };
   const repo = `${input.repository.owner}/${input.repository.repo}`;
   const externalIds = new Set<string>([repo, input.sender.login]);
   if (input.type === "github.issue.opened") {

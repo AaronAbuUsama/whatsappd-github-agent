@@ -24,6 +24,7 @@ import {
   startWhatsAppRuntime,
 } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
+import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
 import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
@@ -870,6 +871,77 @@ describe("runtime pairing and bridge control", () => {
       await runtime.stop();
       stdoutSpy.mockRestore();
     }
+  });
+
+  it("recovers a durable pending Brain prompt through its active Surface binding", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    const source = inbound({ id: "directive-source-31", text: "I need help but I did not say with what." });
+    const evidence = conversationArrival(source);
+    archive.append(evidence);
+    archive.close();
+
+    const seededSurfaces = createSurfaceRegistry(applicationDatabase);
+    const [surface] = seededSurfaces.activateConfigured("15550000000:7@s.whatsapp.net", [CHAT]);
+    const seededInbox = createBrainInbox(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => seededSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    seededInbox.admitIntent({
+      sourceSurfaceId: surface!.id,
+      interpretation: "The request needs clarification.",
+      evidenceIds: [evidence.id],
+    });
+    const batch = seededInbox.claimBatch();
+    if (batch === undefined) throw new Error("Expected a Brain Batch");
+    seededInbox.markBatchDispatched(batch.id, {
+      dispatchId: "dispatch:brain:seeded",
+      acceptedAt: "2026-07-22T12:00:00.000Z",
+    });
+    const pending = seededInbox.recordPrompt({
+      batchId: batch.id,
+      surfaceId: surface!.id,
+      objective: "Ask what help is needed.",
+      brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+    });
+    seededInbox.close();
+    seededSurfaces.close();
+
+    const directives: SpeakerDispatchRequest[] = [];
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+      dispatch: async (request) => {
+        directives.push(request);
+        return { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" };
+      },
+    });
+    await vi.waitFor(() => expect(directives).toHaveLength(1));
+    expect(directives).toEqual([{
+      id: CHAT,
+      input: {
+        type: "brain.directive",
+        directive: {
+          id: pending.id,
+          surfaceId: surface!.id,
+          objective: "Ask what help is needed.",
+          brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+        },
+      },
+    }]);
+    await runtime.stop();
+
+    const forensicSurfaces = createSurfaceRegistry(applicationDatabase);
+    const forensicInbox = createBrainInbox(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => forensicSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    expect(forensicInbox.effects(batch.id)).toContainEqual(expect.objectContaining({
+      id: pending.id,
+      status: "accepted",
+      dispatch: { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" },
+    }));
+    forensicInbox.close();
+    forensicSurfaces.close();
   });
 });
 
