@@ -15,22 +15,24 @@ forward from `SYSTEM-ARCHITECTURE.md`. **One instance, one operator — not mult
 (tenancy was killed 2026-07-19).
 
 **Already built in reusable form** (§13): the Graph's typed query surface, the live Digest
-pull side, async delegation with durable return, modelless coalescing, and the Coder /
-Reviewer / Planner Specialists as distinct GitHub identities. The current Graph write model
+pull side, the reactive Brain conversation loop (Intent → Batch → Directive/silence → Outcome),
+stable account-scoped Surfaces, async delegation with durable return, modelless coalescing,
+and the Coder / Reviewer / Planner Specialists as distinct GitHub identities. The current Graph write model
 is **not** definitive: mutable entity/relation upserts must become append-only Attestations
 with the same read shape derived as the Belief Projection.
 
 **The distance to close is concentration of authority, not new machinery:**
 
-- Introduce the **Brain** as a real actor — single up-inbox, two clocks, owns state + work.
+- Finish concentrating authority in the **Brain** — route GitHub/work/ontology through its
+  existing durable up-inbox and add its proactive clock.
 - Consolidate the **Scribe** to one global ingestion clock with bounded stateless attempts and
   explicit Evidence Sets.
 - Replace mutable Graph writes with the append-only Attestation log + derived Belief Projection.
-- Reduce the **Speaker** to a dumb mouth — remove issue/delegation/ontology-write, add intent escalation.
+- Reduce the **Speaker** to a dumb mouth — remove issue/delegation/ontology-write; Intent
+  escalation and Directive-only Saying are already built.
 - Replace GitHub webhook broadcast + drop with the single up-inbox.
-- Replace fixed Managed Chat routing with stable **Surfaces**, account-scoped bindings, and
-  archive-backed delivery outcomes; configured groups remain fail-closed and known-Person DM
-  targets resolve through the same registry during prompt admission.
+- Complete **Surface** routing by resolving known-Person DM targets through the existing
+  stable registry and removing the remaining first-chat/provider-id shortcuts.
 - Extend the existing live Digest projector with Projection version/evidence/bounds and compose
   bounded Brain-selected seeds over the same `graphContext` channel.
 
@@ -49,6 +51,7 @@ Both were behaviour-neutral on single-box (all removed code was gated behind uns
 single-box build is deployed and healthy.
 
 **Deferred (decisions, not deletes — for the next design pass):**
+
 - Credential/session storage: collapse the file-vs-libsql fork to files-only (`tenant-credentials.ts`).
 - Specialist sandbox substrate: `local()` vs Daytona (native in Flue) vs e2b.
 

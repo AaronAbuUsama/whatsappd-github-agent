@@ -29,3 +29,20 @@ export interface SpeakerObserver {
   settledSilent(event: SpeakerSettlementEvent): void;
   settledFailed(event: SpeakerFailedEvent): void;
 }
+
+export interface DirectiveDispatchEvent {
+  readonly directiveId: string;
+  readonly surfaceId: string;
+  readonly dispatchId: string;
+}
+
+export interface DirectiveFailedEvent extends DirectiveDispatchEvent {
+  readonly error: string;
+}
+
+/** Lifecycle of one Speaker run admitted from a Brain Directive. */
+export interface DirectiveObserver {
+  dispatched(event: DirectiveDispatchEvent): void;
+  settledWithoutSay(event: DirectiveDispatchEvent): void;
+  settledFailed(event: DirectiveFailedEvent): void;
+}

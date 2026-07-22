@@ -27,6 +27,7 @@ import { createConversationArchive } from "../../packages/engine/src/intake/conv
 import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
 import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
+import { createSurfaceDeliveryStore } from "../../packages/engine/src/surfaces/delivery.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
 import {
   createReactTool,
@@ -35,6 +36,7 @@ import {
   createSearchWhatsAppHistoryTool,
 } from "../../packages/agents/src/capabilities/whatsapp-participation/tools.ts";
 import { createWhatsAppAccount } from "../../packages/installation/src/whatsapp-account.ts";
+import { createSayDirectiveTool } from "../../packages/agents/src/capabilities/directive-delivery/tools.ts";
 
 const CHAT = "managed-31@g.us";
 const OTHER_CHAT = "unmanaged-31@g.us";
@@ -873,7 +875,7 @@ describe("runtime pairing and bridge control", () => {
     }
   });
 
-  it("recovers a durable pending Brain prompt through its active Surface binding", async () => {
+  it("recovers a pending Brain prompt only after participation is ready, then proves its Surface Delivery", async () => {
     const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
     const source = inbound({ id: "directive-source-31", text: "I need help but I did not say with what." });
     const evidence = conversationArrival(source);
@@ -906,6 +908,12 @@ describe("runtime pairing and bridge control", () => {
     seededSurfaces.close();
 
     const directives: SpeakerDispatchRequest[] = [];
+    let resolveOutcome!: (value: unknown) => void;
+    let rejectOutcome!: (cause: unknown) => void;
+    const delivered = new Promise<unknown>((resolve, reject) => {
+      resolveOutcome = resolve;
+      rejectOutcome = reject;
+    });
     const runtime = startWhatsAppRuntime({
       storeDirectory,
       applicationDatabase,
@@ -913,33 +921,61 @@ describe("runtime pairing and bridge control", () => {
       sessionFactory: () => fakeSession().session,
       dispatch: async (request) => {
         directives.push(request);
+        setTimeout(() => {
+          if (request.input.type !== "brain.directive") return;
+          void Promise.resolve(
+            createSayDirectiveTool(request.id).run({
+              input: { directiveId: request.input.directive.id, text: "What do you need help with?" },
+            }),
+          ).then(resolveOutcome, rejectOutcome);
+        }, 0);
         return { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" };
       },
     });
     await vi.waitFor(() => expect(directives).toHaveLength(1));
-    expect(directives).toEqual([{
-      id: CHAT,
-      input: {
-        type: "brain.directive",
-        directive: {
-          id: pending.id,
-          surfaceId: surface!.id,
-          objective: "Ask what help is needed.",
-          brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+    expect(directives).toEqual([
+      {
+        id: CHAT,
+        input: {
+          type: "brain.directive",
+          directive: {
+            id: pending.id,
+            surfaceId: surface!.id,
+            objective: "Ask what help is needed.",
+            brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+          },
         },
       },
-    }]);
+    ]);
+    await expect(delivered).resolves.toMatchObject({
+      directiveId: pending.id,
+      surfaceId: surface!.id,
+      status: "delivered",
+      providerMessageId: "real-host-message-1",
+      conversationEventId: `arrival:${CHAT}:real-host-message-1`,
+    });
     await runtime.stop();
 
     const forensicSurfaces = createSurfaceRegistry(applicationDatabase);
     const forensicInbox = createBrainInbox(applicationDatabase, {
       providerChatIdForSurface: (surfaceId) => forensicSurfaces.activeBinding(surfaceId)?.providerChatId,
     });
-    expect(forensicInbox.effects(batch.id)).toContainEqual(expect.objectContaining({
-      id: pending.id,
-      status: "accepted",
-      dispatch: { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" },
-    }));
+    expect(forensicInbox.effects(batch.id)).toContainEqual(
+      expect.objectContaining({
+        id: pending.id,
+        status: "accepted",
+        dispatch: { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" },
+      }),
+    );
+    const forensicDeliveries = createSurfaceDeliveryStore(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => forensicSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    expect(forensicDeliveries.outcome(pending.id)).toMatchObject({
+      status: "delivered",
+      providerMessageId: "real-host-message-1",
+      conversationEventId: `arrival:${CHAT}:real-host-message-1`,
+    });
+    forensicDeliveries.close();
     forensicInbox.close();
     forensicSurfaces.close();
   });
