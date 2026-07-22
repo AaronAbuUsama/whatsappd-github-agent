@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Agent-agnostic conversation machinery: the coalescer (Window pipeline + WindowDispatcher port), intake (archive, inbox, admission), GitHub ingress, model/provider glue, logging, and shared utilities. Imports nothing internal.",
   "exports": {
+    "./brain/inbox.ts": "./src/brain/inbox.ts",
     "./braintrust.ts": "./src/braintrust.ts",
     "./coalescer/chat-gate.ts": "./src/coalescer/chat-gate.ts",
     "./dispatch/dispatch-correlator.ts": "./src/dispatch/dispatch-correlator.ts",
