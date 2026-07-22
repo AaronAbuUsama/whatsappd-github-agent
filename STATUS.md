@@ -7,21 +7,25 @@ surface), a single global **Scribe**, and one owned **Graph**. Its **§13** is t
 always-current map of what is built versus what is designed-but-not-yet-built. Read §13 for
 the real frontier; this file is only the one-paragraph orientation.
 
-## Where we are (2026-07-21)
+## Where we are (2026-07-22)
 
 Mid-reset. Three dead pivots — **Eve-era**, **Ambience**, and the **SaaS / multi-tenant**
 cutover — have been stripped down to one stable line, and the system is being rebuilt
 forward from `SYSTEM-ARCHITECTURE.md`. **One instance, one operator — not multi-tenant**
 (tenancy was killed 2026-07-19).
 
-**Already built, and already the definitive shape** (§13): the Graph, the live Digest pull
-side, async delegation with durable no-drop return, modelless coalescing, and the
-Coder / Reviewer / Planner Specialists as distinct GitHub identities.
+**Already built in reusable form** (§13): the Graph's typed query surface, the live Digest
+pull side, async delegation with durable return, modelless coalescing, and the Coder /
+Reviewer / Planner Specialists as distinct GitHub identities. The current Graph write model
+is **not** definitive: mutable entity/relation upserts must become append-only Attestations
+with the same read shape derived as the Belief Projection.
 
 **The distance to close is concentration of authority, not new machinery:**
 
 - Introduce the **Brain** as a real actor — single up-inbox, two clocks, owns state + work.
-- Consolidate the **Scribe** to one global ingestion clock with explicit per-fact provenance.
+- Consolidate the **Scribe** to one global ingestion clock with bounded stateless attempts and
+  explicit Evidence Sets.
+- Replace mutable Graph writes with the append-only Attestation log + derived Belief Projection.
 - Reduce the **Speaker** to a dumb mouth — remove issue/delegation/ontology-write, add intent escalation.
 - Replace GitHub webhook broadcast + drop with the single up-inbox.
 
