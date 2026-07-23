@@ -356,7 +356,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         wake: () => wakeBrain(brainInbox),
         // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
         // process-global at app boot, well before any Batch files an issue.
-        fileIssue: (request) => createIssueFiler(getIssueManagementRuntime())(request),
+        fileIssue: (request, effectId) => createIssueFiler(getIssueManagementRuntime())(request, effectId),
         repositoryForSurface: (surfaceId) => {
           if (options.repositoryForChat === undefined) {
             throw new Error("Issue-filing repository routing is not configured.");

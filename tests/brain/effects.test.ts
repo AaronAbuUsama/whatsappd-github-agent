@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   configureBrainEffectsRuntime,
   deliverIssueFilingEffect,
+  recoverPendingIssueFilings,
   recoverPendingPrompts,
 } from "../../packages/agents/src/brain/effects-runtime.ts";
 import {
@@ -228,6 +229,86 @@ describe("Brain Effects and settlement", () => {
     // The guard searched by title and refused a second create — no create event was emitted.
     expect(repository.events().some((event) => event.kind === "create")).toBe(false);
     operations.close();
+    inbox.close();
+  });
+
+  it("reconciles a recovered filing by Operation Identity without a second create or a title search", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, filer } = filingRuntime();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+    const pending = inbox.recordIssueFiling({
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug",
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    });
+    // First attempt lands the create and its completed Operation, then the Effect completion is lost to a crash.
+    await filer(pending.request, pending.id);
+    expect(repository.events().filter((event) => event.kind === "create")).toHaveLength(1);
+    repository.resetEvents();
+
+    const recovered = await deliverIssueFilingEffect(pending);
+    expect(recovered.status).toBe("completed");
+    expect(recovered.outcome).toMatchObject({ status: "reconciled", issueNumber: 1 });
+    // Dedup came from strongly-consistent Operation Identity, never the eventually consistent title search.
+    expect(repository.events().some((event) => event.kind === "create")).toBe(false);
+    expect(repository.events().some((event) => event.kind === "search")).toBe(false);
+    operations.close();
+    inbox.close();
+  });
+
+  it("settles a non-retryable filing failure as uncertain so the Batch is not wedged", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, filer } = filingRuntime();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+    repository.failNextCreate(Object.assign(new Error("Not Found"), { status: 404 }));
+
+    const filed = await createFileIssueTool().run({ input: {
+      batchId,
+      surfaceId: SURFACE,
+      kind: "bug",
+      title: "Filing into an archived repository",
+      body: "The repository was archived after this chat was mapped.",
+    } });
+    expect(filed).toMatchObject({ kind: "file_issue", status: "uncertain" });
+    // The Effect completed terminally, so the Batch settles rather than blocking every later Intent.
+    await expect(createSettleBrainBatchTool().run({ input: { batchId } })).resolves.toMatchObject({ status: "settled" });
+    operations.close();
+    inbox.close();
+  });
+
+  it("contains a boot-recovery filing failure instead of killing the runtime", async () => {
+    const { inbox, batchId } = openFixture();
+    inbox.recordIssueFiling({
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug",
+      title: "GitHub was unreachable at boot",
+      body: "A transient network failure met the filing during boot recovery.",
+    });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: async () => { throw Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" }); },
+      repositoryForSurface: () => REPOSITORY,
+    });
+    // A rejection here would be an Effect defect that kills the WhatsApp fiber; recovery must swallow it.
+    await expect(recoverPendingIssueFilings()).resolves.toBeUndefined();
+    expect(inbox.pendingIssueFilings()).toHaveLength(1);
     inbox.close();
   });
 

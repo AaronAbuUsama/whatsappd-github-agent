@@ -164,6 +164,15 @@ export const ManagedConfigSchema = v.pipe(
     "Every surface repository chat must be included in managedChats",
   ),
   v.check(
+    (config) => {
+      const chats = config.github.surfaceRepositories.map(({ chat }) => chat.toLowerCase());
+      return new Set(chats).size === chats.length;
+    },
+    // app.ts resolves surfaceRepositories through a `new Map(...)`, so a duplicated chat with different
+    // repositories would silently route by last-wins. Refuse the contradiction loudly, like the siblings.
+    "Each surface repository chat must be mapped at most once",
+  ),
+  v.check(
     (config) =>
       config.smoke === undefined ||
       config.managedChats.some((chat) => chat.toLowerCase() === config.smoke!.canaryChat.toLowerCase()),
