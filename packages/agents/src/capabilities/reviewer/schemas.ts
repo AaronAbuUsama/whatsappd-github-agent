@@ -3,10 +3,21 @@ import * as v from "valibot";
 const nonEmpty = v.pipe(v.string(), v.trim(), v.minLength(1));
 export const REVIEW_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
 
-export const reviewerJobInputSchema = v.object({
+const reviewerJobRequestEntries = {
   repository: nonEmpty,
   pullRequest: v.pipe(v.number(), v.integer(), v.minValue(1)),
-  expectedHeadSha: nonEmpty,
+};
+
+// The Brain's on-request launch carries only repository + pullRequest; the workflow pins to
+// the live head. The legacy webhook/command ingress still supplies expectedHeadSha, so it stays
+// an optional part of the workflow input.
+export const reviewerJobRequestSchema = v.object(reviewerJobRequestEntries);
+
+export const reviewerJobInputSchema = v.object({
+  ...reviewerJobRequestEntries,
+  expectedHeadSha: v.optional(nonEmpty),
+  brainWorkId: v.optional(nonEmpty),
+  sourceSurfaceId: v.optional(nonEmpty),
 });
 
 export type ReviewerJobInput = v.InferOutput<typeof reviewerJobInputSchema>;

@@ -9,6 +9,7 @@ import { deliverTerminalResult, reconcileSpecialistWorkAtBoot } from "../../pack
 import { configureDelegationRuntime } from "../../packages/agents/src/capabilities/delegation/runtime.ts";
 import { launchSpecialistWork } from "../../packages/agents/src/capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "../../packages/agents/src/capabilities/coder/workflow.ts";
+import { reviewerSpecialistSpec } from "../../packages/agents/src/capabilities/reviewer/workflow.ts";
 import brain from "../../packages/agents/src/brain/agent.ts";
 import { createBrainInbox, type BrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
@@ -61,9 +62,46 @@ const run = (runId: string, status: RunRecord["status"], input: unknown, result?
 });
 
 describe("Brain-owned Specialist work", () => {
-  it("mounts the Coder launcher on the global Brain, not on a chat-bound Speaker", async () => {
+  it("mounts the Coder and Reviewer launchers on the global Brain, not on a chat-bound Speaker", async () => {
     const config = await brain.initialize({ id: "global", env: {} });
-    expect(config.tools?.map(({ name }) => name)).toContain("start_coder_job");
+    const toolNames = config.tools?.map(({ name }) => name);
+    expect(toolNames).toContain("start_coder_job");
+    expect(toolNames).toContain("start_reviewer_job");
+  });
+
+  it("reserves a reviewer launch keyed by pull request and an exact retry admits the workflow once", async () => {
+    const { inbox, batchId } = fixture();
+    let admissions = 0;
+    configureDelegationRuntime({
+      inbox,
+      wake: async () => undefined,
+      providerChatIdForSurface: () => CHAT,
+      findAdmittedRun: async () => undefined,
+      admitWorkflow: async (_workflow, input) => {
+        admissions += 1;
+        expect(input).toMatchObject({
+          repository: "acme/widgets",
+          pullRequest: 8,
+          brainWorkId: expect.stringMatching(/^brain-work:/u),
+          sourceSurfaceId: SOURCE,
+        });
+        return { runId: "run:review" };
+      },
+    });
+
+    const request = { batchId, sourceSurfaceId: SOURCE, repository: "acme/widgets", pullRequest: 8 };
+    const first = await launchSpecialistWork(request, reviewerSpecialistSpec);
+    const retry = await launchSpecialistWork(request, reviewerSpecialistSpec);
+
+    expect(first).toEqual({ workId: expect.stringMatching(/^brain-work:[a-f0-9]{64}$/u), runId: "run:review" });
+    expect(retry).toEqual(first);
+    expect(admissions).toBe(1);
+    expect(inbox.specialistLaunch(first.workId)).toMatchObject({
+      status: "accepted",
+      specialist: "reviewer",
+      input: { repository: "acme/widgets", pullRequest: 8 },
+    });
+    inbox.close();
   });
 
   it("records one stable work identity before Flue admission and exact retries return the same run", async () => {

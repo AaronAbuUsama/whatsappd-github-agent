@@ -4,9 +4,10 @@ import * as v from "valibot";
 import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscription.ts";
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 import reviewerSkill from "./SKILL.md" with { type: "skill" };
-import { archiveBytes, findReviewForHead, listChangedFiles, missingVerdictReviewEvent, renderReviewSubmission, reviewEvent, reviewerHeadMarker, reviewerLogin, validInlineLocations } from "./github.ts";
+import { archiveBytes, findReviewForHead, listChangedFiles, missingVerdictReviewEvent, renderReviewSubmission, reviewEvent, reviewHeadEligible, reviewerHeadMarker, reviewerLogin, validInlineLocations } from "./github.ts";
 import { getReviewerRuntime } from "./runtime.ts";
-import { reviewFindingSchema, reviewerJobInputSchema, reviewerResultSchema, type ReviewerJobInput, type ReviewerResult } from "./schemas.ts";
+import { reviewFindingSchema, reviewerJobInputSchema, reviewerJobRequestSchema, reviewerResultSchema, type ReviewerJobInput, type ReviewerResult } from "./schemas.ts";
+import type { SpecialistSpec } from "../delegation/tools.ts";
 
 const SHELL_TIMEOUT_MS = 20 * 60 * 1000;
 const reviewerSubmissions = new Map<string, Promise<ReviewerResult>>();
@@ -66,7 +67,7 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
   const github = await resolveGithub(repo);
   log.info("reviewer.fetching-live-head", { repository: input.repository, pullRequest: input.pullRequest });
   const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: input.pullRequest });
-  if (pr.state !== "open" || pr.draft || pr.head.sha !== input.expectedHeadSha) {
+  if (!reviewHeadEligible(pr, input.expectedHeadSha)) {
     return { status: "blocked", prNumber: pr.number, headSha: pr.head.sha, summary: "Review skipped because the admitted pull-request head is no longer the live eligible head." };
   }
   const login = await reviewerLogin(github);
@@ -159,3 +160,16 @@ const run = async ({ harness, input, log }: { harness: FlueHarness; input: Revie
 };
 
 export const reviewer = defineWorkflow({ agent: reviewerAgent, input: reviewerJobInputSchema, output: reviewerResultSchema, run });
+
+export const START_REVIEWER_JOB_DESCRIPTION =
+  "Start a background review workflow for one open GitHub pull request: an independent Reviewer exercises the repository " +
+  "at the live head, judges the diff in context, and submits exactly one formal review. Returns immediately with a stable " +
+  "Brain work id and Flue run id; the finished result returns to the global Brain.";
+
+export const reviewerSpecialistSpec: SpecialistSpec<typeof reviewerJobRequestSchema> = {
+  name: "reviewer",
+  toolName: "start_reviewer_job",
+  description: START_REVIEWER_JOB_DESCRIPTION,
+  input: reviewerJobRequestSchema,
+  workflow: reviewer,
+};

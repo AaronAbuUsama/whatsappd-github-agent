@@ -13,6 +13,7 @@ import { configureDelegationRuntime } from "@ambient-agent/agents/capabilities/d
 import { reconcileSpecialistWorkAtBoot } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { recoverPendingSpecialistLaunches } from "@ambient-agent/agents/capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
+import { reviewerSpecialistSpec } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
 import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
 import {
   configureBrainEffectsRuntime,
@@ -438,7 +439,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       afterParticipationReady: async () => {
         await recoverPendingPrompts();
         await recoverPendingIssueFilings();
-        await recoverPendingSpecialistLaunches([coderSpecialistSpec]);
+        await recoverPendingSpecialistLaunches([coderSpecialistSpec, reviewerSpecialistSpec]);
         await reconcileSpecialistWorkAtBoot({ inbox: brainInbox, wake: () => wakeBrain(brainInbox), getRun });
         await wakeBrain(brainInbox);
         await options.afterParticipationReady?.();

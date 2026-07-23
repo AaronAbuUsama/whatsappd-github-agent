@@ -91,6 +91,15 @@ export const reviewerLogin = async (github: ReviewerGitHub): Promise<string> =>
 export const reviewerHeadMarker = (headSha: string): string =>
   `<!-- ambient-agent-review-head:${headSha} -->`;
 
+// A PR head is eligible when open and non-draft. When expectedHeadSha is pinned (legacy
+// webhook/command launch) the live head must match it; an on-request Brain launch leaves it
+// undefined and reviews whatever head is live.
+export const reviewHeadEligible = (
+  pr: { state: string; draft?: boolean; head: { sha: string } },
+  expectedHeadSha?: string,
+): boolean =>
+  pr.state === "open" && !pr.draft && (expectedHeadSha === undefined || pr.head.sha === expectedHeadSha);
+
 export const findReviewForHead = async (
   github: ReviewerGitHub,
   repo: GitHubRepositoryRef,

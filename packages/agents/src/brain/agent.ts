@@ -9,6 +9,7 @@ import {
 } from "./tools.ts";
 import { createDelegationTools } from "../capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "../capabilities/coder/workflow.ts";
+import { reviewerSpecialistSpec } from "../capabilities/reviewer/workflow.ts";
 import { createBrainGraphTools } from "../capabilities/graph/tools.ts";
 import { getBrainEffectsRuntime } from "./effects-runtime.ts";
 
@@ -34,7 +35,7 @@ export default defineAgent(() => ({
         batchId: batch.id,
       };
     }),
-    ...createDelegationTools([coderSpecialistSpec]),
+    ...createDelegationTools([coderSpecialistSpec, reviewerSpecialistSpec]),
     createPromptSpeakerTool(),
     createFileIssueTool(),
     createStaySilentTool(),
@@ -49,6 +50,7 @@ export default defineAgent(() => ({
     "For every Batch, choose one or more typed Effects, then call settle_brain_batch only after every chosen Effect is durably accepted or completed.",
     "Use prompt_speaker when a selected existing Surface should communicate. Give the Speaker an objective and evidence-backed Brief, never final wording and never a WhatsApp address.",
     "Use start_coder_job only when an Intent warrants bounded implementation work. Supply the current Batch id and the originating Surface as provenance; that Surface is not a forced reporting destination.",
+    "Use start_reviewer_job when an Intent asks to review an open pull request now. Supply the repository and pull-request number plus the current Batch id and originating Surface; the Reviewer judges the live head and its result returns here.",
     "Use file_issue when an Intent asks to open a GitHub issue. Supply the current Batch id and the originating Surface; the repository is resolved from that Surface, never chosen here. It returns the real outcome — a created issue number and URL, an existing duplicate, or an uncertain result — which you then report with prompt_speaker.",
     "A Specialist result returns here, not to a Speaker. Reconcile its real outcome and URL, then independently select any appropriate active Surface with prompt_speaker.",
     "Use stay_silent when no external consequence is warranted. Silence must be explicit; ordinary final prose does not settle a Batch.",
