@@ -10,8 +10,12 @@ const nonEmpty = v.pipe(v.string(), v.trim(), v.minLength(1));
  * one-line milestone the digest already carries — every streamed Milestone in order, plus the
  * terminal outcome once the work has finished. Read-only; the Speaker never launches or mutates
  * work. `found: false` when delegation is unwired or the id is unknown, so it never throws a turn.
+ *
+ * Scoped to the calling Speaker's chat (`id` = its managed chat id), mirroring the digest guard:
+ * a work item is visible only when its source Surface resolves to this chat via
+ * `providerChatIdForSurface`. A workId from another chat reads as `found: false`, never leaking.
  */
-export const createLookupWorkTool = (): ToolDefinition =>
+export const createLookupWorkTool = (chatId: string): ToolDefinition =>
   defineTool({
     name: "lookup_work",
     description:
@@ -32,6 +36,8 @@ export const createLookupWorkTool = (): ToolDefinition =>
       if (runtime === undefined) return absent;
       const launch = runtime.inbox.specialistLaunch(input.workId);
       if (launch === undefined) return absent;
+      // Fail-closed cross-surface guard: only this chat's own work is readable here.
+      if (runtime.providerChatIdForSurface(launch.sourceSurfaceId) !== chatId) return absent;
       const milestones = runtime.inbox.workMilestones(input.workId).map((milestone) => ({
         note: milestone.note,
         at: milestone.at,

@@ -17,7 +17,7 @@ export default defineAgent(({ id }) => ({
     ...createWhatsAppParticipationTools(id),
     createSayDirectiveTool(id),
     createEscalateIntentTool(id),
-    createLookupWorkTool(),
+    createLookupWorkTool(id),
     ...createSpeakerGraphTools(),
   ],
   instructions: [

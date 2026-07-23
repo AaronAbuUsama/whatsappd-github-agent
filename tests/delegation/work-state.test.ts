@@ -220,6 +220,9 @@ describe("Digest composition (#319)", () => {
     expect(Buffer.byteLength(JSON.stringify(composed))).toBeLessThanOrEqual(MAX_GRAPH_DIGEST_BYTES);
     expect(composed.workItems!.length).toBeGreaterThan(0);
     expect(composed.workItems!.length).toBeLessThan(many.length); // trimmed to fit
+    // Input is oldest-first; the trim must retain the NEWEST work, not the stalest.
+    expect(composed.workItems!.some((item) => item.workId === many.at(-1)!.workId)).toBe(true);
+    expect(composed.workItems!.some((item) => item.workId === many[0]!.workId)).toBe(false);
   });
 });
 
@@ -229,7 +232,7 @@ describe("Speaker pull tool lookup_work (#319)", () => {
     const launch = acceptedLaunch(inbox, batchId);
     inbox.recordWorkMilestone({ workId: launch.id, note: "planner started" });
     configureDelegationRuntime({ inbox, wake: async () => undefined, providerChatIdForSurface: () => CHAT });
-    const tool = createLookupWorkTool();
+    const tool = createLookupWorkTool(CHAT);
 
     const active = await tool.run({ input: { workId: launch.id } } as never);
     expect(active).toMatchObject({ found: true, specialist: "coder", status: "active", milestones: [{ note: "planner started" }] });
@@ -240,6 +243,27 @@ describe("Speaker pull tool lookup_work (#319)", () => {
 
     const missing = await tool.run({ input: { workId: "brain-work:nope" } } as never);
     expect(missing).toMatchObject({ found: false, status: "unknown", milestones: [] });
+    inbox.close();
+  });
+
+  it("NEGATIVE — lookup_work never returns another chat's work (fail-closed cross-surface)", async () => {
+    const OTHER = "surface:other";
+    const OTHER_CHAT = "other@g.us";
+    const { inbox, batchId } = fixture(); // batch provenance is SOURCE (chat CHAT)
+    const mine = acceptedLaunch(inbox, batchId, "run:mine", SOURCE);
+    inbox.recordWorkMilestone({ workId: mine.id, note: "planner started" });
+    configureDelegationRuntime({
+      inbox,
+      wake: async () => undefined,
+      providerChatIdForSurface: (surfaceId) => (surfaceId === SOURCE ? CHAT : surfaceId === OTHER ? OTHER_CHAT : undefined),
+    });
+
+    // A tool bound to the OTHER chat must not read CHAT's work item, even given its exact id.
+    const foreignTool = createLookupWorkTool(OTHER_CHAT);
+    expect(await foreignTool.run({ input: { workId: mine.id } } as never)).toMatchObject({ found: false, milestones: [] });
+    // The owning chat still reads its own work.
+    const ownTool = createLookupWorkTool(CHAT);
+    expect(await ownTool.run({ input: { workId: mine.id } } as never)).toMatchObject({ found: true, specialist: "coder" });
     inbox.close();
   });
 });

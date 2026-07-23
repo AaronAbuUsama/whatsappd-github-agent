@@ -89,9 +89,11 @@ export type DigestWorkItem = v.InferOutput<typeof digestWorkItemSchema>;
  */
 export const composeWorkItems = (digest: GraphDigest, workItems: readonly DigestWorkItem[]): GraphDigest => {
   if (workItems.length === 0) return digest;
-  const composed = { ...digest, workItems: workItems.slice(0, MAX_WORK_ITEMS) };
+  // Input is oldest-first; keep the most recent work — cap to the newest N, then drop oldest-first
+  // (shift from the front) until the whole graphContext fits, so a Speaker sees what is most in flight.
+  const composed = { ...digest, workItems: workItems.slice(-MAX_WORK_ITEMS) };
   while (Buffer.byteLength(JSON.stringify(composed)) > MAX_GRAPH_DIGEST_BYTES && composed.workItems.length > 0) {
-    composed.workItems.pop();
+    composed.workItems.shift();
   }
   return composed.workItems.length === 0 ? digest : composed;
 };
