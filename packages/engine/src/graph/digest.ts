@@ -55,6 +55,18 @@ const digestCommitmentSchema = v.object({
   supportingAttestationIds: v.array(v.string()),
 });
 
+/**
+ * A down-flow work item surfaced onto the digest (§3.8, S3): one active Bounded Workflow
+ * plus its latest streamed Milestone, so a Speaker turn sees in-flight work without a pull.
+ */
+const digestWorkItemSchema = v.object({
+  workId: v.string(),
+  specialist: v.string(),
+  sourceSurfaceId: v.string(),
+  startedAt: v.string(),
+  latestMilestone: v.optional(v.object({ note: v.string(), at: v.string() })),
+});
+
 /** The pushed digest — one shape, shared by the Speaker input and the Specialist job input. */
 export const graphDigestSchema = v.object({
   schemaVersion: v.literal("graph-digest.v1"),
@@ -63,7 +75,28 @@ export const graphDigestSchema = v.object({
   entities: v.array(digestEntitySchema),
   relations: v.array(digestRelationSchema),
   commitments: v.array(digestCommitmentSchema),
+  // Optional so Specialist-job digests and pre-existing rows parse unchanged.
+  workItems: v.optional(v.array(digestWorkItemSchema)),
 });
+
+export type DigestWorkItem = v.InferOutput<typeof digestWorkItemSchema>;
+
+/**
+ * Compose active work items onto a computed graph digest, never replacing it (§5.4 — the
+ * funnel composes rather than replaces). Returns the same digest when there is no work. The
+ * appended items are held inside the same MAX_GRAPH_DIGEST_BYTES budget as the base digest:
+ * capped, then trimmed oldest-first until the whole graphContext fits.
+ */
+export const composeWorkItems = (digest: GraphDigest, workItems: readonly DigestWorkItem[]): GraphDigest => {
+  if (workItems.length === 0) return digest;
+  // Input is oldest-first; keep the most recent work — cap to the newest N, then drop oldest-first
+  // (shift from the front) until the whole graphContext fits, so a Speaker sees what is most in flight.
+  const composed = { ...digest, workItems: workItems.slice(-MAX_WORK_ITEMS) };
+  while (Buffer.byteLength(JSON.stringify(composed)) > MAX_GRAPH_DIGEST_BYTES && composed.workItems.length > 0) {
+    composed.workItems.shift();
+  }
+  return composed.workItems.length === 0 ? digest : composed;
+};
 
 export type GraphDigest = v.InferOutput<typeof graphDigestSchema>;
 export type DigestEntity = v.InferOutput<typeof digestEntitySchema>;
@@ -83,6 +116,7 @@ const DEFAULT_LOW_CONFIDENCE = 0.75;
 const MAX_ENTITIES = 64;
 const MAX_RELATIONS = 128;
 const MAX_COMMITMENTS = 32;
+const MAX_WORK_ITEMS = 32;
 const MAX_SUPPORTING_ATTESTATIONS = 8;
 export const MAX_GRAPH_DIGEST_BYTES = 64 * 1024;
 
@@ -205,4 +239,7 @@ export const computeGraphDigest = (store: GraphStore, seeds: DigestSeeds, option
 
 /** True when a digest carries nothing worth spending a transcript turn on. */
 export const isEmptyDigest = (digest: GraphDigest): boolean =>
-  digest.entities.length === 0 && digest.relations.length === 0 && digest.commitments.length === 0;
+  digest.entities.length === 0
+  && digest.relations.length === 0
+  && digest.commitments.length === 0
+  && (digest.workItems ?? []).length === 0;

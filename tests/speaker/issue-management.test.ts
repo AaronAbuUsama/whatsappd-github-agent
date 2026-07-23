@@ -1026,22 +1026,26 @@ describe("production Issue Management tools", () => {
     expect(repository.events().filter((event) => event.kind === "set-issue-state")).toEqual([]);
   });
 
-  it("keeps the Speaker a local mouth with no issue-management or delegation tools", async () => {
+  it("keeps the Speaker a local mouth with no issue-management or work-launching tools", async () => {
     configured();
     const config = await speaker.initialize({ id: CHAT, env: {} });
     expect(config.skills?.map((skill) => skill.name)).toEqual(["whatsapp-participation"]);
     await expect(
       readFile(join(process.cwd(), "packages/agents/src/capabilities/issue-management/SKILL.md"), "utf8"),
     ).resolves.toContain('version: "2.0.0"');
-    expect(config.tools?.map((tool) => tool.name)).toEqual([
+    // lookup_work is a read-only work-state pull (#319); the Speaker still cannot launch or mutate work.
+    const toolNames = config.tools?.map((tool) => tool.name);
+    expect(toolNames).toEqual([
       "react",
       "say",
       "whatsapp_read_thread",
       "whatsapp_search",
       "say_directive",
       "escalate_intent",
+      "lookup_work",
       "lookup_graph",
     ]);
+    expect(toolNames?.some((name) => name.startsWith("start_"))).toBe(false);
   });
 
   it("deletes the discarded proof workflow and provider path", async () => {

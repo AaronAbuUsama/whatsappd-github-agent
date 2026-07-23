@@ -15,6 +15,7 @@ import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscri
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 import type { SpecialistSpec } from "../delegation/tools.ts";
 import { getCoderRuntime } from "./runtime.ts";
+import { tryGetDelegationRuntime } from "../delegation/runtime.ts";
 import {
   coderJobInputSchema,
   coderJobRequestSchema,
@@ -229,6 +230,18 @@ const run = async ({ harness, input, log }: {
     extra: { verificationRound?: number; verdict?: VerificationVerdict; pullRequest?: number; draft?: boolean } = {},
   ): void => {
     activeStage = status === "started" ? stage : "workflow";
+    // Stream the meaningful stage transitions up to the Brain as work Milestones (§3.8, S3).
+    // Start (accepted launch) and terminal (SpecialistResult) are streamed elsewhere; skip the
+    // workflow bookends here and emit only the rare, human-legible stage beginnings and failures.
+    if (input.brainWorkId !== undefined && stage !== "workflow" && (status === "started" || status === "failed")) {
+      const round = extra.verificationRound;
+      const note = `${stage}${round === undefined ? "" : ` (round ${round})`} ${status}`;
+      try {
+        tryGetDelegationRuntime()?.inbox.recordWorkMilestone({ workId: input.brainWorkId, note });
+      } catch (cause) {
+        log.info("work milestone write failed", { note, cause: String(cause) } as unknown as Record<string, unknown>);
+      }
+    }
     log.info(`${stage} ${status}`, codingWaypoint({
       jobId,
       mode: input.mode,

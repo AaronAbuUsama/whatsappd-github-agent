@@ -18,6 +18,8 @@ const runtimeSlot = createFlueGlobal<DelegationRuntime>("delegation-runtime", "D
 
 export const configureDelegationRuntime = (runtime: DelegationRuntime): void => runtimeSlot.set(runtime);
 export const getDelegationRuntime = (): DelegationRuntime => runtimeSlot.get();
+/** Non-throwing read for the digest funnel and the Speaker pull tool — undefined when delegation is unwired. */
+export const tryGetDelegationRuntime = (): DelegationRuntime | undefined => runtimeSlot.peek();
 
 /**
  * Reconcile the only ambiguous boundary: Flue may have durably admitted a run before

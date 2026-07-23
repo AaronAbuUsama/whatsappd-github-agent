@@ -254,6 +254,7 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
       "batch_id",
     ],
   ],
+  ["brain_work_milestones", ["milestone_id", "work_id", "note", "at"]],
   [
     "surface_deliveries",
     [

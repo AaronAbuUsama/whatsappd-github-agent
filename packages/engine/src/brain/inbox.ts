@@ -60,6 +60,25 @@ export interface SpecialistResult extends SpecialistResultDraft {
   readonly admittedAt: string;
 }
 
+/**
+ * One streamed progress note from a running Bounded Workflow (§3.8). Start is the accepted
+ * launch and terminal is the SpecialistResult; a Milestone is the "rare Milestone" in between.
+ */
+export interface WorkMilestone {
+  readonly workId: string;
+  readonly note: string;
+  readonly at: string;
+}
+
+/** An accepted launch with no terminal result yet, plus its latest streamed Milestone. */
+export interface ActiveWorkItem {
+  readonly workId: string;
+  readonly specialist: string;
+  readonly sourceSurfaceId: string;
+  readonly startedAt: string;
+  readonly latestMilestone?: WorkMilestone;
+}
+
 export interface BrainBatch {
   readonly id: string;
   readonly createdAt: string;
@@ -175,6 +194,13 @@ interface SpecialistResultRow {
   batch_id: string | null;
 }
 
+interface WorkMilestoneRow {
+  milestone_id: string;
+  work_id: string;
+  note: string;
+  at: string;
+}
+
 interface BatchRow {
   batch_id: string;
   created_at: string;
@@ -214,6 +240,10 @@ export interface BrainInbox {
   admitSpecialistResult(draft: SpecialistResultDraft): SpecialistResult;
   specialistResultForWork(workId: string): SpecialistResult | undefined;
   pendingSpecialistResults(): readonly SpecialistResult[];
+  recordWorkMilestone(input: { readonly workId: string; readonly note: string; readonly at?: string }): void;
+  workMilestones(workId: string): readonly WorkMilestone[];
+  latestWorkMilestone(workId: string): WorkMilestone | undefined;
+  activeWorkItems(): readonly ActiveWorkItem[];
   claimBatch(limit?: number): BrainBatch | undefined;
   markBatchDispatched(batchId: string, receipt: DispatchReceipt): BrainBatch;
   recordPrompt(input: {
@@ -289,6 +319,12 @@ const hydrateSpecialistResult = (row: SpecialistResultRow): SpecialistResult => 
   admittedAt: row.admitted_at,
 });
 
+const hydrateMilestone = (row: WorkMilestoneRow): WorkMilestone => ({
+  workId: row.work_id,
+  note: row.note,
+  at: row.at,
+});
+
 const required = (value: string, name: string): string => {
   const normalized = value.trim();
   if (normalized.length === 0) throw new Error(`${name} must not be empty.`);
@@ -331,6 +367,10 @@ const specialistWorkId = (
 
 const specialistResultId = (workId: string, runId: string): string =>
   `specialist-result:${createHash("sha256").update(JSON.stringify([workId, runId])).digest("hex")}`;
+
+// ponytail: idempotent by (workId, note) — a retried or duplicated waypoint coalesces to one row.
+const workMilestoneId = (workId: string, note: string): string =>
+  `work-milestone:${createHash("sha256").update(JSON.stringify([workId, note])).digest("hex")}`;
 
 const batchId = (inputIds: readonly string[]): string =>
   `brain-batch:${createHash("sha256").update(JSON.stringify(inputIds)).digest("hex")}`;
@@ -405,6 +445,12 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       result_json TEXT,
       admitted_at TEXT NOT NULL,
       batch_id TEXT REFERENCES brain_batches(batch_id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS brain_work_milestones (
+      milestone_id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES brain_specialist_launches(work_id),
+      note TEXT NOT NULL,
+      at TEXT NOT NULL
     ) STRICT;
     CREATE TABLE IF NOT EXISTS brain_effects (
       effect_id TEXT PRIMARY KEY,
@@ -585,6 +631,14 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     UPDATE brain_specialist_launches SET status = 'accepted', run_id = ?, accepted_at = ?
      WHERE work_id = ? AND status = 'pending'
   `);
+  const insertWorkMilestone = database.prepare(
+    "INSERT OR IGNORE INTO brain_work_milestones (milestone_id, work_id, note, at) VALUES (?, ?, ?, ?)",
+  );
+  // rowid ordering is insertion (chronological) order — robust to same-millisecond `at` ties.
+  const selectWorkMilestones = database.prepare("SELECT * FROM brain_work_milestones WHERE work_id = ? ORDER BY rowid");
+  const selectLatestWorkMilestone = database.prepare(
+    "SELECT * FROM brain_work_milestones WHERE work_id = ? ORDER BY rowid DESC LIMIT 1",
+  );
   const insertSpecialistResult = database.prepare(`
     INSERT OR IGNORE INTO brain_specialist_results
       (result_id, work_id, run_id, source_batch_id, source_surface_id, evidence_ids_json,
@@ -876,6 +930,29 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     },
     pendingSpecialistResults: () =>
       (selectPendingSpecialistResults.all() as unknown as SpecialistResultRow[]).map(hydrateSpecialistResult),
+    recordWorkMilestone: ({ workId: rawWorkId, note: rawNote, at }) => {
+      const workId = required(rawWorkId, "Work milestone work id");
+      const note = required(rawNote, "Work milestone note");
+      const stamp = at ?? options.now?.() ?? new Date().toISOString();
+      insertWorkMilestone.run(workMilestoneId(workId, note), workId, note, stamp);
+    },
+    workMilestones: (workId) =>
+      (selectWorkMilestones.all(workId) as unknown as WorkMilestoneRow[]).map(hydrateMilestone),
+    latestWorkMilestone: (workId) => {
+      const row = selectLatestWorkMilestone.get(workId) as WorkMilestoneRow | undefined;
+      return row === undefined ? undefined : hydrateMilestone(row);
+    },
+    activeWorkItems: () =>
+      (selectUnreturnedSpecialistLaunches.all() as unknown as SpecialistLaunchRow[]).map((row) => {
+        const latest = selectLatestWorkMilestone.get(row.work_id) as WorkMilestoneRow | undefined;
+        return {
+          workId: row.work_id,
+          specialist: row.specialist,
+          sourceSurfaceId: row.source_surface_id,
+          startedAt: row.accepted_at ?? row.requested_at,
+          ...(latest === undefined ? {} : { latestMilestone: hydrateMilestone(latest) }),
+        };
+      }),
     claimBatch: (limit = 50) => {
       database.exec("BEGIN IMMEDIATE");
       try {
