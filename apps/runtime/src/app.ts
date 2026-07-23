@@ -209,10 +209,15 @@ export const createAmbientAgentApp = async ({
   // bind and the CLI invoking this starter, /health reports the WhatsApp phase as
   // "disabled"; every health consumer polls, so the window is harmless.
   deferWhatsAppRuntimeStart(() => {
+    const surfaceRepositories = new Map(
+      configuration.github.surfaceRepositories.map(({ chat, repository }) => [chat.toLowerCase(), repository]),
+    );
     const whatsapp = startWhatsAppRuntime({
       storeDirectory: paths.whatsapp,
       applicationDatabase: paths.applicationDatabase,
       managedChats: configuration.managedChats,
+      repositoryForChat: (chat) =>
+        surfaceRepositories.get(chat.toLowerCase()) ?? configuration.github.defaultRepository,
       ...(configuration.smoke === undefined ? {} : { canaryChat: configuration.smoke.canaryChat }),
     });
     whatsappControl = whatsapp;

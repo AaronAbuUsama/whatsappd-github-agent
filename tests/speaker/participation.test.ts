@@ -46,8 +46,9 @@ describe("WhatsApp Participation capability", () => {
     expect(agent).not.toContain("when older chat context is needed");
 
     expect(skill).toMatch(/^---\nname: whatsapp-participation\n/m);
-    expect(skill).toContain('version: "2.0.0"');
+    expect(skill).toContain('version: "2.1.0"');
     expect(skill).toContain("Participate as a teammate, not a bot");
+    expect(skill).toContain("Shape an issue request before you escalate");
     expect(skill).toContain("Always engage an explicit address");
     expect(skill).toContain("every message prefixed with `SMOKE `");
     expect(skill).toContain("Send one message per concern, threaded by reply-to to the source message");

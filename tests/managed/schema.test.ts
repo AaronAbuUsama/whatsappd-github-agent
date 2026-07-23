@@ -73,6 +73,35 @@ describe("managed schemas", () => {
     ).toBe(true);
   });
 
+  it("routes managed chats to allowlisted surface repositories and defaults to empty", () => {
+    const config = createManagedConfig(["120363000@g.us"], "owner/repo");
+    expect(v.parse(ManagedConfigSchema, config).github.surfaceRepositories).toEqual([]);
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: {
+          ...config.github,
+          allowedRepositories: ["owner/repo", "owner/second"],
+          surfaceRepositories: [{ chat: "120363000@g.us", repository: "owner/second" }],
+        },
+      }).success,
+    ).toBe(true);
+    // A surface repository outside the allowlist is refused.
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: { ...config.github, surfaceRepositories: [{ chat: "120363000@g.us", repository: "other/repo" }] },
+      }).success,
+    ).toBe(false);
+    // A surface repository bound to an unmanaged chat is refused.
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: { ...config.github, surfaceRepositories: [{ chat: "120363999@g.us", repository: "owner/repo" }] },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a retired personal-token file and requires numeric App identifiers", () => {
     // A lingering PAT file fails the App schema and surfaces as reauthentication-required.
     expect(

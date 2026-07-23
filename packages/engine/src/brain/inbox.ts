@@ -98,7 +98,32 @@ export interface StaySilentEffect {
   readonly status: "completed";
 }
 
-export type BrainEffect = PromptSpeakerEffect | StaySilentEffect;
+export interface FileIssueRequest {
+  readonly repository: string;
+  readonly kind: "bug" | "feature";
+  readonly title: string;
+  readonly body: string;
+}
+
+/** The terminal outcome of a durable issue filing, recorded so a recovered Batch reports honestly. */
+export type FileIssueOutcome =
+  | { readonly status: "created" | "reconciled"; readonly issueNumber: number; readonly url: string }
+  | {
+      readonly status: "duplicate";
+      readonly issues: readonly { readonly number: number; readonly url: string; readonly title: string }[];
+    }
+  | { readonly status: "uncertain"; readonly reason: string };
+
+export interface FileIssueEffect {
+  readonly id: string;
+  readonly batchId: string;
+  readonly kind: "file_issue";
+  readonly request: FileIssueRequest;
+  readonly status: "pending" | "completed";
+  readonly outcome?: FileIssueOutcome;
+}
+
+export type BrainEffect = PromptSpeakerEffect | StaySilentEffect | FileIssueEffect;
 
 export interface BrainBatchSettlement {
   readonly batchId: string;
@@ -161,7 +186,7 @@ interface BatchRow {
 interface EffectRow {
   effect_id: string;
   batch_id: string;
-  kind: "prompt_speaker" | "stay_silent";
+  kind: "prompt_speaker" | "stay_silent" | "file_issue";
   payload_json: string;
   status: "pending" | "accepted" | "completed";
   dispatch_id: string | null;
@@ -198,6 +223,15 @@ export interface BrainInbox {
     readonly brief: DirectiveBrief;
   }): PromptSpeakerEffect;
   recordSilence(batchId: string, reason: string): StaySilentEffect;
+  recordIssueFiling(input: {
+    readonly batchId: string;
+    readonly repository: string;
+    readonly kind: "bug" | "feature";
+    readonly title: string;
+    readonly body: string;
+  }): FileIssueEffect;
+  completeIssueFiling(effectId: string, outcome: FileIssueOutcome): FileIssueEffect;
+  pendingIssueFilings(): readonly FileIssueEffect[];
   effects(batchId: string): readonly BrainEffect[];
   pendingPrompts(): readonly PromptSpeakerEffect[];
   markPromptAccepted(effectId: string, receipt: DispatchReceipt): PromptSpeakerEffect;
@@ -374,7 +408,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     CREATE TABLE IF NOT EXISTS brain_effects (
       effect_id TEXT PRIMARY KEY,
       batch_id TEXT NOT NULL REFERENCES brain_batches(batch_id),
-      kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent')),
+      kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue')),
       payload_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'completed')),
       dispatch_id TEXT,
@@ -383,6 +417,45 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       created_at TEXT NOT NULL
     ) STRICT;
   `);
+
+  // The brain_effects kind CHECK is on a STRICT table — an in-place ALTER cannot widen it, so an
+  // existing install is migrated by rename-copy-drop (operation-store.ts template) to admit 'file_issue'.
+  const existingEffects = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brain_effects'")
+    .get() as { sql: string } | undefined;
+  if (existingEffects !== undefined && !existingEffects.sql.includes("'file_issue'")) {
+    try {
+      database.exec(`
+        BEGIN IMMEDIATE;
+        ALTER TABLE brain_effects RENAME TO brain_effects_legacy;
+        CREATE TABLE brain_effects (
+          effect_id TEXT PRIMARY KEY,
+          batch_id TEXT NOT NULL REFERENCES brain_batches(batch_id),
+          kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue')),
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'completed')),
+          dispatch_id TEXT,
+          accepted_at TEXT,
+          completed_at TEXT,
+          created_at TEXT NOT NULL
+        ) STRICT;
+        INSERT INTO brain_effects
+          (effect_id, batch_id, kind, payload_json, status, dispatch_id, accepted_at, completed_at, created_at)
+        SELECT effect_id, batch_id, kind, payload_json, status, dispatch_id, accepted_at, completed_at, created_at
+          FROM brain_effects_legacy;
+        DROP TABLE brain_effects_legacy;
+        COMMIT;
+      `);
+    } catch (cause) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // The migration may have failed before its transaction began.
+      }
+      database.close();
+      throw cause;
+    }
+  }
 
   const evidence = database.prepare("SELECT chat_id FROM conversation_events WHERE event_id = ?");
   const insertIntent = database.prepare(`
@@ -510,6 +583,13 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     UPDATE brain_effects SET status = 'accepted', dispatch_id = ?, accepted_at = ?
      WHERE effect_id = ? AND kind = 'prompt_speaker' AND status = 'pending'
   `);
+  const selectPendingFilings = database.prepare(
+    "SELECT * FROM brain_effects WHERE kind = 'file_issue' AND status = 'pending' ORDER BY created_at, effect_id",
+  );
+  const completeFiling = database.prepare(`
+    UPDATE brain_effects SET status = 'completed', payload_json = ?, completed_at = ?
+     WHERE effect_id = ? AND kind = 'file_issue' AND status = 'pending'
+  `);
   const settle = database.prepare("UPDATE brain_batches SET settled_at = ? WHERE batch_id = ? AND settled_at IS NULL");
   const unsettledEffectCount = database.prepare(`
     SELECT count(*) AS count FROM brain_effects WHERE batch_id = ? AND status = 'pending'
@@ -530,6 +610,17 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
         kind: "stay_silent",
         reason: payload.reason as string,
         status: "completed",
+      };
+    }
+    if (row.kind === "file_issue") {
+      const { outcome, ...request } = payload as unknown as FileIssueRequest & { outcome?: FileIssueOutcome };
+      return {
+        id: row.effect_id,
+        batchId: row.batch_id,
+        kind: "file_issue",
+        request,
+        status: row.status as "pending" | "completed",
+        ...(outcome === undefined ? {} : { outcome }),
       };
     }
     const directive = payload as unknown as Omit<SpeakerDirective, "id">;
@@ -786,6 +877,38 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       insertEffect.run(id, claimedBatchId, "stay_silent", JSON.stringify(payload), "completed", completedAt, completedAt);
       return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as StaySilentEffect;
     },
+    recordIssueFiling: ({ batchId: rawBatchId, repository: rawRepository, kind, title: rawTitle, body: rawBody }) => {
+      const claimedBatchId = required(rawBatchId, "Brain Batch id");
+      const batch = selectOpenBatchById.get(claimedBatchId) as BatchRow | undefined;
+      if (batch === undefined || batch.dispatch_id === null) throw new Error(`Brain Batch ${claimedBatchId} is not open and dispatched.`);
+      const request: FileIssueRequest = {
+        repository: required(rawRepository, "File Issue repository"),
+        kind,
+        title: required(rawTitle, "File Issue title"),
+        body: required(rawBody, "File Issue body"),
+      };
+      const id = effectId(claimedBatchId, "file_issue", request);
+      const createdAt = options.now?.() ?? new Date().toISOString();
+      insertEffect.run(id, claimedBatchId, "file_issue", JSON.stringify(request), "pending", null, createdAt);
+      return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as FileIssueEffect;
+    },
+    completeIssueFiling: (rawId, outcome) => {
+      const id = required(rawId, "File Issue effect id");
+      const existing = selectEffect.get(id) as EffectRow | undefined;
+      if (existing === undefined || existing.kind !== "file_issue") {
+        throw new Error(`File Issue effect ${id} does not exist.`);
+      }
+      const request = JSON.parse(existing.payload_json) as FileIssueRequest;
+      // WHERE status='pending' makes a recovered re-completion a no-op; the durable outcome stands.
+      completeFiling.run(
+        JSON.stringify({ ...request, outcome }),
+        options.now?.() ?? new Date().toISOString(),
+        id,
+      );
+      return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as FileIssueEffect;
+    },
+    pendingIssueFilings: () =>
+      (selectPendingFilings.all() as unknown as EffectRow[]).map(hydrateEffect) as FileIssueEffect[],
     effects: (id) => (selectEffects.all(id) as unknown as EffectRow[]).map(hydrateEffect),
     pendingPrompts: () => (selectPendingPrompts.all() as unknown as EffectRow[]).map(hydrateEffect) as PromptSpeakerEffect[],
     markPromptAccepted: (id, receipt) => {

@@ -14,7 +14,13 @@ import { reconcileSpecialistWorkAtBoot } from "@ambient-agent/agents/capabilitie
 import { recoverPendingSpecialistLaunches } from "@ambient-agent/agents/capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
 import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
-import { configureBrainEffectsRuntime, recoverPendingPrompts } from "@ambient-agent/agents/brain/effects-runtime.ts";
+import {
+  configureBrainEffectsRuntime,
+  recoverPendingIssueFilings,
+  recoverPendingPrompts,
+} from "@ambient-agent/agents/brain/effects-runtime.ts";
+import { createIssueFiler } from "@ambient-agent/agents/brain/issue-filing.ts";
+import { getIssueManagementRuntime } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { configureScribeInbox } from "@ambient-agent/agents/scribe/coalescer.ts";
 import { getRun, invoke } from "@flue/runtime";
 import historicalReplayWorkflow from "../workflows/historical-replay.ts";
@@ -247,6 +253,8 @@ export interface WhatsAppRuntimeOptions {
   readonly observeActivity?: (observer: SpeakerObserver) => () => void;
   /** Run once after the participation port is wired — e.g. the delegation boot sweep. */
   readonly afterParticipationReady?: () => void;
+  /** Resolve which repository a managed chat's Brain-filed issues land in (#317). */
+  readonly repositoryForChat?: (providerChatId: string) => string;
 }
 
 export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
@@ -346,6 +354,17 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       configureBrainEffectsRuntime({
         inbox: brainInbox,
         wake: () => wakeBrain(brainInbox),
+        // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
+        // process-global at app boot, well before any Batch files an issue.
+        fileIssue: (request) => createIssueFiler(getIssueManagementRuntime())(request),
+        repositoryForSurface: (surfaceId) => {
+          if (options.repositoryForChat === undefined) {
+            throw new Error("Issue-filing repository routing is not configured.");
+          }
+          const binding = surfaces.activeBinding(surfaceId);
+          if (binding === undefined) throw new Error(`Surface ${surfaceId} has no active provider binding.`);
+          return options.repositoryForChat(binding.providerChatId);
+        },
         deliverPrompt: (effect) => {
           const binding = surfaces.activeBinding(effect.directive.surfaceId);
           if (binding === undefined) {
@@ -418,6 +437,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       ...(options.coalescer === undefined ? {} : { coalescer: options.coalescer }),
       afterParticipationReady: async () => {
         await recoverPendingPrompts();
+        await recoverPendingIssueFilings();
         await recoverPendingSpecialistLaunches([coderSpecialistSpec]);
         await reconcileSpecialistWorkAtBoot({ inbox: brainInbox, wake: () => wakeBrain(brainInbox), getRun });
         await wakeBrain(brainInbox);
