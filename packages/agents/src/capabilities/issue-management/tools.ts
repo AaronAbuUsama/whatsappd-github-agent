@@ -171,7 +171,7 @@ export interface IssueManagementToolOptions extends IssueManagementRuntime {
   readonly now?: () => Date;
 }
 
-const createIssue = async (input: {
+export const createIssue = async (input: {
   readonly repository: ReturnType<IssueManagementPolicy["authorize"]>;
   readonly kind: "bug" | "feature";
   readonly title: string;

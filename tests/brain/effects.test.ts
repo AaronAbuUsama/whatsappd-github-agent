@@ -6,13 +6,20 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   configureBrainEffectsRuntime,
+  deliverIssueFilingEffect,
+  recoverPendingIssueFilings,
   recoverPendingPrompts,
 } from "../../packages/agents/src/brain/effects-runtime.ts";
 import {
+  createFileIssueTool,
   createPromptSpeakerTool,
   createSettleBrainBatchTool,
   createStaySilentTool,
 } from "../../packages/agents/src/brain/tools.ts";
+import { createIssueFiler } from "../../packages/agents/src/brain/issue-filing.ts";
+import { createIssueManagementPolicy } from "../../packages/agents/src/capabilities/issue-management/runtime.ts";
+import { createIssueOperationStore } from "../../packages/engine/src/github/operation-store.ts";
+import { createFakeIssueRepository } from "../../packages/test-support/src/fake-issue-repository.ts";
 import { wakeBrain } from "../../packages/agents/src/brain/dispatch.ts";
 import { createBrainInbox, type BrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
@@ -151,6 +158,174 @@ describe("Brain Effects and settlement", () => {
     } });
     expect(deliveries).toBe(1);
     reopened.close();
+  });
+
+  const REPOSITORY = "acme/widgets";
+  const filingRuntime = () => {
+    const repository = createFakeIssueRepository();
+    const operations = createIssueOperationStore(":memory:");
+    const policy = createIssueManagementPolicy(REPOSITORY, [REPOSITORY]);
+    return { repository, operations, filer: createIssueFiler({ repository, operations, policy }) };
+  };
+
+  it("files an issue, completes the effect with number and URL, and lets the Batch settle", async () => {
+    const { inbox, batchId } = openFixture();
+    const { operations, filer } = filingRuntime();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+
+    const filed = await createFileIssueTool().run({ input: {
+      batchId,
+      surfaceId: SURFACE,
+      kind: "bug",
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    } });
+
+    expect(filed).toEqual({
+      kind: "file_issue",
+      effectId: expect.stringMatching(/^brain-effect:[a-f0-9]{64}$/u),
+      status: "created",
+      issueNumber: 1,
+      url: "https://github.com/acme/widgets/issues/1",
+    });
+    await expect(createSettleBrainBatchTool().run({ input: { batchId } })).resolves.toMatchObject({ status: "settled" });
+    operations.close();
+    inbox.close();
+  });
+
+  it("recovers a pending filing through the duplicate guard without creating a second issue", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, filer } = filingRuntime();
+    // Simulate a crash: the effect is pending and the issue was already created before completion landed.
+    const pending = inbox.recordIssueFiling({
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug",
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    });
+    repository.seed({
+      repository: { owner: "acme", repo: "widgets" },
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+
+    const recovered = await deliverIssueFilingEffect(pending);
+    expect(recovered.status).toBe("completed");
+    expect(recovered.outcome).toMatchObject({ status: "duplicate" });
+    // The guard searched by title and refused a second create — no create event was emitted.
+    expect(repository.events().some((event) => event.kind === "create")).toBe(false);
+    operations.close();
+    inbox.close();
+  });
+
+  it("reconciles a recovered filing by Operation Identity without a second create or a title search", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, filer } = filingRuntime();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+    const pending = inbox.recordIssueFiling({
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug",
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    });
+    // First attempt lands the create and its completed Operation, then the Effect completion is lost to a crash.
+    await filer(pending.request, pending.id);
+    expect(repository.events().filter((event) => event.kind === "create")).toHaveLength(1);
+    repository.resetEvents();
+
+    const recovered = await deliverIssueFilingEffect(pending);
+    expect(recovered.status).toBe("completed");
+    expect(recovered.outcome).toMatchObject({ status: "reconciled", issueNumber: 1 });
+    // Dedup came from strongly-consistent Operation Identity, never the eventually consistent title search.
+    expect(repository.events().some((event) => event.kind === "create")).toBe(false);
+    expect(repository.events().some((event) => event.kind === "search")).toBe(false);
+    operations.close();
+    inbox.close();
+  });
+
+  it("settles a non-retryable filing failure as uncertain so the Batch is not wedged", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, filer } = filingRuntime();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: filer,
+      repositoryForSurface: () => REPOSITORY,
+    });
+    repository.failNextCreate(Object.assign(new Error("Not Found"), { status: 404 }));
+
+    const filed = await createFileIssueTool().run({ input: {
+      batchId,
+      surfaceId: SURFACE,
+      kind: "bug",
+      title: "Filing into an archived repository",
+      body: "The repository was archived after this chat was mapped.",
+    } });
+    expect(filed).toMatchObject({ kind: "file_issue", status: "uncertain" });
+    // The Effect completed terminally, so the Batch settles rather than blocking every later Intent.
+    await expect(createSettleBrainBatchTool().run({ input: { batchId } })).resolves.toMatchObject({ status: "settled" });
+    operations.close();
+    inbox.close();
+  });
+
+  it("contains a boot-recovery filing failure instead of killing the runtime", async () => {
+    const { inbox, batchId } = openFixture();
+    inbox.recordIssueFiling({
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug",
+      title: "GitHub was unreachable at boot",
+      body: "A transient network failure met the filing during boot recovery.",
+    });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      fileIssue: async () => { throw Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" }); },
+      repositoryForSurface: () => REPOSITORY,
+    });
+    // A rejection here would be an Effect defect that kills the WhatsApp fiber; recovery must swallow it.
+    await expect(recoverPendingIssueFilings()).resolves.toBeUndefined();
+    expect(inbox.pendingIssueFilings()).toHaveLength(1);
+    inbox.close();
+  });
+
+  it("collapses an exact file_issue retry in one Batch to a single durable effect", () => {
+    const { inbox, batchId } = openFixture();
+    const request = {
+      batchId,
+      repository: REPOSITORY,
+      kind: "bug" as const,
+      title: "The scheduler drops a queued job",
+      body: "Expected the queued job to run; it disappears after restart.",
+    };
+    const first = inbox.recordIssueFiling(request);
+    const second = inbox.recordIssueFiling(request);
+    expect(second.id).toBe(first.id);
+    expect(inbox.effects(batchId).filter((effect) => effect.kind === "file_issue")).toHaveLength(1);
+    inbox.close();
   });
 
   it("wakes the next waiting Batch immediately after settlement", async () => {
