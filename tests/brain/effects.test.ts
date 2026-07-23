@@ -205,6 +205,7 @@ describe("Brain Effects and settlement", () => {
     // Simulate a crash: the effect is pending and the issue was already created before completion landed.
     const pending = inbox.recordIssueFiling({
       batchId,
+      sourceSurfaceId: SURFACE,
       repository: REPOSITORY,
       kind: "bug",
       title: "The scheduler drops a queued job",
@@ -244,6 +245,7 @@ describe("Brain Effects and settlement", () => {
     });
     const pending = inbox.recordIssueFiling({
       batchId,
+      sourceSurfaceId: SURFACE,
       repository: REPOSITORY,
       kind: "bug",
       title: "The scheduler drops a queued job",
@@ -294,6 +296,7 @@ describe("Brain Effects and settlement", () => {
     const { inbox, batchId } = openFixture();
     inbox.recordIssueFiling({
       batchId,
+      sourceSurfaceId: SURFACE,
       repository: REPOSITORY,
       kind: "bug",
       title: "GitHub was unreachable at boot",
@@ -316,6 +319,7 @@ describe("Brain Effects and settlement", () => {
     const { inbox, batchId } = openFixture();
     const request = {
       batchId,
+      sourceSurfaceId: SURFACE,
       repository: REPOSITORY,
       kind: "bug" as const,
       title: "The scheduler drops a queued job",
@@ -325,6 +329,25 @@ describe("Brain Effects and settlement", () => {
     const second = inbox.recordIssueFiling(request);
     expect(second.id).toBe(first.id);
     expect(inbox.effects(batchId).filter((effect) => effect.kind === "file_issue")).toHaveLength(1);
+    inbox.close();
+  });
+
+  it("refuses to file an issue for a Surface that did not originate the Batch", () => {
+    const { inbox, batchId } = openFixture();
+    // A non-originating Surface must not be able to route a filing to its own repository —
+    // same provenance guard as reserveSpecialistLaunch, so a mistaken/hallucinated surfaceId
+    // can't silently file into the wrong repo.
+    expect(() =>
+      inbox.recordIssueFiling({
+        batchId,
+        sourceSurfaceId: "surface:not-a-contributor",
+        repository: REPOSITORY,
+        kind: "bug",
+        title: "The scheduler drops a queued job",
+        body: "Expected the queued job to run; it disappears after restart.",
+      }),
+    ).toThrow(/is not provenance for Brain Batch/);
+    expect(inbox.effects(batchId).filter((effect) => effect.kind === "file_issue")).toHaveLength(0);
     inbox.close();
   });
 

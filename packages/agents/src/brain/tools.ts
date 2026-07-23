@@ -93,6 +93,7 @@ export const createFileIssueTool = () =>
       const effect = await deliverIssueFilingEffect(
         runtime.inbox.recordIssueFiling({
           batchId: input.batchId,
+          sourceSurfaceId: input.surfaceId,
           repository: runtime.repositoryForSurface(input.surfaceId),
           kind: input.kind,
           title: input.title,

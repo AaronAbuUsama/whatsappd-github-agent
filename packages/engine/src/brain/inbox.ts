@@ -225,6 +225,7 @@ export interface BrainInbox {
   recordSilence(batchId: string, reason: string): StaySilentEffect;
   recordIssueFiling(input: {
     readonly batchId: string;
+    readonly sourceSurfaceId: string;
     readonly repository: string;
     readonly kind: "bug" | "feature";
     readonly title: string;
@@ -420,10 +421,19 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
 
   // The brain_effects kind CHECK is on a STRICT table — an in-place ALTER cannot widen it, so an
   // existing install is migrated by rename-copy-drop (operation-store.ts template) to admit 'file_issue'.
+  // brain_effects is also the FK target of surface_deliveries and directive_outcomes (surfaces/delivery.ts):
+  // SQLite repoints a child table's FK clause to follow a RENAME, so renaming brain_effects away would
+  // otherwise leave those two tables referencing the dropped `_legacy` table. Rebuild them too, in
+  // dependency order (surface_deliveries before directive_outcomes, which references both), in the same
+  // transaction, only if they already exist on this install.
   const existingEffects = database
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brain_effects'")
     .get() as { sql: string } | undefined;
   if (existingEffects !== undefined && !existingEffects.sql.includes("'file_issue'")) {
+    const tableExists = (name: string): boolean =>
+      database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+    const hasSurfaceDeliveries = tableExists("surface_deliveries");
+    const hasDirectiveOutcomes = tableExists("directive_outcomes");
     try {
       database.exec(`
         BEGIN IMMEDIATE;
@@ -443,6 +453,55 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
           (effect_id, batch_id, kind, payload_json, status, dispatch_id, accepted_at, completed_at, created_at)
         SELECT effect_id, batch_id, kind, payload_json, status, dispatch_id, accepted_at, completed_at, created_at
           FROM brain_effects_legacy;
+        ${
+          hasSurfaceDeliveries
+            ? `
+        ALTER TABLE surface_deliveries RENAME TO surface_deliveries_legacy;
+        CREATE TABLE surface_deliveries (
+          delivery_id TEXT PRIMARY KEY,
+          directive_id TEXT NOT NULL UNIQUE REFERENCES brain_effects(effect_id),
+          surface_id TEXT NOT NULL REFERENCES surfaces(surface_id),
+          provider_chat_id TEXT NOT NULL,
+          text TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('attempting', 'sent', 'failed', 'uncertain')),
+          provider_message_id TEXT,
+          conversation_event_id TEXT,
+          error TEXT,
+          attempted_at TEXT NOT NULL,
+          settled_at TEXT
+        ) STRICT;
+        INSERT INTO surface_deliveries
+          (delivery_id, directive_id, surface_id, provider_chat_id, text, status, provider_message_id,
+           conversation_event_id, error, attempted_at, settled_at)
+        SELECT delivery_id, directive_id, surface_id, provider_chat_id, text, status, provider_message_id,
+               conversation_event_id, error, attempted_at, settled_at
+          FROM surface_deliveries_legacy;
+        `
+            : ""
+        }
+        ${
+          hasDirectiveOutcomes
+            ? `
+        ALTER TABLE directive_outcomes RENAME TO directive_outcomes_legacy;
+        CREATE TABLE directive_outcomes (
+          directive_id TEXT PRIMARY KEY REFERENCES brain_effects(effect_id),
+          delivery_id TEXT UNIQUE REFERENCES surface_deliveries(delivery_id),
+          surface_id TEXT NOT NULL REFERENCES surfaces(surface_id),
+          status TEXT NOT NULL CHECK (status IN ('delivered', 'failed', 'uncertain', 'settled_without_say')),
+          provider_message_id TEXT,
+          conversation_event_id TEXT,
+          detail TEXT,
+          settled_at TEXT NOT NULL
+        ) STRICT;
+        INSERT INTO directive_outcomes
+          (directive_id, delivery_id, surface_id, status, provider_message_id, conversation_event_id, detail, settled_at)
+        SELECT directive_id, delivery_id, surface_id, status, provider_message_id, conversation_event_id, detail, settled_at
+          FROM directive_outcomes_legacy;
+        DROP TABLE directive_outcomes_legacy;
+        `
+            : ""
+        }
+        ${hasSurfaceDeliveries ? "DROP TABLE surface_deliveries_legacy;" : ""}
         DROP TABLE brain_effects_legacy;
         COMMIT;
       `);
@@ -877,10 +936,24 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       insertEffect.run(id, claimedBatchId, "stay_silent", JSON.stringify(payload), "completed", completedAt, completedAt);
       return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as StaySilentEffect;
     },
-    recordIssueFiling: ({ batchId: rawBatchId, repository: rawRepository, kind, title: rawTitle, body: rawBody }) => {
+    recordIssueFiling: ({
+      batchId: rawBatchId,
+      sourceSurfaceId: rawSurfaceId,
+      repository: rawRepository,
+      kind,
+      title: rawTitle,
+      body: rawBody,
+    }) => {
       const claimedBatchId = required(rawBatchId, "Brain Batch id");
+      const sourceSurfaceId = required(rawSurfaceId, "File Issue source Surface id");
       const batch = selectOpenBatchById.get(claimedBatchId) as BatchRow | undefined;
       if (batch === undefined || batch.dispatch_id === null) throw new Error(`Brain Batch ${claimedBatchId} is not open and dispatched.`);
+      const sourceIntents = (selectBatchIntents.all(claimedBatchId) as unknown as IntentRow[])
+        .map(hydrate)
+        .filter((intent) => intent.sourceSurfaceId === sourceSurfaceId);
+      if (sourceIntents.length === 0) {
+        throw new Error(`Surface ${sourceSurfaceId} is not provenance for Brain Batch ${claimedBatchId}.`);
+      }
       const request: FileIssueRequest = {
         repository: required(rawRepository, "File Issue repository"),
         kind,
