@@ -58,6 +58,21 @@ describe("managed schemas", () => {
     ).toBe(true);
   });
 
+  it("accepts a cross-org allowlist — repo names carry no single-org constraint (multi-org)", () => {
+    const config = createManagedConfig(["120363000@g.us"], "Xelmar-tech/a");
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: {
+          ...config.github,
+          defaultRepository: "Xelmar-tech/a",
+          allowedRepositories: ["Xelmar-tech/a", "TheCallApp/b"],
+          reviewRepositories: ["TheCallApp/b"],
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects a retired personal-token file and requires numeric App identifiers", () => {
     // A lingering PAT file fails the App schema and surfaces as reauthentication-required.
     expect(

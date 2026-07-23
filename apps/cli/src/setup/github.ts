@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 
-import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
+import { githubAppJwtClient } from "@ambient-agent/installation/github-app-client.ts";
 import type { GitHubAppTriple } from "@ambient-agent/installation/schema.ts";
 
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
@@ -49,9 +49,7 @@ export const discoverOriginRepository = async (
 export interface GitHubAppAccessClient {
   readonly apps: {
     getAuthenticated(input?: { readonly request?: { readonly signal?: AbortSignal } }): Promise<unknown>;
-  };
-  readonly repos: {
-    get(input: {
+    getRepoInstallation(input: {
       readonly owner: string;
       readonly repo: string;
       readonly request?: { readonly signal?: AbortSignal };
@@ -60,11 +58,11 @@ export interface GitHubAppAccessClient {
 }
 
 /**
- * Verify a pasted GitHub App triple both authenticates (`apps.getAuthenticated`) and reaches
- * the target repository through its installation (`repos.get`), returning the normalized
- * `owner/name`. Replaces the retired personal-token check: the runtime's identity is now the
- * App, so setup and doctor prove access under the same installation the runtime uses. Never
- * echoes the private key on failure.
+ * Verify a pasted GitHub App triple both authenticates (`apps.getAuthenticated`) and is installed
+ * on the target repository (`apps.getRepoInstallation`), returning the normalized `owner/name`.
+ * Both are App-JWT routes, so verification no longer depends on the pasted `installationId` matching
+ * the repo's org — the App may be installed on several orgs, and a repo in any of them proves access
+ * (multi-org). Replaces the retired personal-token check. Never echoes the private key on failure.
  */
 export const verifyGitHubAppRepositoryAccess = async (input: {
   readonly credential: GitHubAppTriple;
@@ -74,11 +72,11 @@ export const verifyGitHubAppRepositoryAccess = async (input: {
 }): Promise<string> => {
   const repository = normalizeGitHubRepository(input.repository);
   const [owner, repo] = repository.split("/") as [string, string];
-  const client = input.client ?? (githubAppClient(input.credential).rest as unknown as GitHubAppAccessClient);
+  const client = input.client ?? (githubAppJwtClient(input.credential).rest as unknown as GitHubAppAccessClient);
   try {
     input.signal?.throwIfAborted();
     await client.apps.getAuthenticated({ request: { signal: input.signal } });
-    await client.repos.get({ owner, repo, request: { signal: input.signal } });
+    await client.apps.getRepoInstallation({ owner, repo, request: { signal: input.signal } });
     return repository;
   } catch {
     throw new Error(`GitHub authentication or repository access could not be verified for ${repository}.`);

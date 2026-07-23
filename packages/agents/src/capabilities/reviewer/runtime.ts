@@ -1,9 +1,12 @@
 import type { SandboxFactory } from "@flue/runtime";
+import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repository.ts";
 import { createFlueGlobal } from "@ambient-agent/engine/shared/flue-global.ts";
 import type { ReviewerGitHub } from "./github.ts";
 
 export interface ReviewerRuntime {
-  readonly github: ReviewerGitHub;
+  // Resolves the Octokit under the reviewer App identity for a job's repository owner
+  // (multi-org: one client per installation, resolved once per job).
+  readonly github: (repo: GitHubRepositoryRef) => Promise<ReviewerGitHub>;
   readonly sandbox: SandboxFactory;
   readonly workspacesRoot: string;
 }

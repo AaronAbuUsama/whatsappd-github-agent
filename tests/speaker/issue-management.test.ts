@@ -219,6 +219,38 @@ describe("production Issue Management tools", () => {
     );
   });
 
+  it("resolves the installation-scoped client per issue owner when given a resolver (multi-org)", async () => {
+    // Each owner gets its own Octokit; the resolver stands in for createInstallationResolver.octokitForOwner.
+    const seen: string[] = [];
+    const clientFor = (owner: string) => {
+      const requestFetch: typeof fetch = async (input) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url.endsWith(`/repos/${owner}/repo/issues/7`)) {
+          return Response.json({
+            number: 7,
+            html_url: `https://github.com/${owner}/repo/issues/7`,
+            title: "Cross-org read",
+            body: "Body",
+            state: "open",
+          });
+        }
+        return Response.json({});
+      };
+      return new Octokit({ request: { fetch: requestFetch } });
+    };
+    const resolve = async (owner: string): Promise<Octokit> => {
+      seen.push(owner);
+      return clientFor(owner);
+    };
+    const repository = createOctokitIssueRepository(resolve);
+
+    await repository.get({ repository: { owner: "Xelmar-tech", repo: "repo" }, number: 7 });
+    await repository.get({ repository: { owner: "TheCallApp", repo: "repo" }, number: 7 });
+
+    // A second owner routes through the resolver rather than a single pinned client.
+    expect(seen).toEqual(["Xelmar-tech", "TheCallApp"]);
+  });
+
   it("reads the narrow legacy trailing UUID marker without treating arbitrary text as owned metadata", () => {
     const legacyMarker = "<!-- ambience-operation:3f6f0d68-8890-4e1e-9ad8-066c473ad905 -->";
     expect(

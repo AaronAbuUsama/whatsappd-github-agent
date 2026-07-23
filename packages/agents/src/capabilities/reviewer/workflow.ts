@@ -61,8 +61,9 @@ const runChecks = async (harness: FlueHarness, cwd: string): Promise<{ passed: b
 };
 
 const run = async ({ harness, input, log }: { harness: FlueHarness; input: ReviewerJobInput; log: FlueLogger }): Promise<ReviewerResult> => {
-  const { github, workspacesRoot } = getReviewerRuntime();
+  const { github: resolveGithub, workspacesRoot } = getReviewerRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Reviewer repository must be owner/repo, got ${value}`));
+  const github = await resolveGithub(repo);
   log.info("reviewer.fetching-live-head", { repository: input.repository, pullRequest: input.pullRequest });
   const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: input.pullRequest });
   if (pr.state !== "open" || pr.draft || pr.head.sha !== input.expectedHeadSha) {

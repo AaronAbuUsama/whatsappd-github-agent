@@ -216,8 +216,9 @@ const run = async ({ harness, input, log }: {
   input: CoderJobInput;
   log: FlueLogger;
 }): Promise<CoderResult> => {
-  const { github, workspacesRoot } = getCoderRuntime();
+  const { github: resolveGithub, workspacesRoot } = getCoderRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
+  const github = await resolveGithub(repo);
   const branch = coderBranch(input.issue);
   const jobId = crypto.randomUUID();
   const reviewCycle = 0;

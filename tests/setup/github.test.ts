@@ -40,19 +40,21 @@ describe("first-run GitHub discovery", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("verifies both App identity and normalized repository access without leaking the private key", async () => {
+  it("verifies App identity and repository installation across orgs, without leaking the private key", async () => {
     const getAuthenticated = vi.fn(async () => ({ data: { slug: "ambient-planner" } }));
-    const getRepository = vi.fn(async () => ({ data: { full_name: "owner/repository" } }));
+    // The pasted installationId belongs to a different org than the repo; verification succeeds
+    // because getRepoInstallation is an App-JWT route (multi-org), not the fixed-installation repos.get.
+    const getRepoInstallation = vi.fn(async () => ({ data: { id: 424242 } }));
     await expect(
       verifyGitHubAppRepositoryAccess({
         credential: APP_TRIPLE,
-        repository: "https://github.com/owner/repository.git",
-        client: { apps: { getAuthenticated }, repos: { get: getRepository } },
+        repository: "https://github.com/other-org/repository.git",
+        client: { apps: { getAuthenticated, getRepoInstallation } },
       }),
-    ).resolves.toBe("owner/repository");
+    ).resolves.toBe("other-org/repository");
     expect(getAuthenticated).toHaveBeenCalledWith({ request: { signal: undefined } });
-    expect(getRepository).toHaveBeenCalledWith({
-      owner: "owner",
+    expect(getRepoInstallation).toHaveBeenCalledWith({
+      owner: "other-org",
       repo: "repository",
       request: { signal: undefined },
     });
@@ -66,8 +68,8 @@ describe("first-run GitHub discovery", () => {
             getAuthenticated: async () => {
               throw new Error("response contains must-not-leak");
             },
+            getRepoInstallation: async () => undefined,
           },
-          repos: { get: async () => undefined },
         },
       }),
     ).rejects.not.toThrow("must-not-leak");
@@ -76,16 +78,16 @@ describe("first-run GitHub discovery", () => {
   it("passes cancellation through to both GitHub verification requests", async () => {
     const signal = new AbortController().signal;
     const getAuthenticated = vi.fn(async () => undefined);
-    const getRepository = vi.fn(async () => undefined);
+    const getRepoInstallation = vi.fn(async () => undefined);
 
     await verifyGitHubAppRepositoryAccess({
       credential: APP_TRIPLE,
       repository: "owner/repository",
       signal,
-      client: { apps: { getAuthenticated }, repos: { get: getRepository } },
+      client: { apps: { getAuthenticated, getRepoInstallation } },
     });
 
     expect(getAuthenticated).toHaveBeenCalledWith({ request: { signal } });
-    expect(getRepository).toHaveBeenCalledWith({ owner: "owner", repo: "repository", request: { signal } });
+    expect(getRepoInstallation).toHaveBeenCalledWith({ owner: "owner", repo: "repository", request: { signal } });
   });
 });

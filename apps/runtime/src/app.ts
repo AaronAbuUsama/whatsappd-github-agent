@@ -12,7 +12,11 @@ import { configureReviewerRuntime } from "@ambient-agent/agents/capabilities/rev
 import { reviewerSlug, type ReviewerGitHub } from "@ambient-agent/agents/capabilities/reviewer/github.ts";
 import { reviewer } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
 import type { CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
-import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
+import {
+  createInstallationResolver,
+  githubAppJwtClient,
+  type InstallationResolver,
+} from "@ambient-agent/installation/github-app-client.ts";
 import { readProvisionedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
 import { invoke } from "@flue/runtime";
@@ -52,8 +56,9 @@ const configureCoderRuntimeBinding = async (
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
 ): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
+  const resolver = createInstallationResolver(credential);
   configureCoderRuntime({
-    github: githubAppClient(credential) as unknown as CoderGitHub,
+    github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub,
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
   });
@@ -70,17 +75,19 @@ const configureCoderRuntimeBinding = async (
 const configureReviewerRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
-): Promise<{ github: ReviewerGitHub; appSlug: string } | undefined> => {
+): Promise<{ resolver: InstallationResolver; appSlug: string } | undefined> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.reviewer, "reviewer");
-  const github = githubAppClient(credential) as unknown as ReviewerGitHub;
+  const resolver = createInstallationResolver(credential);
   try {
-    const appSlug = await reviewerSlug(github);
+    // The App slug is App-identity (a JWT route), the same across every installation, so it is
+    // resolved once against the App JWT rather than any one installation.
+    const appSlug = await reviewerSlug(githubAppJwtClient(credential) as unknown as ReviewerGitHub);
     configureReviewerRuntime({
-      github,
+      github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as ReviewerGitHub,
       sandbox: agentSandbox.sandbox,
       workspacesRoot: agentSandbox.workspacesRoot,
     });
-    return { github, appSlug };
+    return { resolver, appSlug };
   } catch (cause) {
     console.warn("[reviewer] could not resolve the reviewer App identity; automatic PR review is unprovisioned", cause);
     return undefined;
@@ -129,8 +136,12 @@ export const createAmbientAgentApp = async ({
   await configureCoderRuntimeBinding(paths, agentSandbox);
   const reviewerProvisioned = await configureReviewerRuntimeBinding(paths, agentSandbox);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
+  // The Speaker/Planner file one identity, but issues may be filed across orgs — resolve the
+  // installation-scoped client per issue owner (multi-org). Owner-only lookup: issue ops carry
+  // an owner but not always a repo. Falls back to the stored installation id on lookup failure.
+  const plannerResolver = createInstallationResolver(githubCredential);
   const app = composeSpeaker({
-    issues: createOctokitIssueRepository(githubAppClient(githubCredential)),
+    issues: createOctokitIssueRepository((owner) => plannerResolver.octokitForOwner(owner)),
     operations: issueOperations,
     policy: createIssueManagementPolicy(
       configuration.github.defaultRepository,
@@ -153,10 +164,13 @@ export const createAmbientAgentApp = async ({
           },
           command: {
             appSlug: reviewerProvisioned.appSlug,
-            permission: async (input) =>
-              (await reviewerProvisioned.github.repos.getCollaboratorPermissionLevel(input)).data.permission,
+            permission: async (input) => {
+              const gh = (await reviewerProvisioned.resolver.octokitFor(input.owner, input.repo)) as unknown as ReviewerGitHub;
+              return (await gh.repos.getCollaboratorPermissionLevel(input)).data.permission;
+            },
             pullRequest: async ({ owner, repo, pullRequest }) => {
-              const { data } = await reviewerProvisioned.github.pulls.get({ owner, repo, pull_number: pullRequest });
+              const gh = (await reviewerProvisioned.resolver.octokitFor(owner, repo)) as unknown as ReviewerGitHub;
+              const { data } = await gh.pulls.get({ owner, repo, pull_number: pullRequest });
               return { state: data.state, draft: data.draft ?? false, headSha: data.head.sha };
             },
           },
