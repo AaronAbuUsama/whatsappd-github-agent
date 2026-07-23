@@ -1,6 +1,3 @@
-import type { DispatchReceipt } from "@flue/runtime";
-
-import type { GitHubIngressInput } from "../inputs.ts";
 import type { IssueOperationStore } from "./operation-store.ts";
 import {
   createGitHubIngress,
@@ -9,6 +6,7 @@ import {
   type RoutedGitHubWebhookDelivery,
 } from "./ingress.ts";
 import { createGitHubIngressStore, type GitHubIngressStore } from "./ingress-store.ts";
+import type { GitHubUpInboxAdmit } from "./up-inbox.ts";
 import { createFlueGlobal } from "../shared/flue-global.ts";
 
 type GitHubIngressHandler = (delivery: RoutedGitHubWebhookDelivery) => Promise<GitHubIngressResult>;
@@ -20,7 +18,7 @@ const ingressHandler = createFlueGlobal<GitHubIngressHandler>(
 
 export const installGitHubIngressRuntime = (
   settings: GitHubIngressSettings,
-  dispatch: (chatId: string, input: GitHubIngressInput) => Promise<DispatchReceipt>,
+  admit: GitHubUpInboxAdmit,
   operations: IssueOperationStore,
   review?: Parameters<typeof createGitHubIngress>[0]["review"],
 ): GitHubIngressStore => {
@@ -28,8 +26,7 @@ export const installGitHubIngressRuntime = (
   ingressHandler.set(
     createGitHubIngress({
       store,
-      managedChats: settings.managedChats,
-      dispatch,
+      admit,
       operations,
       review,
     }),

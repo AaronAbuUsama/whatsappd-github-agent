@@ -23,6 +23,7 @@ import type { GitHubIngressStore } from "../../../../packages/engine/src/github/
 import { createFakeIssueRepository } from "../../../../packages/test-support/src/fake-issue-repository.ts";
 import { createFakeWhatsAppHost } from "../../../../packages/test-support/src/fake-whatsapp-host.ts";
 import { createConversationArchive } from "../../../../packages/engine/src/intake/conversation-archive.ts";
+import { createBrainInbox } from "../../../../packages/engine/src/brain/inbox.ts";
 import { conversationArrival } from "../../../../packages/engine/src/intake/conversation-event.ts";
 import { createManagedChatInbox, managedChatWindowStore } from "../../../../packages/engine/src/intake/managed-chat-inbox.ts";
 import { createManagedChatGptAuthentication } from "../../../../packages/installation/src/chatgpt-authentication.ts";
@@ -267,6 +268,9 @@ if (provider === undefined) {
 const fakeWhatsApp = createFakeWhatsAppHost();
 const applicationDatabase = process.env.APPLICATION_DB_PATH ?? join(process.cwd(), "application.sqlite");
 const archive = createConversationArchive(applicationDatabase);
+// The fixture has no Brain agent loop; the up-inbox proves GitHub events are admitted there
+// (not broadcast to a Speaker). Waking a Brain is out of scope for this Speaker fixture.
+const brainInbox = createBrainInbox(applicationDatabase, { providerChatIdForSurface: () => undefined });
 const issueOperations = createIssueOperationStore(applicationDatabase);
 const fakeIssues = createFakeIssueRepository();
 const source = await Effect.runPromise(Queue.unbounded<CoalescerEvent>());
@@ -313,9 +317,11 @@ const app = composeSpeaker({
   ingress: {
     settings: {
       databasePath: applicationDatabase,
-      managedChats: ["github-ingress-29@g.us"],
     },
-    dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
+    admit: async (event) => {
+      const admitted = brainInbox.admitGitHubEvent(event);
+      return { id: admitted.id, admittedAt: admitted.admittedAt };
+    },
   },
   participation: {
     say: fakeWhatsApp.say,
@@ -383,6 +389,7 @@ app.post("/test/github/issues", async (context) => {
   return context.json(fakeIssues.seed({ repository: { owner: "acme", repo: "widgets" }, ...input }), 201);
 });
 app.get("/test/github/ingress", (context) => context.json(githubIngressStore.list()));
+app.get("/test/github/up-inbox", (context) => context.json(brainInbox.pendingGitHubEvents()));
 app.delete("/test/github/events", (context) => {
   fakeIssues.reset();
   return context.body(null, 204);

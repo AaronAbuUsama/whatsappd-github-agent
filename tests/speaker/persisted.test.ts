@@ -196,6 +196,12 @@ async function githubIngressRecords(): Promise<readonly Record<string, unknown>[
   return (await response.json()) as readonly Record<string, unknown>[];
 }
 
+async function githubUpInbox(): Promise<readonly Record<string, unknown>[]> {
+  const response = await fetch(`${origin}/test/github/up-inbox`);
+  expect(response.status).toBe(200);
+  return (await response.json()) as readonly Record<string, unknown>[];
+}
+
 async function waitFor(predicate: () => Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -305,7 +311,7 @@ afterAll(async () => {
 });
 
 describe("persisted Speaker admission", () => {
-  it("verifies, normalizes, deduplicates, and routes GitHub ingress without implying speech", async () => {
+  it("verifies, normalizes, and deduplicates a GitHub delivery into the Brain up-inbox without speaking", async () => {
     const chatId = "github-ingress-29@g.us";
     const deliveryId = "29-valid-signed-delivery";
     const body = githubIssueOpenedPayload();
@@ -318,9 +324,10 @@ describe("persisted Speaker admission", () => {
     expect(firstReceipt.status).toBe("done");
     expect(firstReceipt.dispatchId).toBeTruthy();
     expect(Number.isFinite(Date.parse(firstReceipt.acceptedAt))).toBe(true);
+    // The event lands in the single Brain up-inbox, carrying its repository as provenance.
     await waitFor(
-      async () => (await historyText(chatId)).includes("Private verified GitHub delivery processed without speaking."),
-      "verified GitHub delivery settlement",
+      async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId),
+      "GitHub event up-inbox admission",
     );
 
     const duplicate = await githubDelivery({ deliveryId, body });
@@ -328,29 +335,23 @@ describe("persisted Speaker admission", () => {
     expect(duplicate.status, duplicateBody).toBe(200);
     expect(JSON.parse(duplicateBody) as { status: string }).toMatchObject({ status: "duplicate" });
 
-    const history = await historyText(chatId);
-    expect(history.match(/github\.issue\.opened/g)).toHaveLength(1);
-    expect(history).toContain(deliveryId);
-    expect(history).toContain("acme");
-    expect(history).toContain("widgets");
-    expect(await whatsappEvents()).toEqual([]);
-    expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({
-        deliveryId,
-        repository: "acme/widgets",
-        chatId,
-        ambience: "ambience",
-        dispatchId: firstReceipt.dispatchId,
-        acceptedAt: firstReceipt.acceptedAt,
-        status: "done",
-      }),
+    const upInbox = await githubUpInbox();
+    expect(upInbox.filter((event) => event.deliveryId === deliveryId)).toHaveLength(1);
+    expect(upInbox).toContainEqual(
+      expect.objectContaining({ deliveryId, repository: "acme/widgets", eventName: "issues", action: "opened" }),
     );
-    expect(serverOutput).toContain(`"deliveryId":"${deliveryId}"`);
-    expect(serverOutput).toContain(`"repository":"acme/widgets"`);
-    expect(serverOutput).toContain(`"chatId":"${chatId}"`);
-    expect(serverOutput).toContain(`"ambience":"ambience"`);
-    expect(serverOutput).toContain(`"dispatchId":"${firstReceipt.dispatchId}"`);
-    expect(serverOutput).toContain(`"runId":null`);
+    // Ingress never speaks and never broadcasts: no Speaker turn, no WhatsApp event, no chat id in the ledger.
+    expect(await historyText(chatId)).not.toContain(deliveryId);
+    expect(await whatsappEvents()).toEqual([]);
+    const record = (await githubIngressRecords()).find((entry) => entry.deliveryId === deliveryId);
+    expect(record).toMatchObject({
+      deliveryId,
+      repository: "acme/widgets",
+      ambience: "ambience",
+      dispatchId: firstReceipt.dispatchId,
+      status: "done",
+    });
+    expect(record).not.toHaveProperty("chatId");
   });
 
   it("rejects an invalid GitHub signature before application processing", async () => {
@@ -366,12 +367,11 @@ describe("persisted Speaker admission", () => {
   });
 
   it("deduplicates one admitted GitHub delivery after process replacement", async () => {
-    const chatId = "github-ingress-29@g.us";
     const deliveryId = "56-restart-deduplication";
     const body = githubIssueOpenedPayload();
     const first = await githubDelivery({ deliveryId, body });
     expect(first.status, await first.text()).toBe(200);
-    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "first GitHub admission");
+    await waitFor(async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId), "first GitHub admission");
 
     await stopServer();
     await startServer();
@@ -380,10 +380,9 @@ describe("persisted Speaker admission", () => {
     const repeatedBody = await repeated.text();
     expect(repeated.status, repeatedBody).toBe(200);
     expect(JSON.parse(repeatedBody)).toMatchObject({ status: "duplicate" });
-    const history = await historyText(chatId);
-    expect(history.match(new RegExp(deliveryId, "g"))).toHaveLength(1);
+    expect((await githubUpInbox()).filter((event) => event.deliveryId === deliveryId)).toHaveLength(1);
     expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({ deliveryId, status: "done", chatId }),
+      expect.objectContaining({ deliveryId, status: "done" }),
     );
   });
 
@@ -401,9 +400,9 @@ describe("persisted Speaker admission", () => {
     expect(await githubIngressRecords()).not.toContainEqual(expect.objectContaining({ deliveryId }));
   });
 
-  it("broadcasts an event from any repository to every managed thread (each Speaker judges)", async () => {
+  it("admits an event from any repository to the up-inbox and reaches no chat (no cross-company leak)", async () => {
     const chatId = "github-ingress-29@g.us";
-    const deliveryId = "29-broadcast-any-repository";
+    const deliveryId = "29-any-repository";
     await resetWhatsApp();
     const response = await githubDelivery({
       deliveryId,
@@ -412,23 +411,13 @@ describe("persisted Speaker admission", () => {
 
     const responseBody = await response.text();
     expect(response.status, responseBody).toBe(200);
-    // No repo→chat routing anymore: the event reaches the managed thread and the Speaker,
-    // not a routing table, decides relevance (#144).
-    expect(JSON.parse(responseBody)).toMatchObject({
-      status: "done",
-      deliveryId,
-      repository: "acme/unconfigured",
-      chatId,
-    });
-    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "broadcast delivery settlement");
-    expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({
-        deliveryId,
-        repository: "acme/unconfigured",
-        chatId,
-        status: "done",
-      }),
-    );
+    // The event is admitted to the Brain up-inbox but routed to NO chat — the Brain owns routing,
+    // so an event from one org can never broadcast into another org's chat.
+    expect(JSON.parse(responseBody)).toMatchObject({ status: "done", deliveryId, repository: "acme/unconfigured" });
+    expect(JSON.parse(responseBody)).not.toHaveProperty("chatId");
+    await waitFor(async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId), "up-inbox admission");
+    expect(await historyText(chatId)).not.toContain(deliveryId);
+    expect(await whatsappEvents()).toEqual([]);
   });
 
   it("records a verified unsupported GitHub event without dispatching it", async () => {

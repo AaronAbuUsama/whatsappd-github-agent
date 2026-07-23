@@ -79,12 +79,34 @@ export interface ActiveWorkItem {
   readonly latestMilestone?: WorkMilestone;
 }
 
+/**
+ * A GitHub event admitted to the Brain up-inbox (§4). Immutable and provenance-bearing:
+ * it carries its delivery identity, repository, and normalized detail so the Brain — never
+ * the ingress — decides which Surface(s) hear it, including none. Identity is the delivery,
+ * so a provider redelivery admits idempotently.
+ */
+export interface GitHubEventDraft {
+  readonly githubAppId: string;
+  readonly deliveryId: string;
+  readonly eventName: string;
+  readonly action: string;
+  readonly repository: string;
+  readonly summary: string;
+  readonly detail: Readonly<Record<string, unknown>>;
+}
+
+export interface GitHubEvent extends GitHubEventDraft {
+  readonly id: string;
+  readonly admittedAt: string;
+}
+
 export interface BrainBatch {
   readonly id: string;
   readonly createdAt: string;
   readonly intents: readonly Intent[];
   readonly knowledgeDeltas: readonly KnowledgeDelta[];
   readonly specialistResults: readonly SpecialistResult[];
+  readonly githubEvents: readonly GitHubEvent[];
   readonly dispatch?: DispatchReceipt;
 }
 
@@ -201,6 +223,19 @@ interface WorkMilestoneRow {
   at: string;
 }
 
+interface GitHubEventRow {
+  event_id: string;
+  github_app_id: string;
+  delivery_id: string;
+  event_name: string;
+  action: string;
+  repository: string;
+  summary: string;
+  detail_json: string;
+  admitted_at: string;
+  batch_id: string | null;
+}
+
 interface BatchRow {
   batch_id: string;
   created_at: string;
@@ -222,6 +257,8 @@ interface EffectRow {
 export interface BrainInbox {
   admitIntent(draft: IntentDraft): Intent;
   admitKnowledgeDelta(draft: KnowledgeDeltaDraft): KnowledgeDelta;
+  admitGitHubEvent(draft: GitHubEventDraft): GitHubEvent;
+  pendingGitHubEvents(): readonly GitHubEvent[];
   intent(intentId: string): Intent | undefined;
   pendingIntents(): readonly Intent[];
   pendingKnowledgeDeltas(): readonly KnowledgeDelta[];
@@ -325,6 +362,18 @@ const hydrateMilestone = (row: WorkMilestoneRow): WorkMilestone => ({
   at: row.at,
 });
 
+const hydrateGitHubEvent = (row: GitHubEventRow): GitHubEvent => ({
+  id: row.event_id,
+  githubAppId: row.github_app_id,
+  deliveryId: row.delivery_id,
+  eventName: row.event_name,
+  action: row.action,
+  repository: row.repository,
+  summary: row.summary,
+  detail: JSON.parse(row.detail_json) as Record<string, unknown>,
+  admittedAt: row.admitted_at,
+});
+
 const required = (value: string, name: string): string => {
   const normalized = value.trim();
   if (normalized.length === 0) throw new Error(`${name} must not be empty.`);
@@ -371,6 +420,9 @@ const specialistResultId = (workId: string, runId: string): string =>
 // ponytail: idempotent by (workId, note) — a retried or duplicated waypoint coalesces to one row.
 const workMilestoneId = (workId: string, note: string): string =>
   `work-milestone:${createHash("sha256").update(JSON.stringify([workId, note])).digest("hex")}`;
+
+const githubEventId = (githubAppId: string, deliveryId: string): string =>
+  `github-event:${createHash("sha256").update(JSON.stringify([githubAppId, deliveryId])).digest("hex")}`;
 
 const batchId = (inputIds: readonly string[]): string =>
   `brain-batch:${createHash("sha256").update(JSON.stringify(inputIds)).digest("hex")}`;
@@ -451,6 +503,18 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       work_id TEXT NOT NULL REFERENCES brain_specialist_launches(work_id),
       note TEXT NOT NULL,
       at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS brain_github_events (
+      event_id TEXT PRIMARY KEY,
+      github_app_id TEXT NOT NULL,
+      delivery_id TEXT NOT NULL,
+      event_name TEXT NOT NULL,
+      action TEXT NOT NULL,
+      repository TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      detail_json TEXT NOT NULL,
+      admitted_at TEXT NOT NULL,
+      batch_id TEXT REFERENCES brain_batches(batch_id)
     ) STRICT;
     CREATE TABLE IF NOT EXISTS brain_effects (
       effect_id TEXT PRIMARY KEY,
@@ -609,6 +673,21 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
   const selectPendingKnowledge = database.prepare(`
     SELECT * FROM brain_knowledge_deltas WHERE batch_id IS NULL ORDER BY admitted_at, rowid
   `);
+  const insertGitHubEvent = database.prepare(`
+    INSERT OR IGNORE INTO brain_github_events
+      (event_id, github_app_id, delivery_id, event_name, action, repository, summary, detail_json, admitted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const selectGitHubEvent = database.prepare("SELECT * FROM brain_github_events WHERE event_id = ?");
+  const selectPendingGitHubEvents = database.prepare(
+    "SELECT * FROM brain_github_events WHERE batch_id IS NULL ORDER BY admitted_at, rowid",
+  );
+  const selectBatchGitHubEvents = database.prepare(
+    "SELECT * FROM brain_github_events WHERE batch_id = ? ORDER BY admitted_at, rowid",
+  );
+  const claimGitHubEvent = database.prepare(
+    "UPDATE brain_github_events SET batch_id = ? WHERE event_id = ? AND batch_id IS NULL",
+  );
   const selectSpecialistLaunch = database.prepare("SELECT * FROM brain_specialist_launches WHERE work_id = ?");
   const selectSpecialistLaunchByRunId = database.prepare(
     "SELECT * FROM brain_specialist_launches WHERE run_id = ?",
@@ -681,6 +760,9 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       UNION ALL
       SELECT result_id AS input_id, 'specialist_result' AS kind, admitted_at, rowid AS input_order
         FROM brain_specialist_results WHERE batch_id IS NULL
+      UNION ALL
+      SELECT event_id AS input_id, 'github_event' AS kind, admitted_at, rowid AS input_order
+        FROM brain_github_events WHERE batch_id IS NULL
     ) ORDER BY admitted_at, kind, input_order LIMIT ?
   `);
   const insertBatch = database.prepare("INSERT INTO brain_batches (batch_id, created_at) VALUES (?, ?)");
@@ -778,6 +860,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     specialistResults: (
       selectBatchSpecialistResults.all(row.batch_id) as unknown as SpecialistResultRow[]
     ).map(hydrateSpecialistResult),
+    githubEvents: (selectBatchGitHubEvents.all(row.batch_id) as unknown as GitHubEventRow[]).map(hydrateGitHubEvent),
     ...(row.dispatch_id === null || row.accepted_at === null
       ? {}
       : { dispatch: { dispatchId: row.dispatch_id, acceptedAt: row.accepted_at } }),
@@ -831,6 +914,25 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       );
       return hydrateKnowledgeDelta(selectKnowledgeDelta.get(id) as unknown as KnowledgeDeltaRow);
     },
+    admitGitHubEvent: (draft) => {
+      const githubAppId = required(draft.githubAppId, "GitHub event App id");
+      const deliveryId = required(draft.deliveryId, "GitHub event delivery id");
+      const id = githubEventId(githubAppId, deliveryId);
+      insertGitHubEvent.run(
+        id,
+        githubAppId,
+        deliveryId,
+        required(draft.eventName, "GitHub event name"),
+        required(draft.action, "GitHub event action"),
+        required(draft.repository, "GitHub event repository"),
+        required(draft.summary, "GitHub event summary"),
+        JSON.stringify(draft.detail),
+        options.now?.() ?? new Date().toISOString(),
+      );
+      return hydrateGitHubEvent(selectGitHubEvent.get(id) as unknown as GitHubEventRow);
+    },
+    pendingGitHubEvents: () =>
+      (selectPendingGitHubEvents.all() as unknown as GitHubEventRow[]).map(hydrateGitHubEvent),
     intent: (id) => {
       const row = selectIntent.get(id) as unknown as IntentRow | undefined;
       return row === undefined ? undefined : hydrate(row);
@@ -963,7 +1065,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
         }
         const ready = selectReadyInputIds.all(Math.max(1, Math.min(Math.trunc(limit), 100))) as unknown as Array<{
           input_id: string;
-          kind: "speaker_intent" | "knowledge_delta" | "specialist_result";
+          kind: "speaker_intent" | "knowledge_delta" | "specialist_result" | "github_event";
         }>;
         if (ready.length === 0) {
           database.exec("COMMIT");
@@ -977,7 +1079,9 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
             ? claimInput.run(id, input_id)
             : kind === "knowledge_delta"
               ? claimKnowledge.run(id, input_id)
-              : claimSpecialistResult.run(id, input_id);
+              : kind === "specialist_result"
+                ? claimSpecialistResult.run(id, input_id)
+                : claimGitHubEvent.run(id, input_id);
           if (result.changes !== 1) throw new Error(`Brain input ${input_id} lost its Batch assignment.`);
         }
         database.exec("COMMIT");

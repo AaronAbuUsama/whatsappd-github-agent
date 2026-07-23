@@ -40,6 +40,7 @@ import { configLayer, type CoalescerConfigValues } from "@ambient-agent/engine/c
 import { botIdsOf, whatsappEventSource } from "@ambient-agent/engine/coalescer/whatsapp.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
 import { createBrainInbox } from "@ambient-agent/engine/brain/inbox.ts";
+import { configureGitHubUpInbox } from "@ambient-agent/engine/github/up-inbox.ts";
 import { createHistoricalReplayStore } from "@ambient-agent/engine/intake/historical-replay.ts";
 import { createScribeInbox } from "@ambient-agent/engine/scribe/inbox.ts";
 import {
@@ -254,8 +255,6 @@ export interface WhatsAppRuntimeOptions {
   readonly observeActivity?: (observer: SpeakerObserver) => () => void;
   /** Run once after the participation port is wired — e.g. the delegation boot sweep. */
   readonly afterParticipationReady?: () => void;
-  /** Resolve which repository a managed chat's Brain-filed issues land in (#317). */
-  readonly repositoryForChat?: (providerChatId: string) => string;
 }
 
 export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
@@ -265,6 +264,16 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const surfaces = createSurfaceRegistry(options.applicationDatabase);
   const brainInbox = createBrainInbox(options.applicationDatabase, {
     providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+  });
+  // GitHub events flow UP into the single Brain up-inbox (§4). Admission is the durable step;
+  // waking the Brain is best-effort and non-blocking — the boot sweep re-claims any open Batch,
+  // so a transient Flue hiccup on wake never loses an already-admitted event.
+  configureGitHubUpInbox(async (event) => {
+    const admitted = brainInbox.admitGitHubEvent(event);
+    void wakeBrain(brainInbox).catch((cause) =>
+      getLogger("github").error({ event: "github.up-inbox.wake-failed", error: errorMessage(cause) }, "wake"),
+    );
+    return { id: admitted.id, admittedAt: admitted.admittedAt };
   });
   const deliveries = createSurfaceDeliveryStore(options.applicationDatabase, {
     providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
@@ -358,14 +367,6 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
         // process-global at app boot, well before any Batch files an issue.
         fileIssue: (request, effectId) => createIssueFiler(getIssueManagementRuntime())(request, effectId),
-        repositoryForSurface: (surfaceId) => {
-          if (options.repositoryForChat === undefined) {
-            throw new Error("Issue-filing repository routing is not configured.");
-          }
-          const binding = surfaces.activeBinding(surfaceId);
-          if (binding === undefined) throw new Error(`Surface ${surfaceId} has no active provider binding.`);
-          return options.repositoryForChat(binding.providerChatId);
-        },
         deliverPrompt: (effect) => {
           const binding = surfaces.activeBinding(effect.directive.surfaceId);
           if (binding === undefined) {

@@ -176,12 +176,12 @@ describe("Brain Effects and settlement", () => {
       wake: async () => undefined,
       deliverPrompt: async () => { throw new Error("not expected"); },
       fileIssue: filer,
-      repositoryForSurface: () => REPOSITORY,
     });
 
     const filed = await createFileIssueTool().run({ input: {
       batchId,
       surfaceId: SURFACE,
+      repository: REPOSITORY,
       kind: "bug",
       title: "The scheduler drops a queued job",
       body: "Expected the queued job to run; it disappears after restart.",
@@ -221,7 +221,6 @@ describe("Brain Effects and settlement", () => {
       wake: async () => undefined,
       deliverPrompt: async () => { throw new Error("not expected"); },
       fileIssue: filer,
-      repositoryForSurface: () => REPOSITORY,
     });
 
     const recovered = await deliverIssueFilingEffect(pending);
@@ -241,7 +240,6 @@ describe("Brain Effects and settlement", () => {
       wake: async () => undefined,
       deliverPrompt: async () => { throw new Error("not expected"); },
       fileIssue: filer,
-      repositoryForSurface: () => REPOSITORY,
     });
     const pending = inbox.recordIssueFiling({
       batchId,
@@ -274,13 +272,13 @@ describe("Brain Effects and settlement", () => {
       wake: async () => undefined,
       deliverPrompt: async () => { throw new Error("not expected"); },
       fileIssue: filer,
-      repositoryForSurface: () => REPOSITORY,
     });
     repository.failNextCreate(Object.assign(new Error("Not Found"), { status: 404 }));
 
     const filed = await createFileIssueTool().run({ input: {
       batchId,
       surfaceId: SURFACE,
+      repository: REPOSITORY,
       kind: "bug",
       title: "Filing into an archived repository",
       body: "The repository was archived after this chat was mapped.",
@@ -307,7 +305,6 @@ describe("Brain Effects and settlement", () => {
       wake: async () => undefined,
       deliverPrompt: async () => { throw new Error("not expected"); },
       fileIssue: async () => { throw Object.assign(new Error("ETIMEDOUT"), { code: "ETIMEDOUT" }); },
-      repositoryForSurface: () => REPOSITORY,
     });
     // A rejection here would be an Effect defect that kills the WhatsApp fiber; recovery must swallow it.
     await expect(recoverPendingIssueFilings()).resolves.toBeUndefined();

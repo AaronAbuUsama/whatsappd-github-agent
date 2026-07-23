@@ -18,8 +18,6 @@ export interface BrainEffectsRuntime {
   /** File one GitHub issue durably. Absent when this runtime carries no GitHub write binding.
    * `effectId` scopes the filing's Operation Identity so a recovered attempt reconciles, not re-creates. */
   readonly fileIssue?: (request: FileIssueRequest, effectId: string) => Promise<FileIssueOutcome>;
-  /** Resolve the repository a Surface's issues are filed into. Absent without a GitHub binding. */
-  readonly repositoryForSurface?: (surfaceId: string) => string;
 }
 
 const runtimeSlot = createFlueGlobal<BrainEffectsRuntime>(

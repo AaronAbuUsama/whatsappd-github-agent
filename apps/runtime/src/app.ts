@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 
 import { configureBraintrustTracing } from "@ambient-agent/engine/braintrust.ts";
 import { composeSpeaker } from "@ambient-agent/agents/speaker/compose.ts";
-import { dispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import { admitGitHubEventToBrain } from "@ambient-agent/engine/github/up-inbox.ts";
 import { createIssueManagementPolicy } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createGraphStore } from "@ambient-agent/engine/graph/store.ts";
@@ -163,11 +163,11 @@ export const createAmbientAgentApp = async ({
     ingress: {
       settings: {
         databasePath: paths.applicationDatabase,
-        // Legacy ingress still fans supported GitHub events to configured Speakers. The
-        // final routing slice removes this broadcast path in favour of Brain selection.
-        managedChats: configuration.managedChats,
       },
-      dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
+      // GitHub events enter the single Brain up-inbox (§4). The Brain — not a routing table —
+      // decides which Surface(s) hear each event. The port is configured once the Brain inbox
+      // exists, inside startWhatsAppRuntime, so this resolves lazily.
+      admit: (event) => admitGitHubEventToBrain(event),
       ...(reviewerProvisioned ? {
         review: {
           repositories: configuration.github.reviewRepositories,
@@ -219,15 +219,10 @@ export const createAmbientAgentApp = async ({
   // bind and the CLI invoking this starter, /health reports the WhatsApp phase as
   // "disabled"; every health consumer polls, so the window is harmless.
   deferWhatsAppRuntimeStart(() => {
-    const surfaceRepositories = new Map(
-      configuration.github.surfaceRepositories.map(({ chat, repository }) => [chat.toLowerCase(), repository]),
-    );
     const whatsapp = startWhatsAppRuntime({
       storeDirectory: paths.whatsapp,
       applicationDatabase: paths.applicationDatabase,
       managedChats: configuration.managedChats,
-      repositoryForChat: (chat) =>
-        surfaceRepositories.get(chat.toLowerCase()) ?? configuration.github.defaultRepository,
       ...(configuration.smoke === undefined ? {} : { canaryChat: configuration.smoke.canaryChat }),
     });
     whatsappControl = whatsapp;

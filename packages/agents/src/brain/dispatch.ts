@@ -38,6 +38,7 @@ export const wakeBrain = async (
                 intents: batch.intents,
                 knowledgeDeltas: batch.knowledgeDeltas,
                 specialistResults: batch.specialistResults,
+                githubEvents: batch.githubEvents,
               },
             },
           });

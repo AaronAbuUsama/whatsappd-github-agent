@@ -1,4 +1,3 @@
-import type { DispatchReceipt } from "@flue/runtime";
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 
@@ -15,11 +14,12 @@ import type { WhatsAppParticipationPort } from "../capabilities/whatsapp-partici
 import { installGitHubIngressRuntime } from "@ambient-agent/engine/github/ingress-runtime.ts";
 import type { GitHubIngressStore } from "@ambient-agent/engine/github/ingress-store.ts";
 import type { GitHubIngressSettings } from "@ambient-agent/engine/github/ingress.ts";
-import type { GitHubIngressInput } from "@ambient-agent/engine/inputs.ts";
+import type { GitHubUpInboxAdmit } from "@ambient-agent/engine/github/up-inbox.ts";
 
 export interface SpeakerIngressAdapters {
   readonly settings: GitHubIngressSettings;
-  readonly dispatch: (chatId: string, input: GitHubIngressInput) => Promise<DispatchReceipt>;
+  /** Admit a GitHub event to the single Brain up-inbox (§4); the Brain decides which Surface(s) hear it. */
+  readonly admit: GitHubUpInboxAdmit;
   readonly review?: Parameters<typeof installGitHubIngressRuntime>[3];
 }
 
@@ -56,7 +56,7 @@ export const composeSpeaker = (adapters: SpeakerAdapters): Hono => {
   });
   const githubIngress = installGitHubIngressRuntime(
     adapters.ingress.settings,
-    adapters.ingress.dispatch,
+    adapters.ingress.admit,
     adapters.operations,
     adapters.ingress.review,
   );

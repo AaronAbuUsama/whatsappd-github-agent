@@ -61,10 +61,11 @@ export const createFileIssueTool = () =>
   defineTool({
     name: "file_issue",
     description:
-      "Durably file one GitHub issue for the originating Surface's repository, which is resolved from that Surface — never chosen here. Supply the current Batch id and the Surface as provenance. This creates the issue; report the outcome back separately with prompt_speaker.",
+      "Durably file one GitHub issue in the repository you choose, resolved from Graph relations. Supply the current Batch id and the originating Surface as provenance, and the target repository as `owner/repo`. This creates the issue; report the outcome back separately with prompt_speaker.",
     input: v.object({
       batchId: nonEmptyString,
       surfaceId: nonEmptyString,
+      repository: v.pipe(nonEmptyString, v.regex(/^[^/\s]+\/[^/\s]+$/u, "repository must be owner/repo")),
       kind: v.union([v.literal("bug"), v.literal("feature")]),
       title: v.pipe(nonEmptyString, v.maxLength(256)),
       body: v.pipe(nonEmptyString, v.maxLength(MAX_PUBLIC_ISSUE_BODY_LENGTH)),
@@ -87,14 +88,14 @@ export const createFileIssueTool = () =>
     ]),
     run: async ({ input }) => {
       const runtime = getBrainEffectsRuntime();
-      if (runtime.repositoryForSurface === undefined || runtime.fileIssue === undefined) {
+      if (runtime.fileIssue === undefined) {
         throw new Error("Issue filing is not configured for this Brain runtime.");
       }
       const effect = await deliverIssueFilingEffect(
         runtime.inbox.recordIssueFiling({
           batchId: input.batchId,
           sourceSurfaceId: input.surfaceId,
-          repository: runtime.repositoryForSurface(input.surfaceId),
+          repository: input.repository,
           kind: input.kind,
           title: input.title,
           body: input.body,

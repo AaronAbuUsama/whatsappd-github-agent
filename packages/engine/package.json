@@ -18,6 +18,7 @@
     "./github/ingress-runtime.ts": "./src/github/ingress-runtime.ts",
     "./github/ingress-store.ts": "./src/github/ingress-store.ts",
     "./github/ingress.ts": "./src/github/ingress.ts",
+    "./github/up-inbox.ts": "./src/github/up-inbox.ts",
     "./github/operation-store.ts": "./src/github/operation-store.ts",
     "./github/repository.ts": "./src/github/repository.ts",
     "./graph/digest.ts": "./src/graph/digest.ts",

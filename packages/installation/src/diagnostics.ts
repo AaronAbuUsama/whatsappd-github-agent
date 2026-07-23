@@ -210,6 +210,21 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
     ],
   ],
   [
+    "brain_github_events",
+    [
+      "event_id",
+      "github_app_id",
+      "delivery_id",
+      "event_name",
+      "action",
+      "repository",
+      "summary",
+      "detail_json",
+      "admitted_at",
+      "batch_id",
+    ],
+  ],
+  [
     "brain_effects",
     [
       "effect_id",

@@ -1,17 +1,11 @@
 import type { GitHubWebhookDelivery } from "@flue/github";
-import type { DispatchReceipt } from "@flue/runtime";
 import * as v from "valibot";
 
-import {
-  githubIssueOpenedInputSchema,
-  githubPullRequestOpenedInputSchema,
-  githubPullRequestReviewSubmittedInputSchema,
-  type GitHubIngressInput,
-} from "../inputs.ts";
+import type { GitHubEventDraft } from "../brain/inbox.ts";
+import type { GitHubUpInboxAdmit } from "./up-inbox.ts";
 import type { IssueOperationStore } from "./operation-store.ts";
 import { getLogger } from "../logging/logging.ts";
 import { errorMessage } from "../shared/errors.ts";
-import { retry as retryOperation, type RetryPolicy } from "../shared/retry.ts";
 import type { GitHubIngressRecord, GitHubIngressStore } from "./ingress-store.ts";
 
 export type RoutedGitHubWebhookDelivery = GitHubWebhookDelivery & { readonly githubAppId?: string };
@@ -120,12 +114,6 @@ const pullRequestReviewSubmittedPayloadSchema = v.object({
 
 export interface GitHubIngressSettings {
   readonly databasePath: string;
-  /**
-   * Every managed thread's chat id. A supported GitHub event broadcasts to all of them —
-   * each Speaker judges relevance itself, staying silent is a valid outcome (#144). A new
-   * managed thread receives events automatically, with no per-repo routing config.
-   */
-  readonly managedChats: readonly string[];
 }
 
 const repositoryKey = (owner: string, repo: string): string => `${owner.trim()}/${repo.trim()}`.toLowerCase();
@@ -145,15 +133,15 @@ const linkedIssueNumbers = (body: string, repository: string): readonly number[]
 export type GitHubIngressResult =
   | { readonly status: "duplicate"; readonly record: GitHubIngressRecord }
   | { readonly status: "unsupported"; readonly deliveryId: string }
-  | { readonly status: "uncorrelated"; readonly deliveryId: string; readonly repository: string }
   | { readonly status: "deferred"; readonly deliveryId: string; readonly repository: string; readonly reason: string }
   | { readonly status: "failed"; readonly record: GitHubIngressRecord }
   | { readonly status: "review-launched"; readonly deliveryId: string; readonly repository: string; readonly runId: string }
   | {
+      // The event was admitted to the single Brain up-inbox (§4); the Brain — not the ingress —
+      // decides which Surface(s) hear it. `dispatchId` is the up-inbox admission id.
       readonly status: "done";
       readonly deliveryId: string;
       readonly repository: string;
-      readonly chatId: string;
       readonly ambience: "ambience";
       readonly dispatchId: string;
       readonly acceptedAt: string;
@@ -171,17 +159,10 @@ const defaultLogger: GitHubIngressLogger = {
   error: (record) => getLogger("github").error(record, String(record.event)),
 };
 
-export interface GitHubIngressRetryPolicy extends RetryPolicy {}
-
-const defaultRetryPolicy: GitHubIngressRetryPolicy = {
-  attempts: 3,
-  delayMs: (attempt) => attempt * 1_000,
-};
-
 export const createGitHubIngress = (options: {
   readonly store: GitHubIngressStore;
-  readonly managedChats: readonly string[];
-  readonly dispatch: (chatId: string, input: GitHubIngressInput) => Promise<DispatchReceipt>;
+  /** Admit the event to the single Brain up-inbox (§4). The Brain decides which Surface(s) hear it. */
+  readonly admit: GitHubUpInboxAdmit;
   readonly operations?: IssueOperationStore;
   readonly review?: {
     readonly repositories: readonly string[];
@@ -198,11 +179,9 @@ export const createGitHubIngress = (options: {
   };
   readonly logger?: GitHubIngressLogger;
   readonly now?: () => Date;
-  readonly retry?: GitHubIngressRetryPolicy;
 }) => {
   const logger = options.logger ?? defaultLogger;
   const now = options.now ?? (() => new Date());
-  const retry = options.retry ?? defaultRetryPolicy;
   const inFlight = new Set<string>();
 
   const handle = async (
@@ -345,7 +324,7 @@ export const createGitHubIngress = (options: {
         settle({
           status: "done",
           repository,
-          ...(options.managedChats.length > 0 ? { chatId: options.managedChats[0]! } : {}),
+
           ambience: "ambience",
           dispatchId: admitted.runId,
           acceptedAt: receivedAt,
@@ -376,7 +355,7 @@ export const createGitHubIngress = (options: {
         settle({
           status: "done",
           repository,
-          ...(options.managedChats.length > 0 ? { chatId: options.managedChats[0]! } : {}),
+
           ambience: "ambience",
           dispatchId: admitted.runId,
           acceptedAt: receivedAt,
@@ -389,22 +368,27 @@ export const createGitHubIngress = (options: {
       return { status: "unsupported", deliveryId: delivery.deliveryId };
     }
 
-    // Repo-level input factory. Correlation (below, for PRs) is computed once; only the
-    // chat id varies per broadcast target, so the payload is built per managed thread.
-    let buildInput: (chatId: string) => GitHubIngressInput;
+    // One immutable, provenance-bearing event for the single Brain up-inbox (§4). Routing is the
+    // Brain's — the ingress no longer knows or chooses a Surface. The event carries its full
+    // normalized detail so the Brain decides who, if anyone, hears it.
+    const repositoryDetail = {
+      owner: payload.repository.owner.login,
+      repo: payload.repository.name,
+      id: payload.repository.id,
+      url: payload.repository.html_url,
+    };
+    let event: GitHubEventDraft;
     if (isIssueOpened && "issue" in payload) {
-      buildInput = (chatId) =>
-        v.parse(githubIssueOpenedInputSchema, {
-          type: "github.issue.opened",
-          chatId,
-          deliveryId: delivery.deliveryId,
+      event = {
+        githubAppId,
+        deliveryId: delivery.deliveryId,
+        eventName: delivery.name,
+        action: "opened",
+        repository,
+        summary: `Issue #${payload.issue.number} opened in ${repository}: ${payload.issue.title}`,
+        detail: {
           ...(payload.installation ? { installationId: payload.installation.id } : {}),
-          repository: {
-            owner: payload.repository.owner.login,
-            repo: payload.repository.name,
-            id: payload.repository.id,
-            url: payload.repository.html_url,
-          },
+          repository: repositoryDetail,
           issue: {
             number: payload.issue.number,
             url: payload.issue.html_url,
@@ -412,20 +396,19 @@ export const createGitHubIngress = (options: {
             state: payload.issue.state,
           },
           sender: payload.sender,
-        });
+        },
+      };
     } else if (isPullRequestReviewSubmitted && "review" in payload) {
-      buildInput = (chatId) =>
-        v.parse(githubPullRequestReviewSubmittedInputSchema, {
-          type: "github.pull-request-review.submitted",
-          chatId,
-          deliveryId: delivery.deliveryId,
+      event = {
+        githubAppId,
+        deliveryId: delivery.deliveryId,
+        eventName: delivery.name,
+        action: "submitted",
+        repository,
+        summary: `Review ${payload.review.state} on ${repository}#${payload.pull_request.number}`,
+        detail: {
           ...(payload.installation ? { installationId: payload.installation.id } : {}),
-          repository: {
-            owner: payload.repository.owner.login,
-            repo: payload.repository.name,
-            id: payload.repository.id,
-            url: payload.repository.html_url,
-          },
+          repository: repositoryDetail,
           pullRequest: {
             number: payload.pull_request.number,
             url: payload.pull_request.html_url,
@@ -439,7 +422,8 @@ export const createGitHubIngress = (options: {
             state: payload.review.state,
           },
           sender: payload.sender,
-        });
+        },
+      };
     } else if ("pull_request" in payload && "body" in payload.pull_request) {
       const linkedNumbers = linkedIssueNumbers(payload.pull_request.body ?? "", repository);
       const correlation = options.operations?.correlateCreateIssues(repository, linkedNumbers) ?? {
@@ -448,14 +432,7 @@ export const createGitHubIngress = (options: {
       };
       if (correlation.hasPendingCreate && correlation.completedIssueNumbers.length < linkedNumbers.length) {
         const reason = "referenced issue correlation is waiting for an issue-create operation to settle";
-        logger.warn({
-          event: "github.ingress.deferred",
-          deliveryId: delivery.deliveryId,
-          repository,
-          ambience: null,
-          dispatchId: null,
-          reason,
-        });
+        logger.warn({ event: "github.ingress.deferred", deliveryId: delivery.deliveryId, repository, reason });
         return { status: "deferred", deliveryId: delivery.deliveryId, repository, reason };
       }
       if (
@@ -472,109 +449,69 @@ export const createGitHubIngress = (options: {
           });
         }
       }
-      if (correlation.completedIssueNumbers.length === 0) {
-        settle({ status: "uncorrelated", repository, settledAt: now().toISOString() });
-        logger.warn({
-          event: "github.ingress.uncorrelated",
-          deliveryId: delivery.deliveryId,
-          repository,
-          ambience: null,
-          dispatchId: null,
-          reason: "pull request does not close an issue captured by Speaker",
-        });
-        return { status: "uncorrelated", deliveryId: delivery.deliveryId, repository };
-      }
-      buildInput = (chatId) =>
-        v.parse(githubPullRequestOpenedInputSchema, {
-          type: "github.pull-request.opened",
-          chatId,
-          deliveryId: delivery.deliveryId,
+      // Uncorrelated PRs are no longer dropped: they land in the up-inbox with whatever closing
+      // references we could resolve, and the Brain decides (§4 — home of last resort).
+      const closes = correlation.completedIssueNumbers.map((number) => ({ number }));
+      event = {
+        githubAppId,
+        deliveryId: delivery.deliveryId,
+        eventName: delivery.name,
+        action: String(payload.action),
+        repository,
+        summary:
+          `Pull request #${payload.pull_request.number} ${String(payload.action)} in ${repository}: ` +
+          payload.pull_request.title +
+          (closes.length > 0 ? ` (closes ${closes.map((issue) => `#${issue.number}`).join(", ")})` : ""),
+        detail: {
           ...(payload.installation ? { installationId: payload.installation.id } : {}),
-          repository: {
-            owner: payload.repository.owner.login,
-            repo: payload.repository.name,
-            id: payload.repository.id,
-            url: payload.repository.html_url,
-          },
-          issues: correlation.completedIssueNumbers.map((number) => ({ number })),
+          repository: repositoryDetail,
+          ...(closes.length > 0 ? { issues: closes } : {}),
           pullRequest: {
             number: payload.pull_request.number,
             url: payload.pull_request.html_url,
             title: payload.pull_request.title,
             state: payload.pull_request.state,
-            // A draft has landed and has a usable link. Preserve that fact instead of waiting for an unsupported
-            // ready_for_review transition that would otherwise make the Axis 3 notification impossible.
             draft: payload.pull_request.draft,
           },
           sender: payload.sender,
-        });
+        },
+      };
     } else {
       throw new Error(`Supported GitHub delivery ${delivery.deliveryId} lost its normalized payload variant`);
     }
 
-    // Broadcast: every managed thread's Speaker receives the event exactly once and judges
-    // relevance itself (#144). A tenant with GitHub connected but no chat paired has
-    // nothing to broadcast to; settle instead of dereferencing an empty list below.
-    const chats = options.managedChats;
-    if (chats.length === 0) {
-      const reason = "no managed chats are paired for this tenant";
-      settle({ status: "unsupported", repository, error: reason, settledAt: now().toISOString() });
-      logger.warn({ event: "github.ingress.unsupported", deliveryId: delivery.deliveryId, eventName: delivery.name, reason });
-      return { status: "unsupported", deliveryId: delivery.deliveryId };
-    }
-    let receipts: readonly DispatchReceipt[];
+    let admission: Awaited<ReturnType<typeof options.admit>>;
     try {
-      receipts = await Promise.all(
-        chats.map((chatId) => retryOperation(() => options.dispatch(chatId, buildInput(chatId)), retry)),
-      );
+      admission = await options.admit(event);
     } catch (cause) {
       const error = errorMessage(cause);
       settle({ status: "failed", repository, ambience: "ambience", error, settledAt: now().toISOString() });
-      logger.error({
-        event: "github.ingress.failed",
-        deliveryId: delivery.deliveryId,
-        repository,
-        ambience: "ambience",
-        dispatchId: null,
-        error,
-      });
+      logger.error({ event: "github.ingress.failed", deliveryId: delivery.deliveryId, repository, error });
       return { status: "failed", record: getRecord()! };
     }
-
-    // ponytail: the single-row ledger predates broadcast; it records the first thread's
-    // admission receipt as the delivery's Flue-admission proof, and the whole fan-out in the
-    // done log. Per-thread ledger rows only if audit ever needs them.
-    const representativeChat = chats[0]!;
-    const representativeReceipt = receipts[0]!;
     settle({
       status: "done",
       repository,
-      chatId: representativeChat,
       ambience: "ambience",
-      dispatchId: representativeReceipt.dispatchId,
-      acceptedAt: representativeReceipt.acceptedAt,
+      dispatchId: admission.id,
+      acceptedAt: admission.admittedAt,
       settledAt: now().toISOString(),
     });
     logger.info({
       event: "github.ingress.done",
       deliveryId: delivery.deliveryId,
       repository,
-      chatId: representativeChat,
-      broadcastChats: chats.length,
       ambience: "ambience",
-      dispatchId: representativeReceipt.dispatchId,
-      acceptedAt: representativeReceipt.acceptedAt,
-      runId: null,
-      runIdReason: "agent dispatches are not workflow runs",
+      dispatchId: admission.id,
+      acceptedAt: admission.admittedAt,
     });
     return {
       status: "done",
       deliveryId: delivery.deliveryId,
       repository,
-      chatId: representativeChat,
       ambience: "ambience",
-      dispatchId: representativeReceipt.dispatchId,
-      acceptedAt: representativeReceipt.acceptedAt,
+      dispatchId: admission.id,
+      acceptedAt: admission.admittedAt,
     };
   };
 

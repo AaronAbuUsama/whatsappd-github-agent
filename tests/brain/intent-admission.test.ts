@@ -120,6 +120,7 @@ describe("Speaker Intent admission", () => {
       intents: [firstIntent],
       knowledgeDeltas: [],
       specialistResults: [],
+      githubEvents: [],
     });
     expect(inbox.pendingIntents()).toEqual([secondIntent]);
     inbox.close();
@@ -153,6 +154,7 @@ describe("Speaker Intent admission", () => {
           intents: [intent],
           knowledgeDeltas: [],
           specialistResults: [],
+          githubEvents: [],
         },
       },
     }]);
@@ -214,6 +216,7 @@ describe("Speaker Intent admission", () => {
       intents: [],
       knowledgeDeltas: [delta],
       specialistResults: [],
+      githubEvents: [],
     });
     reopened.close();
   });
