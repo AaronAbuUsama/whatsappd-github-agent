@@ -2,7 +2,7 @@ import type { GitHubWebhookDelivery } from "@flue/github";
 import * as v from "valibot";
 
 import type { GitHubEventDraft } from "../brain/inbox.ts";
-import type { GitHubUpInboxAdmit } from "./up-inbox.ts";
+import type { GitHubIngressAdmit } from "./up-inbox.ts";
 import type { IssueOperationStore } from "./operation-store.ts";
 import { getLogger } from "../logging/logging.ts";
 import { errorMessage } from "../shared/errors.ts";
@@ -161,8 +161,9 @@ const defaultLogger: GitHubIngressLogger = {
 
 export const createGitHubIngress = (options: {
   readonly store: GitHubIngressStore;
-  /** Admit the event to the single Brain up-inbox (§4). The Brain decides which Surface(s) hear it. */
-  readonly admit: GitHubUpInboxAdmit;
+  /** Admit the event to the single Brain up-inbox (§4). The Brain decides which Surface(s) hear it.
+   * Resolving to undefined means the up-inbox is not wired yet — the delivery defers and retries. */
+  readonly admit: GitHubIngressAdmit;
   readonly operations?: IssueOperationStore;
   readonly review?: {
     readonly repositories: readonly string[];
@@ -488,6 +489,13 @@ export const createGitHubIngress = (options: {
       settle({ status: "failed", repository, ambience: "ambience", error, settledAt: now().toISOString() });
       logger.error({ event: "github.ingress.failed", deliveryId: delivery.deliveryId, repository, error });
       return { status: "failed", record: getRecord()! };
+    }
+    if (admission === undefined) {
+      // The up-inbox is not wired yet (boot race). Leave the ledger 'received' so provider
+      // redelivery reprocesses it — a deferral, never a drop (§10).
+      const reason = "the Brain up-inbox is not configured yet; awaiting provider redelivery";
+      logger.warn({ event: "github.ingress.deferred", deliveryId: delivery.deliveryId, repository, reason });
+      return { status: "deferred", deliveryId: delivery.deliveryId, repository, reason };
     }
     settle({
       status: "done",

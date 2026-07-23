@@ -14,12 +14,12 @@ import type { WhatsAppParticipationPort } from "../capabilities/whatsapp-partici
 import { installGitHubIngressRuntime } from "@ambient-agent/engine/github/ingress-runtime.ts";
 import type { GitHubIngressStore } from "@ambient-agent/engine/github/ingress-store.ts";
 import type { GitHubIngressSettings } from "@ambient-agent/engine/github/ingress.ts";
-import type { GitHubUpInboxAdmit } from "@ambient-agent/engine/github/up-inbox.ts";
+import type { GitHubIngressAdmit } from "@ambient-agent/engine/github/up-inbox.ts";
 
 export interface SpeakerIngressAdapters {
   readonly settings: GitHubIngressSettings;
   /** Admit a GitHub event to the single Brain up-inbox (§4); the Brain decides which Surface(s) hear it. */
-  readonly admit: GitHubUpInboxAdmit;
+  readonly admit: GitHubIngressAdmit;
   readonly review?: Parameters<typeof installGitHubIngressRuntime>[3];
 }
 

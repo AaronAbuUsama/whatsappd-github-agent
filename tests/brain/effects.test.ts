@@ -107,6 +107,53 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
   });
 
+  it("lets the Brain notify a Surface about a GitHub-only Batch, citing the event's own id as evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "ambient-brain-github-evidence-"));
+    roots.push(root);
+    const databasePath = join(root, "application.sqlite");
+    // A binding exists so the Surface can be prompted, but there is NO conversation_events row —
+    // the only evidence is the GitHub event itself, which must be accepted (S1: the Brain must be
+    // able to speak about a GitHub event, not only stay silent).
+    const archive = createConversationArchive(databasePath);
+    archive.close();
+    const inbox = createBrainInbox(databasePath, {
+      providerChatIdForSurface: (surfaceId) => (surfaceId === SURFACE ? CHAT : undefined),
+      now: () => "2026-07-22T12:00:00.000Z",
+    });
+    const event = inbox.admitGitHubEvent({
+      githubAppId: "app-planner",
+      deliveryId: "gh-delivery-1",
+      eventName: "issues",
+      action: "opened",
+      repository: "acme/widgets",
+      summary: "Issue #7 opened in acme/widgets",
+      detail: { issue: { number: 7 } },
+    });
+    const claimed = inbox.claimBatch();
+    if (claimed === undefined) throw new Error("Expected a GitHub-only Brain Batch");
+    expect(claimed.githubEvents).toEqual([event]);
+    inbox.markBatchDispatched(claimed.id, { dispatchId: "dispatch:brain", acceptedAt: "2026-07-22T12:00:01.000Z" });
+
+    expect(() =>
+      inbox.recordPrompt({
+        batchId: claimed.id,
+        surfaceId: SURFACE,
+        objective: "Tell the team a new issue was opened.",
+        brief: { summary: "acme/widgets#7 was opened.", evidenceIds: [event.id] },
+      }),
+    ).not.toThrow();
+    // A fabricated evidence id that resolves in neither table is still rejected — the check stays strict.
+    expect(() =>
+      inbox.recordPrompt({
+        batchId: claimed.id,
+        surfaceId: SURFACE,
+        objective: "Invalid.",
+        brief: { summary: "bad.", evidenceIds: ["github-event:does-not-exist"] },
+      }),
+    ).toThrow(/does not exist/);
+    inbox.close();
+  });
+
   it("records deliberate silence as a completed local effect before settlement", async () => {
     const { inbox, batchId } = openFixture();
     configureBrainEffectsRuntime({

@@ -6,7 +6,7 @@ import {
   type RoutedGitHubWebhookDelivery,
 } from "./ingress.ts";
 import { createGitHubIngressStore, type GitHubIngressStore } from "./ingress-store.ts";
-import type { GitHubUpInboxAdmit } from "./up-inbox.ts";
+import type { GitHubIngressAdmit } from "./up-inbox.ts";
 import { createFlueGlobal } from "../shared/flue-global.ts";
 
 type GitHubIngressHandler = (delivery: RoutedGitHubWebhookDelivery) => Promise<GitHubIngressResult>;
@@ -18,7 +18,7 @@ const ingressHandler = createFlueGlobal<GitHubIngressHandler>(
 
 export const installGitHubIngressRuntime = (
   settings: GitHubIngressSettings,
-  admit: GitHubUpInboxAdmit,
+  admit: GitHubIngressAdmit,
   operations: IssueOperationStore,
   review?: Parameters<typeof createGitHubIngress>[0]["review"],
 ): GitHubIngressStore => {

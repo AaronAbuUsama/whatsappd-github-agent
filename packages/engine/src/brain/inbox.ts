@@ -1118,7 +1118,12 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       const summary = required(brief.summary, "Directive Brief summary");
       const evidenceIds = canonicalEvidence(brief.evidenceIds);
       for (const evidenceId of evidenceIds) {
-        if (evidence.get(evidenceId) === undefined) throw new Error(`Directive evidence ${evidenceId} does not exist.`);
+        // Evidence is real if it is a Conversation event OR an admitted GitHub up-inbox event (§4):
+        // a Directive about a pure GitHub-origin Batch cites the event's own id, which has no
+        // conversation_events row. The check stays strict — it must resolve in one of the two.
+        if (evidence.get(evidenceId) === undefined && selectGitHubEvent.get(evidenceId) === undefined) {
+          throw new Error(`Directive evidence ${evidenceId} does not exist.`);
+        }
       }
       const payload = { surfaceId, objective, brief: { summary, evidenceIds } };
       const id = effectId(claimedBatchId, "prompt_speaker", payload);

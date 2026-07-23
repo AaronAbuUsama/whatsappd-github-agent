@@ -367,6 +367,27 @@ describe("GitHub events route through the single Brain up-inbox", () => {
     }
   });
 
+  it("defers (retryable) instead of dropping when the up-inbox is not wired yet (boot race)", async () => {
+    const store = createGitHubIngressStore(":memory:");
+    try {
+      // admit resolves to undefined = the Brain up-inbox port is not configured yet.
+      const ingress = createGitHubIngress({ store, admit: async () => undefined, logger: quietLogger });
+      const delivery = issueOpenedDelivery("boot-race-29");
+      // Deferred, not failed: the ledger stays 'received' so the provider redelivery reprocesses it.
+      await expect(ingress(delivery)).resolves.toMatchObject({ status: "deferred", repository: "acme/widgets" });
+      expect(store.get("boot-race-29")).toMatchObject({ status: "received" });
+
+      // Once the port is wired, the same redelivery admits normally — nothing was lost.
+      const { admit, events } = admitRecorder();
+      const wired = createGitHubIngress({ store, admit, logger: quietLogger });
+      await expect(wired(delivery)).resolves.toMatchObject({ status: "done" });
+      expect(events).toHaveLength(1);
+      expect(store.get("boot-race-29")).toMatchObject({ status: "done" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("settles a delivery as failed when up-inbox admission throws, then deduplicates its redelivery", async () => {
     const store = createGitHubIngressStore(":memory:");
     try {
