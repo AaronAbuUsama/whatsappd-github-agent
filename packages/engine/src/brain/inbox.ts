@@ -1095,7 +1095,15 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       const at = options.now?.() ?? new Date().toISOString();
       database.exec("BEGIN IMMEDIATE");
       try {
-        if (predecessorId !== undefined) cancelScheduledWake.run(at, predecessorId);
+        if (predecessorId !== undefined) {
+          // Reschedule must actually cancel a real predecessor. 0 rows changed is fine ONLY when the
+          // predecessor exists but was already cancelled (an idempotent retry of this same reschedule);
+          // if no such wake exists at all, the id is wrong/stale — surface it, don't silently commit a
+          // replacement while an unrelated wake stays live and fires alongside it.
+          if (cancelScheduledWake.run(at, predecessorId).changes === 0 && selectScheduledWake.get(predecessorId) === undefined) {
+            throw new Error(`Predecessor Scheduled Wake ${predecessorId} does not exist; cannot reschedule.`);
+          }
+        }
         insertScheduledWake.run(wakeId, "scheduled", reason, dueAt, at, null);
         insertEffect.run(effId, claimedBatchId, "schedule_wake", JSON.stringify(payload), "completed", at, at);
         database.exec("COMMIT");

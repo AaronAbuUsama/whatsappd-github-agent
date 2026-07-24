@@ -18,6 +18,10 @@ const provenanceOutput = v.object({
   messageId: v.optional(v.string()),
   deliveryId: v.optional(v.string()),
 });
+// The durable Evidence ids backing an entity/relation — its Attestations' Evidence Sets, which are
+// conversation_events.event_id / github-event:* ids. These are the ONLY ids the Brain can cite as
+// evidence in prompt_speaker/file_issue (recordPrompt validates them); provenance.messageId is a raw
+// provider message id and is NOT a citable evidence id.
 const entityOutput = v.object({
   entityId: v.string(),
   type: v.string(),
@@ -25,6 +29,7 @@ const entityOutput = v.object({
   confidence: v.number(),
   provenance: provenanceOutput,
   attestationIds: v.array(v.string()),
+  evidenceIds: v.array(v.string()),
   createdAt: v.string(),
   updatedAt: v.string(),
 });
@@ -36,19 +41,25 @@ const relationOutput = v.object({
   confidence: v.number(),
   provenance: provenanceOutput,
   attestationIds: v.array(v.string()),
+  evidenceIds: v.array(v.string()),
   createdAt: v.string(),
   updatedAt: v.string(),
 });
 
 const MAX_TOOL_ATTESTATION_IDS = 20;
 
-const publicEntity = (entity: GraphEntity): v.InferOutput<typeof entityOutput> => ({
+const publicEntity = (entity: GraphEntity, evidenceIds: readonly string[]): v.InferOutput<typeof entityOutput> => ({
   ...entity,
   attestationIds: entity.attestationIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+  evidenceIds: evidenceIds.slice(-MAX_TOOL_ATTESTATION_IDS),
 });
-const publicRelation = (relation: GraphRelation): v.InferOutput<typeof relationOutput> => ({
+const publicRelation = (
+  relation: GraphRelation,
+  evidenceIds: readonly string[],
+): v.InferOutput<typeof relationOutput> => ({
   ...relation,
   attestationIds: relation.attestationIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+  evidenceIds: evidenceIds.slice(-MAX_TOOL_ATTESTATION_IDS),
 });
 
 /**
@@ -197,10 +208,23 @@ const graphToolsByName = (store: GraphStore, context: GraphContextSource) => ({
     }),
     output: v.object({ entities: v.array(entityOutput), relations: v.array(relationOutput) }),
     run: ({ input }) => {
+      // ponytail: one full attestations() scan per lookup to map attestationId -> its Evidence Set, so the
+      // Brain gets a citable evidence id. The Graph is small and lookup is off the hot path; index by
+      // attestation id in the store if this ever bites.
+      let evidenceByAttestation: Map<string, readonly string[]> | undefined;
+      const evidenceFor = (attestationIds: readonly string[]): readonly string[] => {
+        if (evidenceByAttestation === undefined) {
+          evidenceByAttestation = new Map(store.attestations().map((a) => [a.id, a.evidenceIds]));
+        }
+        return [...new Set(attestationIds.flatMap((id) => [...(evidenceByAttestation!.get(id) ?? [])]))];
+      };
       const neighborhood = (entity: GraphEntity | undefined) => {
         if (entity === undefined) return { entities: [], relations: [] };
         const relations = [...store.relationsFrom(entity.entityId), ...store.relationsTo(entity.entityId)];
-        return { entities: [publicEntity(entity)], relations: relations.map(publicRelation) };
+        return {
+          entities: [publicEntity(entity, evidenceFor(entity.attestationIds))],
+          relations: relations.map((r) => publicRelation(r, evidenceFor(r.attestationIds))),
+        };
       };
       if (input.platform !== undefined && input.externalId !== undefined) {
         return neighborhood(store.resolveIdentity(input.platform, input.externalId, input.type));
@@ -213,7 +237,7 @@ const graphToolsByName = (store: GraphStore, context: GraphContextSource) => ({
         ...(input.query === undefined ? {} : { query: input.query }),
         ...(input.limit === undefined ? {} : { limit: input.limit }),
       });
-      return { entities: entities.map(publicEntity), relations: [] };
+      return { entities: entities.map((e) => publicEntity(e, evidenceFor(e.attestationIds))), relations: [] };
     },
   }),
 });

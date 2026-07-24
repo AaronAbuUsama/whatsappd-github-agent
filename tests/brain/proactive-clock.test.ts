@@ -171,6 +171,25 @@ describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6, A
     inbox.close();
   });
 
+  it("rejects a reschedule whose predecessorId matches no live wake (never silently drops the cancel)", () => {
+    const inbox = openInbox(fixture(), () => "2026-07-22T12:00:00.000Z");
+    const batch = dispatchedBatch(inbox);
+    // A wrong/stale predecessor id: the cancel would match zero rows — must surface, not commit a replacement.
+    expect(() =>
+      inbox.scheduleWake({
+        batchId: batch.id,
+        reason: "chase",
+        dueAt: "2026-07-22T14:00:00.000Z",
+        predecessorId: "scheduled-wake:deadbeef",
+      }),
+    ).toThrow("does not exist");
+    // Nothing was created — the failed reschedule left no orphan wake.
+    inbox.recordSilence(batch.id, "done");
+    inbox.settleBatch(batch.id);
+    expect(inbox.runProactiveClock().admittedWakes).toBe(0);
+    inbox.close();
+  });
+
   it("a due wake survives restart and fires exactly once", () => {
     const databasePath = fixture();
     const scheduling = openInbox(databasePath, () => "2026-07-22T12:00:00.000Z");

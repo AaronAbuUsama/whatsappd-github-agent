@@ -256,6 +256,48 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
   });
 
+  it("exposes an overdue commitment's durable evidence ids so a chase prompt is accepted (not the provider messageId)", async () => {
+    const { inbox, batchId } = openFixture();
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => ({ dispatchId: "dispatch:speaker:chase", acceptedAt: "2026-07-22T12:00:02.000Z" }),
+    });
+
+    // A commitment derived from the archived conversation message, citing that message's durable event id.
+    const graph = createGraphStore(":memory:");
+    const tools = createGraphTools(graph, brainGraphContext());
+    const recordEntity = tools.find((tool) => tool.name === "record_entity")!;
+    const lookup = tools.find((tool) => tool.name === "lookup_graph")!;
+    const recorded = recordEntity.run({
+      input: {
+        entity: { type: "commitment", description: "ship the deploy", status: "open", due: "2020-01-01T00:00:00.000Z", confidence: 0.9 },
+        evidenceIds: [EVIDENCE],
+      },
+    }) as { entityId: string };
+
+    const found = lookup.run({ input: { entityId: recorded.entityId } }) as {
+      entities: Array<{ evidenceIds: string[] }>;
+    };
+    const commitment = found.entities[0]!;
+    // The citable evidence is the durable conversation event id (recordPrompt validates it), never a raw
+    // provider messageId. lookup_graph now surfaces it directly off the backing Attestations.
+    expect(commitment.evidenceIds).toContain(EVIDENCE);
+
+    // recordPrompt accepts the very evidence id the Brain read off the graph — the chase message really lands.
+    const prompt = await createPromptSpeakerTool().run({
+      input: {
+        batchId,
+        surfaceId: SURFACE,
+        objective: "Chase the overdue commitment.",
+        brief: { summary: "The deploy commitment is overdue.", evidenceIds: [commitment.evidenceIds[0]!] },
+      },
+    });
+    expect(prompt.status).toBe("accepted");
+    graph.close();
+    inbox.close();
+  });
+
   it("records deliberate silence as a completed local effect before settlement", async () => {
     const { inbox, batchId } = openFixture();
     configureBrainEffectsRuntime({
