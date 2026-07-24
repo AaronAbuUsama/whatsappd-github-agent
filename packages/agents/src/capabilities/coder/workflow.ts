@@ -285,6 +285,11 @@ const run = async ({ harness, input, log }: {
     // The PR base to publish against: the repo default for a new issue; the LIVE PR's actual base for
     // a review continuation, so a PR based off a non-default branch updates the right PR (finding 3).
     let continuationBase: string | undefined;
+    // The exact head sha the continuation guard verified (headRef === branch, PR open). Seeding from
+    // THIS — not a second getBranchHead re-fetch — closes a delete race by construction: if the branch
+    // ref were deleted between the guard and a re-fetch, the fallback would silently seed from base and
+    // overwrite the reviewed content instead of repairing it (round-4 finding).
+    let continuationHeadSha: string | undefined;
     if (isContinuation) {
       const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
       const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
@@ -303,13 +308,17 @@ const run = async ({ harness, input, log }: {
         };
       }
       continuationBase = live.baseRef;
+      continuationHeadSha = live.headSha;
       continuationFraming = renderReviewContinuation(live);
     }
     const issue = await fetchIssue(github, repo, issueNumber);
     const base = continuationBase ?? (await fetchDefaultBranch(github, repo));
-    const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
-    const existingBranchHead = await getBranchHead(github, repo, branch);
-    const seedBranchHead = existingBranchHead ?? baseSha;
+    // Continuation seeds from the verified live head; a fresh issue checks the branch, seeding from it
+    // if it exists, else from the base ref (fetched only when actually needed).
+    const existingBranchHead = continuationHeadSha ?? (await getBranchHead(github, repo, branch));
+    const seedBranchHead =
+      existingBranchHead ??
+      (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
     const tarball = await downloadTarball(github, repo, seedBranchHead);
     const repoDir = `${workspacesRoot}/issue-${issueNumber}`;
     const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
