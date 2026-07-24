@@ -9,6 +9,7 @@
     "./brain/dispatch.ts": "./src/brain/dispatch.ts",
     "./brain/effects-runtime.ts": "./src/brain/effects-runtime.ts",
     "./brain/issue-filing.ts": "./src/brain/issue-filing.ts",
+    "./brain/issue-mutation.ts": "./src/brain/issue-mutation.ts",
     "./speaker/activity-reporter.ts": "./src/speaker/activity-reporter.ts",
     "./speaker/agent.ts": "./src/speaker/agent.ts",
     "./speaker/compose.ts": "./src/speaker/compose.ts",

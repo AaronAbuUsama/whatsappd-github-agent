@@ -18,9 +18,11 @@ import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
 import {
   configureBrainEffectsRuntime,
   recoverPendingIssueFilings,
+  recoverPendingIssueMutations,
   recoverPendingPrompts,
 } from "@ambient-agent/agents/brain/effects-runtime.ts";
 import { createIssueFiler } from "@ambient-agent/agents/brain/issue-filing.ts";
+import { createIssueMutator } from "@ambient-agent/agents/brain/issue-mutation.ts";
 import { getIssueManagementRuntime } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { tryGetGraphStore } from "@ambient-agent/agents/capabilities/graph/runtime.ts";
 import { configureScribeInbox } from "@ambient-agent/agents/scribe/coalescer.ts";
@@ -502,6 +504,9 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
         // process-global at app boot, well before any Batch files an issue.
         fileIssue: (request, effectId) => createIssueFiler(getIssueManagementRuntime())(request, effectId),
+        // The full issue-mutation set (comment create/update/delete, issue update, state change) shares
+        // the same lazily-resolved issue-management runtime and the same Operation-Identity crash-dedup.
+        mutateIssue: (mutation, effectId) => createIssueMutator(getIssueManagementRuntime())(mutation, effectId),
         // Resolve a Brain-chosen target entity to its Surface during prompt admission (§8) — see
         // resolveEntitySurface. No graph wired (boot/tests) means nothing resolves: fail-closed.
         resolveSurfaceForEntity: (entityId) => {
@@ -584,6 +589,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       afterParticipationReady: async () => {
         await recoverPendingPrompts();
         await recoverPendingIssueFilings();
+        await recoverPendingIssueMutations();
         // Reconcile prior-process accepted work FIRST: those runs cannot still be executing, so an
         // active/missing record is a genuine interrupt. Only then re-invoke launches that were
         // pending (reserved but never Flue-admitted) at crash time — re-invoking them makes their

@@ -5,6 +5,9 @@ import type {
   FileIssueEffect,
   FileIssueOutcome,
   FileIssueRequest,
+  IssueMutation,
+  IssueMutationEffect,
+  IssueMutationOutcome,
   PromptSpeakerEffect,
 } from "@ambient-agent/engine/brain/inbox.ts";
 import { getLogger } from "@ambient-agent/engine/logging/logging.ts";
@@ -18,6 +21,10 @@ export interface BrainEffectsRuntime {
   /** File one GitHub issue durably. Absent when this runtime carries no GitHub write binding.
    * `effectId` scopes the filing's Operation Identity so a recovered attempt reconciles, not re-creates. */
   readonly fileIssue?: (request: FileIssueRequest, effectId: string) => Promise<FileIssueOutcome>;
+  /** Run one Brain-chosen GitHub issue mutation durably (comment create/update/delete, issue update,
+   * state change). Absent when this runtime carries no GitHub write binding. `effectId` scopes the
+   * mutation's Operation Identity so a recovered attempt reconciles, never re-mutates. */
+  readonly mutateIssue?: (mutation: IssueMutation, effectId: string) => Promise<IssueMutationOutcome>;
   /**
    * Resolve a Brain-chosen target entity — a `thread` (group) or a `person` (DM) — to its Surface id,
    * so `prompt_speaker` targets EITHER a stable Surface OR a known Person through one operation (§8).
@@ -82,6 +89,34 @@ export const recoverPendingIssueFilings = async (): Promise<void> => {
       getLogger("brain").warn(
         { effectId: effect.id, repository: effect.request.repository, error: errorMessage(cause) },
         "Pending issue filing could not be recovered at boot; left pending to retry",
+      );
+    }
+  }
+};
+
+const deliverMutation = async (effect: IssueMutationEffect): Promise<IssueMutationEffect> => {
+  if (effect.status === "completed") return effect;
+  const runtime = getBrainEffectsRuntime();
+  if (runtime.mutateIssue === undefined) throw new Error("This Brain runtime has no GitHub issue-mutation binding.");
+  // Recovery reconciles by Operation Identity (createIssueMutator), so a re-run after a crash observes the
+  // already-applied mutation instead of re-mutating — issue mutations are synchronous, never blind-redispatched.
+  return runtime.inbox.completeIssueMutation(effect.id, await runtime.mutateIssue(effect.mutation, effect.id));
+};
+
+export const deliverIssueMutationEffect = async (effect: IssueMutationEffect): Promise<IssueMutationEffect> =>
+  deliverMutation(effect);
+
+export const recoverPendingIssueMutations = async (): Promise<void> => {
+  const runtime = getBrainEffectsRuntime();
+  for (const effect of runtime.inbox.pendingIssueMutations()) {
+    // Same per-effect boot containment as pending filings: a mutation we cannot complete now is logged and
+    // left pending to retry next boot; it never propagates and kills the runtime fiber (§9/§10).
+    try {
+      await deliverMutation(effect);
+    } catch (cause) {
+      getLogger("brain").warn(
+        { effectId: effect.id, mutation: effect.mutation.kind, error: errorMessage(cause) },
+        "Pending issue mutation could not be recovered at boot; left pending to retry",
       );
     }
   }

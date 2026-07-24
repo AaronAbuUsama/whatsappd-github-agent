@@ -3,16 +3,22 @@ import { defineAgent } from "@flue/runtime";
 import type { GraphAttestationContext } from "@ambient-agent/engine/graph/store.ts";
 import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
+  createCreateIssueCommentTool,
+  createDeleteIssueCommentTool,
   createFileIssueTool,
   createPromptSpeakerTool,
   createScheduleWakeTool,
+  createSetIssueStateTool,
   createSettleBrainBatchTool,
   createStaySilentTool,
+  createUpdateIssueCommentTool,
+  createUpdateIssueTool,
 } from "./tools.ts";
 import { createDelegationTools } from "../capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "../capabilities/coder/workflow.ts";
 import { reviewerSpecialistSpec } from "../capabilities/reviewer/workflow.ts";
 import { createBrainGraphTools } from "../capabilities/graph/tools.ts";
+import { createIssueReadTools } from "../capabilities/issue-management/tools.ts";
 import { getBrainEffectsRuntime } from "./effects-runtime.ts";
 
 export const description = "The one continuing global Brain: the coworker's silent mind and decision owner.";
@@ -47,7 +53,15 @@ export default defineAgent(() => ({
     ...createBrainGraphTools(brainGraphContext),
     ...createDelegationTools([coderSpecialistSpec, reviewerSpecialistSpec]),
     createPromptSpeakerTool(),
+    // Read-only issue lookups so the Brain can resolve exact issue/comment numbers its own workflow
+    // (and its mutation tools) require, before choosing a mutation Effect.
+    ...createIssueReadTools(),
     createFileIssueTool(),
+    createCreateIssueCommentTool(),
+    createUpdateIssueTool(),
+    createUpdateIssueCommentTool(),
+    createDeleteIssueCommentTool(),
+    createSetIssueStateTool(),
     createStaySilentTool(),
     createScheduleWakeTool(),
     createSettleBrainBatchTool(),
@@ -66,6 +80,7 @@ export default defineAgent(() => ({
     "Use start_coder_job only when an Intent warrants bounded implementation work. Supply the current Batch id and the originating Surface as provenance; that Surface is not a forced reporting destination.",
     "Use start_reviewer_job when an Intent asks to review an open pull request now. Supply the repository and pull-request number plus the current Batch id and originating Surface; the Reviewer judges the live head and its result returns here.",
     "Use file_issue when an Intent asks to open a GitHub issue. Supply the current Batch id, the originating Surface, and the repository you resolve from Graph relations. There is no default repository: if you cannot resolve one, do not file — report honestly with prompt_speaker instead. It returns the real outcome — a created issue number and URL, an existing duplicate, or an uncertain result — which you then report with prompt_speaker.",
+    "To act on an existing GitHub issue, use create_issue_comment, update_issue, update_issue_comment, delete_issue_comment, or set_issue_state. Each takes the current Batch id, the originating Surface, and the explicit target repository (owner/repo) — there is no default; read the issue first (github_read_issue / github_read_issue_discussion, which likewise require the explicit repository) to supply exact numbers. delete_issue_comment is restricted to a comment you yourself posted earlier — you can never delete or edit a human's comment. A repeated mutation reconciles rather than duplicating. Each returns the real outcome, which you report with prompt_speaker.",
     "A Specialist result returns here, not to a Speaker. Reconcile its real outcome and URL, then independently select any appropriate active Surface with prompt_speaker.",
     "Use stay_silent when no external consequence is warranted. Silence must be explicit; ordinary final prose does not settle a Batch.",
     "Honest closure: when a Speaker has already acknowledged a request but you cannot fulfil it, never stay_silent — prompt_speaker with an honest account of what you can and cannot do, so the human who was promised a follow-up always hears back.",

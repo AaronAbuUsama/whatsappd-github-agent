@@ -199,7 +199,75 @@ export interface ScheduleWakeEffect {
   readonly status: "completed";
 }
 
-export type BrainEffect = PromptSpeakerEffect | StaySilentEffect | FileIssueEffect | ScheduleWakeEffect;
+/**
+ * A single Brain-chosen GitHub issue mutation (the full mutation set beyond file_issue): comment
+ * create/update/delete, issue update, and state change (§11 additive capability). Every variant
+ * carries its own target repository (owner/repo) — routing is the Brain's, never a config default.
+ * delete-comment is provenance-restricted at admission to a comment the Brain itself created.
+ */
+export type IssueMutation =
+  | { readonly kind: "create-comment"; readonly repository: string; readonly number: number; readonly body: string }
+  | {
+      readonly kind: "update-issue";
+      readonly repository: string;
+      readonly number: number;
+      readonly title?: string;
+      readonly body?: string;
+      readonly labels?: readonly string[];
+      readonly assignees?: readonly string[];
+      readonly milestone?: number | null;
+    }
+  | {
+      readonly kind: "update-comment";
+      readonly repository: string;
+      readonly number: number;
+      readonly commentId: number;
+      readonly body: string;
+    }
+  | { readonly kind: "delete-comment"; readonly repository: string; readonly number: number; readonly commentId: number }
+  | {
+      readonly kind: "set-issue-state";
+      readonly repository: string;
+      readonly number: number;
+      readonly state: "open" | "closed";
+      readonly reason: "completed" | "not_planned" | "duplicate" | "reopened";
+    };
+
+/** The terminal outcome of one durable issue mutation, recorded so a recovered Batch reports honestly. */
+export type IssueMutationOutcome =
+  | {
+      readonly status: "applied" | "reconciled";
+      readonly url?: string;
+      readonly commentId?: number;
+      readonly issueNumber?: number;
+      readonly state?: "open" | "closed";
+    }
+  // Uncertain still carries what GitHub was observed to have done (e.g. a comment it created whose
+  // Operation completion could not be persisted), so the durable effect preserves provenance detail.
+  | {
+      readonly status: "uncertain";
+      readonly reason: string;
+      readonly url?: string;
+      readonly commentId?: number;
+      readonly issueNumber?: number;
+      readonly state?: "open" | "closed";
+    };
+
+export interface IssueMutationEffect {
+  readonly id: string;
+  readonly batchId: string;
+  readonly kind: "issue_mutation";
+  readonly mutation: IssueMutation;
+  readonly status: "pending" | "completed";
+  readonly outcome?: IssueMutationOutcome;
+}
+
+export type BrainEffect =
+  | PromptSpeakerEffect
+  | StaySilentEffect
+  | FileIssueEffect
+  | ScheduleWakeEffect
+  | IssueMutationEffect;
 
 export interface BrainBatchSettlement {
   readonly batchId: string;
@@ -293,7 +361,7 @@ interface BatchRow {
 interface EffectRow {
   effect_id: string;
   batch_id: string;
-  kind: "prompt_speaker" | "stay_silent" | "file_issue" | "schedule_wake";
+  kind: "prompt_speaker" | "stay_silent" | "file_issue" | "schedule_wake" | "issue_mutation";
   payload_json: string;
   status: "pending" | "accepted" | "completed";
   dispatch_id: string | null;
@@ -362,6 +430,13 @@ export interface BrainInbox {
   }): FileIssueEffect;
   completeIssueFiling(effectId: string, outcome: FileIssueOutcome): FileIssueEffect;
   pendingIssueFilings(): readonly FileIssueEffect[];
+  recordIssueMutation(input: {
+    readonly batchId: string;
+    readonly sourceSurfaceId: string;
+    readonly mutation: IssueMutation;
+  }): IssueMutationEffect;
+  completeIssueMutation(effectId: string, outcome: IssueMutationOutcome): IssueMutationEffect;
+  pendingIssueMutations(): readonly IssueMutationEffect[];
   effects(batchId: string): readonly BrainEffect[];
   pendingPrompts(): readonly PromptSpeakerEffect[];
   markPromptAccepted(effectId: string, receipt: DispatchReceipt): PromptSpeakerEffect;
@@ -609,7 +684,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     CREATE TABLE IF NOT EXISTS brain_effects (
       effect_id TEXT PRIMARY KEY,
       batch_id TEXT NOT NULL REFERENCES brain_batches(batch_id),
-      kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue', 'schedule_wake')),
+      kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue', 'schedule_wake', 'issue_mutation')),
       payload_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'completed')),
       dispatch_id TEXT,
@@ -621,8 +696,9 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
 
   // The brain_effects kind CHECK is on a STRICT table — an in-place ALTER cannot widen it, so an
   // existing install is migrated by rename-copy-drop (operation-store.ts template) to admit new kinds
-  // ('file_issue', then 'schedule_wake'). The guard keys on the newest kind so a 'file_issue'-era install
-  // still rebuilds to gain 'schedule_wake'.
+  // ('file_issue', then 'schedule_wake', then 'issue_mutation'). The guard keys on the newest kind so any
+  // older-era install (file_issue-only OR schedule_wake-only) still rebuilds to gain 'issue_mutation' —
+  // and every table that already has 'issue_mutation' necessarily has the earlier kinds too.
   // brain_effects is also the FK target of surface_deliveries and directive_outcomes (surfaces/delivery.ts):
   // SQLite repoints a child table's FK clause to follow a RENAME, so renaming brain_effects away would
   // otherwise leave those two tables referencing the dropped `_legacy` table. Rebuild whichever of the
@@ -638,7 +714,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
   const surfaceDeliveriesSql = tableSql("surface_deliveries");
   const directiveOutcomesSql = tableSql("directive_outcomes");
 
-  const rebuildEffects = effectsSql !== undefined && !effectsSql.includes("'schedule_wake'");
+  const rebuildEffects = effectsSql !== undefined && !effectsSql.includes("'issue_mutation'");
   const surfaceDeliveriesDangling = surfaceDeliveriesSql?.includes("brain_effects_legacy") === true;
   const directiveOutcomesDangling =
     directiveOutcomesSql?.includes("brain_effects_legacy") === true ||
@@ -660,7 +736,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
         CREATE TABLE brain_effects (
           effect_id TEXT PRIMARY KEY,
           batch_id TEXT NOT NULL REFERENCES brain_batches(batch_id),
-          kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue', 'schedule_wake')),
+          kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue', 'schedule_wake', 'issue_mutation')),
           payload_json TEXT NOT NULL,
           status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'completed')),
           dispatch_id TEXT,
@@ -931,6 +1007,18 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     UPDATE brain_effects SET status = 'completed', payload_json = ?, completed_at = ?
      WHERE effect_id = ? AND kind = 'file_issue' AND status = 'pending'
   `);
+  const selectPendingMutations = database.prepare(
+    "SELECT * FROM brain_effects WHERE kind = 'issue_mutation' AND status = 'pending' ORDER BY created_at, effect_id",
+  );
+  const completeMutation = database.prepare(`
+    UPDATE brain_effects SET status = 'completed', payload_json = ?, completed_at = ?
+     WHERE effect_id = ? AND kind = 'issue_mutation' AND status = 'pending'
+  `);
+  // Every completed Brain-authored comment mutation, so delete-comment can be restricted to the
+  // Brain's own comments (provenance-checked against real recorded filing history, never "any comment").
+  const selectCompletedMutations = database.prepare(
+    "SELECT payload_json FROM brain_effects WHERE kind = 'issue_mutation' AND status = 'completed'",
+  );
   const settle = database.prepare("UPDATE brain_batches SET settled_at = ? WHERE batch_id = ? AND settled_at IS NULL");
   const unsettledEffectCount = database.prepare(`
     SELECT count(*) AS count FROM brain_effects WHERE batch_id = ? AND status = 'pending'
@@ -973,6 +1061,17 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
         reason: payload.reason as string,
         dueAt: payload.dueAt as string,
         status: "completed",
+      };
+    }
+    if (row.kind === "issue_mutation") {
+      const { outcome, ...mutation } = payload as unknown as IssueMutation & { outcome?: IssueMutationOutcome };
+      return {
+        id: row.effect_id,
+        batchId: row.batch_id,
+        kind: "issue_mutation",
+        mutation: mutation as unknown as IssueMutation,
+        status: row.status as "pending" | "completed",
+        ...(outcome === undefined ? {} : { outcome }),
       };
     }
     const directive = payload as unknown as Omit<SpeakerDirective, "id">;
@@ -1396,6 +1495,68 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     },
     pendingIssueFilings: () =>
       (selectPendingFilings.all() as unknown as EffectRow[]).map(hydrateEffect) as FileIssueEffect[],
+    recordIssueMutation: ({ batchId: rawBatchId, sourceSurfaceId: rawSurfaceId, mutation }) => {
+      const claimedBatchId = required(rawBatchId, "Brain Batch id");
+      const sourceSurfaceId = required(rawSurfaceId, "Issue Mutation source Surface id");
+      const batch = selectOpenBatchById.get(claimedBatchId) as BatchRow | undefined;
+      if (batch === undefined || batch.dispatch_id === null) {
+        throw new Error(`Brain Batch ${claimedBatchId} is not open and dispatched.`);
+      }
+      const sourceIntents = (selectBatchIntents.all(claimedBatchId) as unknown as IntentRow[])
+        .map(hydrate)
+        .filter((intent) => intent.sourceSurfaceId === sourceSurfaceId);
+      if (sourceIntents.length === 0) {
+        throw new Error(`Surface ${sourceSurfaceId} is not provenance for Brain Batch ${claimedBatchId}.`);
+      }
+      const repository = required(mutation.repository, "Issue Mutation repository");
+      if (mutation.number <= 0) throw new Error("Issue Mutation issue number must be positive.");
+      // Delete and edit are RESTRICTED to the Brain's own comments: the target must be one the Brain
+      // durably recorded creating, in the same repository and issue. A human's comment (or any comment
+      // the Brain never authored) is refused here at admission, so a hallucinated commentId can never
+      // durably record a destructive or falsifying effect (GitHub forbids editing others' comments too;
+      // this is the authoritative check, not a reliance on provider permissions).
+      if (mutation.kind === "delete-comment" || mutation.kind === "update-comment") {
+        const authored = (selectCompletedMutations.all() as unknown as { payload_json: string }[]).some((row) => {
+          const payload = JSON.parse(row.payload_json) as IssueMutation & { outcome?: IssueMutationOutcome };
+          // A recorded commentId is proof the Brain's create landed (it is only ever set when GitHub
+          // actually created the comment) — so it authorizes even from an `uncertain`-with-detail
+          // outcome (GitHub made the comment but its Operation completion could not be persisted).
+          return (
+            payload.kind === "create-comment" &&
+            payload.repository.toLowerCase() === repository.toLowerCase() &&
+            payload.number === mutation.number &&
+            payload.outcome !== undefined &&
+            payload.outcome.commentId === mutation.commentId
+          );
+        });
+        if (!authored) {
+          const verb = mutation.kind === "delete-comment" ? "delete" : "edit";
+          throw new Error(
+            `Refusing to ${verb} comment ${mutation.commentId} on ${repository}#${mutation.number}: the Brain has ` +
+              `no recorded history of creating it. ${verb === "delete" ? "Delete" : "Edit"} is restricted to the ` +
+              "Brain's own prior comments.",
+          );
+        }
+      }
+      const canonicalMutation = { ...mutation, repository } as IssueMutation;
+      const id = effectId(claimedBatchId, "issue_mutation", canonicalMutation);
+      const createdAt = options.now?.() ?? new Date().toISOString();
+      insertEffect.run(id, claimedBatchId, "issue_mutation", JSON.stringify(canonicalMutation), "pending", null, createdAt);
+      return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as IssueMutationEffect;
+    },
+    completeIssueMutation: (rawId, outcome) => {
+      const id = required(rawId, "Issue Mutation effect id");
+      const existing = selectEffect.get(id) as EffectRow | undefined;
+      if (existing === undefined || existing.kind !== "issue_mutation") {
+        throw new Error(`Issue Mutation effect ${id} does not exist.`);
+      }
+      const mutation = JSON.parse(existing.payload_json) as IssueMutation;
+      // WHERE status='pending' makes a recovered re-completion a no-op; the durable outcome stands.
+      completeMutation.run(JSON.stringify({ ...mutation, outcome }), options.now?.() ?? new Date().toISOString(), id);
+      return hydrateEffect(selectEffect.get(id) as unknown as EffectRow) as IssueMutationEffect;
+    },
+    pendingIssueMutations: () =>
+      (selectPendingMutations.all() as unknown as EffectRow[]).map(hydrateEffect) as IssueMutationEffect[],
     effects: (id) => (selectEffects.all(id) as unknown as EffectRow[]).map(hydrateEffect),
     pendingPrompts: () => (selectPendingPrompts.all() as unknown as EffectRow[]).map(hydrateEffect) as PromptSpeakerEffect[],
     markPromptAccepted: (id, receipt) => {

@@ -478,6 +478,56 @@ const requiredComment = (discussion: IssueDiscussion, commentId: number): IssueC
   return comment;
 };
 
+/**
+ * The two read-only issue tools, resolving the issue-management runtime lazily per call (not at
+ * construction). This is what lets the Brain agent mount them: its tool list is built before the
+ * runtime is configured at boot, so an eager `createIssueManagementTools()` would throw. Read-only —
+ * safe to expose to the Brain so it can look up exact issue/comment numbers before a mutation Effect.
+ *
+ * Repository is fail-closed exactly like the Brain's mutation tools: the Brain must supply an explicit
+ * owner/repo, never the config default. A silent read from the wrong (default) repo would hand back
+ * issue/comment numbers that then flow into a real mutation, bypassing the no-default-routing discipline
+ * this whole path enforces (S1/#249). Optional in the schema so an omission is a clear domain error, not
+ * a generic validation failure — the same discipline the mutation tools use (a raw run bypasses schema
+ * validation anyway, so this runtime guard is what actually closes the door).
+ */
+const requireReadRepository = (repository: string | undefined, tool: string): string => {
+  if (repository === undefined) {
+    throw new Error(
+      `${tool} requires an explicit repository (owner/repo); there is no default — supply the repository you resolved.`,
+    );
+  }
+  return repository;
+};
+
+export const createIssueReadTools = (): ToolDefinition[] => [
+  defineTool({
+    name: "github_read_issue",
+    description: "Read one issue from an explicitly named authorized GitHub repository (owner/repo; no default).",
+    input: v.object({ repository: repositoryInput, number: issueNumber }),
+    output: issueSchema,
+    run: async ({ input, signal }) => {
+      const named = requireReadRepository(input.repository, "github_read_issue");
+      const options = getIssueManagementRuntime();
+      const repository = options.policy.authorize(named);
+      return publicIssue(await options.repository.get({ repository, number: input.number, signal }));
+    },
+  }),
+  defineTool({
+    name: "github_read_issue_discussion",
+    description:
+      "Read one issue and every current discussion comment (from an explicitly named authorized owner/repo; no default) before choosing a discussion or lifecycle mutation.",
+    input: v.object({ repository: repositoryInput, number: issueNumber }),
+    output: discussionSchema,
+    run: async ({ input, signal }) => {
+      const named = requireReadRepository(input.repository, "github_read_issue_discussion");
+      const options = getIssueManagementRuntime();
+      const repository = options.policy.authorize(named);
+      return publicDiscussion(await options.repository.discussion({ repository, number: input.number, signal }));
+    },
+  }),
+];
+
 export const createIssueManagementTools = (
   options: IssueManagementToolOptions = getIssueManagementRuntime(),
 ): ToolDefinition[] => {
