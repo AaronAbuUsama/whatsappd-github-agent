@@ -118,7 +118,6 @@ const configureReviewerRuntimeBinding = async (
 export const createAmbientAgentApp = async ({
   authentication,
   configuration,
-  deployment,
   githubCredential,
   paths,
   agentSandbox,
@@ -235,7 +234,7 @@ export const createAmbientAgentApp = async ({
     health: () => {
       return {
         ...subscription,
-        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus(), deployment),
+        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus()),
       };
     },
     routes: (routes) => {
