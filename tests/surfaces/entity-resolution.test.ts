@@ -88,6 +88,26 @@ describe("resolveEntitySurface — one prompt operation for group reply and know
     surfaces.close();
   });
 
+  it("refuses to open a person whose WhatsApp identity is a group JID (no group participation via the DM path)", () => {
+    const store = createGraphStore(":memory:");
+    const surfaces = createSurfaceRegistry(":memory:");
+    surfaces.activateConfigured(ACCOUNT, [GROUP]);
+    // Data-quality edge case: a person entity mistakenly linked to a group chat's JID.
+    const personOnGroup = attestEntity(store, {
+      type: "person",
+      properties: { name: "Mislinked" },
+      identity: { platform: "whatsapp", externalId: "discovered-group@g.us" },
+    });
+    const deps = { graph: store, surfaces, accountJid: ACCOUNT };
+
+    // The DM path must not open a group — that would let an unconfigured group participate. Fail closed.
+    expect(resolveEntitySurface(deps, personOnGroup)).toBeUndefined();
+    expect(surfaces.activeSurface(ACCOUNT, "discovered-group@g.us")).toBeUndefined(); // never activated.
+
+    store.close();
+    surfaces.close();
+  });
+
   it("fails closed for an unknown entity, a non-addressable entity, and a discovered (unconfigured) group", () => {
     const store = createGraphStore(":memory:");
     const surfaces = createSurfaceRegistry(":memory:");

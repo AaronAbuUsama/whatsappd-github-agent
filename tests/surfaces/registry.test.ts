@@ -90,6 +90,22 @@ describe("Surface registry", () => {
     reopened.close();
   });
 
+  it("makes a removed-configured chat reopened as a direct DM genuinely retirable", () => {
+    const registry = createSurfaceRegistry(fixture());
+    registry.activateConfigured("account:one", ["dm@s.whatsapp.net"]); // configured...
+    registry.activateConfigured("account:one", []); // ...then removed → retired, still kind='configured'.
+    expect(registry.activeSurface("account:one", "dm@s.whatsapp.net")).toBeUndefined();
+
+    // Reopened via the person path: the revived row must become 'direct', not stay 'configured'.
+    const reopened = registry.activateDirect("account:one", "dm@s.whatsapp.net");
+    expect(registry.activeSurface("account:one", "dm@s.whatsapp.net")).toEqual(reopened);
+
+    // retireDirect (the admission-rollback path) actually retires it — which only works if kind='direct'.
+    registry.retireDirect("account:one", "dm@s.whatsapp.net");
+    expect(registry.activeSurface("account:one", "dm@s.whatsapp.net")).toBeUndefined();
+    registry.close();
+  });
+
   it("retires a direct DM when the paired account is replaced, not merely restarted", () => {
     const registry = createSurfaceRegistry(fixture());
     registry.activateConfigured("account:A", ["team@g.us"]);

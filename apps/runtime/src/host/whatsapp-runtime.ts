@@ -114,6 +114,10 @@ export const resolveEntitySurface = (
     return surface === undefined ? undefined : { surfaceId: surface.id, release: NO_RELEASE };
   }
   if (entity.type === "person") {
+    // A person's WhatsApp identity must be a direct chat. If a data-quality edge case links a person to a
+    // group JID, refuse to open it as a DM — otherwise activateDirect would let an unconfigured group
+    // participate through the person path (the admit gate honors any active binding). Fail closed instead.
+    if (isGroupJid(chatId)) return undefined;
     const alreadyLive = deps.surfaces.activeSurface(deps.accountJid, chatId) !== undefined;
     const surface = deps.surfaces.activateDirect(deps.accountJid, chatId);
     return {

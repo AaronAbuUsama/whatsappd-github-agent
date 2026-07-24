@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import * as v from "valibot";
 
 import {
   configureBrainEffectsRuntime,
@@ -263,6 +264,17 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
     surfaces.close();
     graph.close();
+  });
+
+  it("rejects a prompt_speaker target carrying both surfaceId and entityId as invalid input", () => {
+    const schema = createPromptSpeakerTool().input;
+    const base = { batchId: "b", objective: "o", brief: { summary: "s", evidenceIds: ["e"] } };
+    // Ambiguous: a target must be exactly one of surfaceId / entityId — both is invalid, not first-wins.
+    expect(v.safeParse(schema, { ...base, target: { surfaceId: "s1", entityId: "e1" } }).success).toBe(false);
+    expect(v.safeParse(schema, { ...base, target: {} }).success).toBe(false);
+    // Each single-field target is still accepted.
+    expect(v.safeParse(schema, { ...base, target: { surfaceId: "s1" } }).success).toBe(true);
+    expect(v.safeParse(schema, { ...base, target: { entityId: "e1" } }).success).toBe(true);
   });
 
   it("allow-lists a GitHub event's own id as Graph-write evidence for a GitHub-only Batch", () => {

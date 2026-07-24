@@ -36,6 +36,7 @@ interface BindingRow {
   readonly surface_id: string;
   readonly provider_account_id: string;
   readonly provider_chat_id: string;
+  readonly retired_at?: string | null;
 }
 
 const required = (value: string, label: string): string => {
@@ -89,7 +90,7 @@ export const createSurfaceRegistry = (databasePath: string): SurfaceRegistry => 
     "UPDATE surface_bindings SET retired_at = ? WHERE retired_at IS NULL AND (kind = 'configured' OR provider_account_id != ?)",
   );
   const selectAny = database.prepare(`
-    SELECT surface_id, provider_account_id, provider_chat_id
+    SELECT surface_id, provider_account_id, provider_chat_id, retired_at
       FROM surface_bindings
      WHERE provider_account_id = ? AND provider_chat_id = ?
   `);
@@ -110,6 +111,11 @@ export const createSurfaceRegistry = (databasePath: string): SurfaceRegistry => 
   // so it re-enters the retire-able configured set once the operator authorizes its chat.
   const reactivateAsConfigured = database.prepare(`
     UPDATE surface_bindings SET retired_at = NULL, bound_at = ?, kind = 'configured' WHERE surface_id = ?
+  `);
+  // activateDirect revives a RETIRED row as a Brain-opened DM: it becomes 'direct' regardless of its prior
+  // kind, so a removed-then-reopened chat is genuinely retirable via retireDirect (the rollback path).
+  const reactivateAsDirect = database.prepare(`
+    UPDATE surface_bindings SET retired_at = NULL, bound_at = ?, kind = 'direct' WHERE surface_id = ?
   `);
   const retireDirectBinding = database.prepare(
     "UPDATE surface_bindings SET retired_at = ? WHERE provider_account_id = ? AND provider_chat_id = ? AND kind = 'direct' AND retired_at IS NULL",
@@ -159,8 +165,11 @@ export const createSurfaceRegistry = (databasePath: string): SurfaceRegistry => 
       try {
         const existing = selectAny.get(providerAccountId, providerChatId) as BindingRow | undefined;
         if (existing !== undefined) {
-          // Reactivate without touching kind: never downgrade an operator-configured binding to 'direct'.
-          reactivate.run(now, existing.surface_id); // NULLs retired_at if retired; a no-op when already active.
+          // A currently-active binding is left exactly as-is — never downgrade a live operator-configured
+          // Surface to 'direct' (and resolveEntitySurface won't roll back an already-live DM anyway). A
+          // RETIRED row, whatever its prior kind, is revived AS 'direct' so this Brain-opened DM is retirable.
+          if (existing.retired_at == null) reactivate.run(now, existing.surface_id);
+          else reactivateAsDirect.run(now, existing.surface_id);
           database.exec("COMMIT");
           return hydrate(existing);
         }

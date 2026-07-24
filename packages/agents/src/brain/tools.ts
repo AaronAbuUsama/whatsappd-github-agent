@@ -19,8 +19,9 @@ export const createPromptSpeakerTool = () =>
       "'reply in the group' are one operation. Never a WhatsApp address. The Speaker owns wording.",
     input: v.object({
       batchId: nonEmptyString,
-      // Exactly one target: a resolved Surface id, or a Graph entity (person/thread) resolved here.
-      target: v.union([v.object({ surfaceId: nonEmptyString }), v.object({ entityId: nonEmptyString })]),
+      // Exactly one target: a resolved Surface id, or a Graph entity (person/thread) resolved here. Strict
+      // arms reject an input carrying BOTH fields — an ambiguous target is invalid, not silently resolved.
+      target: v.union([v.strictObject({ surfaceId: nonEmptyString }), v.strictObject({ entityId: nonEmptyString })]),
       objective: v.pipe(v.string(), v.minLength(1), v.maxLength(4_096)),
       brief: v.object({
         summary: v.pipe(v.string(), v.minLength(1), v.maxLength(8_192)),
