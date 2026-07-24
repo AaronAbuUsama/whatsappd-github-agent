@@ -27,6 +27,34 @@ describe("coding-job registry", () => {
     }
   });
 
+  it("round 9: preserves the repository's ORIGINAL casing (Graph identity is exact-match)", () => {
+    const registry = createCodingJobRegistry(":memory:");
+    try {
+      registry.upsert({ ...job, repository: "TheCallApp/ios-app" });
+      // Lookups are case-insensitive, but the returned repository keeps the caller's casing.
+      expect(registry.get("thecallapp/ios-app", 42)!.repository).toBe("TheCallApp/ios-app");
+      const reservation = registry.reserveRepair("TheCallApp/ios-app", 42, 1);
+      expect(reservation.status).toBe("within-budget");
+      expect((reservation as { job: { repository: string } }).job.repository).toBe("TheCallApp/ios-app");
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("round 9: clamps the repair budget to the two-cycle spec cap even when a job requests more", () => {
+    const registry = createCodingJobRegistry(":memory:");
+    try {
+      registry.upsert({ ...job, maxReviewCycles: 5 });
+      expect(registry.get("acme/widgets", 42)!.maxReviewCycles).toBe(2);
+      expect(registry.reserveRepair("acme/widgets", 42, 1).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 2).status).toBe("within-budget");
+      // Enforced at 2, not 5 — the third qualifying review is over budget.
+      expect(registry.reserveRepair("acme/widgets", 42, 3).status).toBe("over-budget");
+    } finally {
+      registry.close();
+    }
+  });
+
   it("only repairs a registered PR — an external/fork PR is never admitted", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {

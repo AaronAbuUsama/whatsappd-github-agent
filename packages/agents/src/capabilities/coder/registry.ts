@@ -65,6 +65,7 @@ export interface CodingJobRegistry {
 
 interface CodingJobRow {
   repository: string;
+  repository_display: string;
   pr_number: number;
   issue: number;
   branch: string;
@@ -74,10 +75,19 @@ interface CodingJobRow {
   review_cycle: number;
 }
 
+/**
+ * S10's two-cycle external repair budget as a HARD cap the registry enforces itself: no upstream
+ * `maxReviewCycles` (the schema tolerates 0–5, shared with other knobs) can push a repair past two
+ * cycles — every registered job is clamped here so the spec holds regardless of what was requested.
+ */
+export const MAX_REPAIR_CYCLES = 2;
+
 const key = (repository: string, prNumber: number): [string, number] => [repository.toLowerCase(), prNumber];
 
+// The lower-cased key is the SQL lookup/PK only; `repository_display` keeps the caller's ORIGINAL casing,
+// which is what Graph identity resolution exact-matches (mirrors ingress.ts `canonicalRepository`).
 const hydrate = (row: CodingJobRow): CodingJobRecord => ({
-  repository: row.repository,
+  repository: row.repository_display,
   prNumber: row.pr_number,
   issue: row.issue,
   branch: row.branch,
@@ -94,6 +104,7 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
   database.exec(`
     CREATE TABLE IF NOT EXISTS coding_jobs (
       repository TEXT NOT NULL,
+      repository_display TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
       issue INTEGER NOT NULL,
       branch TEXT NOT NULL,
@@ -112,9 +123,10 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
     ) STRICT;
   `);
   const upsert = database.prepare(`
-    INSERT INTO coding_jobs (repository, pr_number, issue, branch, base, max_verification_rounds, max_review_cycles)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO coding_jobs (repository, repository_display, pr_number, issue, branch, base, max_verification_rounds, max_review_cycles)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(repository, pr_number) DO UPDATE SET
+      repository_display = excluded.repository_display,
       issue = excluded.issue,
       branch = excluded.branch,
       base = excluded.base,
@@ -147,7 +159,9 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
   return {
     upsert: (job) => {
       const [repo, prNumber] = key(job.repository, job.prNumber);
-      upsert.run(repo, prNumber, job.issue, job.branch, job.base, job.maxVerificationRounds, job.maxReviewCycles);
+      // Store the lower-cased key for lookups but preserve the caller's original casing for Graph
+      // identity, and clamp the repair budget to the spec's hard two-cycle ceiling.
+      upsert.run(repo, job.repository, prNumber, job.issue, job.branch, job.base, job.maxVerificationRounds, Math.min(job.maxReviewCycles, MAX_REPAIR_CYCLES));
     },
     get,
     reserveRepair: (repository, prNumber, reviewId) => {
