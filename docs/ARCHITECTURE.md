@@ -71,11 +71,12 @@ sequenceDiagram
   FLUE-->>SP: lifecycle observations (dispatchId only)<br/>→ Window or Directive correlation
 ```
 
-The Speaker now mounts conversation, Intent escalation, Directive Saying, and read-only Graph
-tools only. The Brain owns Coder launch, stable work identity, Flue admission reconciliation,
-terminal-result admission, and the independent choice of reporting Surface. GitHub webhook ingress
-and proactive time remain at the next frontier. The diagram above is the replacement path that
-exists now; its live GitHub-to-WhatsApp scenario is still a separate proof obligation.
+The Speaker now mounts conversation, Intent escalation, Directive Saying, a work-status pull tool
+(`lookup_work`), and read-only Graph tools only. The Brain owns Coder launch, stable work identity,
+Flue admission reconciliation, terminal-result admission, the independent choice of reporting
+Surface, GitHub events (admitted to the same up-inbox and routed by Brain decision, never
+broadcast), and the proactive clock (Scheduled Wake + coalesced Proactive Sweep). The diagram above
+is the replacement path that exists now.
 
 ## Where things live — quick answers
 
