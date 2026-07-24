@@ -39,6 +39,7 @@ export const wakeBrain = async (
                 knowledgeDeltas: batch.knowledgeDeltas,
                 specialistResults: batch.specialistResults,
                 githubEvents: batch.githubEvents,
+                scheduledWakes: batch.scheduledWakes,
               },
             },
           });

@@ -151,6 +151,29 @@ export const createFileIssueTool = () =>
     },
   });
 
+export const createScheduleWakeTool = () =>
+  defineTool({
+    name: "schedule_wake",
+    description:
+      "Durably schedule the Brain to reconsider an open loop at a future time (§6 Scheduled Wake) — e.g. " +
+      "'chase this commitment if still unmet in two hours'. Give an ISO-8601 UTC dueAt and a short reason " +
+      "naming the loop. It survives restart and wakes the Brain exactly once when due. Scheduling the same " +
+      "reason and time twice coalesces to one wake.",
+    input: v.object({
+      reason: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+      dueAt: v.pipe(v.string(), v.isoTimestamp()),
+    }),
+    output: v.object({
+      kind: v.literal("scheduled"),
+      wakeId: v.pipe(nonEmptyString, v.startsWith("scheduled-wake:")),
+      dueAt: nonEmptyString,
+    }),
+    run: ({ input }) => {
+      const wake = getBrainEffectsRuntime().inbox.scheduleWake(input);
+      return { kind: "scheduled" as const, wakeId: wake.id, dueAt: wake.dueAt };
+    },
+  });
+
 export const createSettleBrainBatchTool = () =>
   defineTool({
     name: "settle_brain_batch",
