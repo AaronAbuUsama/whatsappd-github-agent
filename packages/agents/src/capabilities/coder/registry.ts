@@ -27,10 +27,9 @@ export interface CodingJobRecord {
 /**
  * The read-only verdict for one REQUEST_CHANGES review, keyed on the review id so a repeated
  * identical review (a webhook redelivery, or the Brain re-processing an unsettled Batch after a
- * crash) converges rather than launching a second run / demoting twice. `within-budget` and
- * `over-budget` are provisional — nothing is consumed until `commitRepair` runs AFTER the side
- * effect actually succeeds, so a failed launch/demotion never silently wastes a cycle (finding 2).
- * `duplicate` is a review already committed (idempotent no-op); `unregistered` is not a Coder PR.
+ * crash) converges rather than launching a second run / demoting twice. `duplicate` is a review
+ * already reserved (idempotent no-op); `unregistered` is not a Coder PR. `within-budget` means the
+ * reservation SUCCEEDED and a cycle is already consumed (call `releaseRepair` if the launch fails).
  */
 export type RepairCheck =
   | { readonly status: "within-budget"; readonly job: CodingJobRecord }
@@ -42,15 +41,17 @@ export interface CodingJobRegistry {
   /** Record (or refresh) a Coder-owned PR's journey and budgets. Preserves `reviewCycle`. */
   upsert(job: Omit<CodingJobRecord, "reviewCycle">): void;
   get(repository: string, prNumber: number): CodingJobRecord | undefined;
-  /** Pure read: what would this review do? Consumes nothing — call `commitRepair` after the effect. */
-  checkRepair(repository: string, prNumber: number, reviewId: number): RepairCheck;
   /**
-   * Finalize one review AFTER its side effect succeeded: idempotently record the review id and, for a
-   * launch, consume exactly one repair cycle. Committing after the effect means a crash BEFORE this
-   * leaves the review un-recorded — the worst case is a visible, recoverable re-launch on retry, never
-   * a silently-wasted budget (finding 2, option b). A repeated commit for the same review is a no-op.
+   * Atomically decide AND reserve one review's repair, in a single `BEGIN IMMEDIATE` transaction, so
+   * the budget check and the cycle reservation are one step — two concurrent review events can never
+   * both pass the same under-limit check and both launch (finding 3, round 3). On `within-budget` it
+   * has already recorded the review id and consumed a cycle; on `over-budget` it recorded the review
+   * id (no cycle); `duplicate`/`unregistered` reserve nothing. Call `releaseRepair` iff the subsequent
+   * side effect fails, to undo the reservation so a genuine retry can re-reserve (never a wasted cycle).
    */
-  commitRepair(repository: string, prNumber: number, reviewId: number, outcome: "launched" | "over-budget"): void;
+  reserveRepair(repository: string, prNumber: number, reviewId: number): RepairCheck;
+  /** Undo a reservation whose side effect failed: delete the review id and, for a launch, give back the cycle. */
+  releaseRepair(repository: string, prNumber: number, reviewId: number): void;
   close(): void;
 }
 
@@ -117,10 +118,16 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
     "SELECT outcome FROM coding_job_repairs WHERE repository = ? AND pr_number = ? AND review_id = ?",
   );
   const insertRepair = database.prepare(
-    "INSERT OR IGNORE INTO coding_job_repairs (repository, pr_number, review_id, outcome) VALUES (?, ?, ?, ?)",
+    "INSERT INTO coding_job_repairs (repository, pr_number, review_id, outcome) VALUES (?, ?, ?, ?)",
+  );
+  const deleteRepair = database.prepare(
+    "DELETE FROM coding_job_repairs WHERE repository = ? AND pr_number = ? AND review_id = ? RETURNING outcome",
   );
   const bumpCycle = database.prepare(
     "UPDATE coding_jobs SET review_cycle = review_cycle + 1 WHERE repository = ? AND pr_number = ?",
+  );
+  const dropCycle = database.prepare(
+    "UPDATE coding_jobs SET review_cycle = max(0, review_cycle - 1) WHERE repository = ? AND pr_number = ?",
   );
 
   const get = (repository: string, prNumber: number): CodingJobRecord | undefined => {
@@ -135,26 +142,43 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
       upsert.run(repo, prNumber, job.issue, job.branch, job.base, job.maxVerificationRounds, job.maxReviewCycles);
     },
     get,
-    checkRepair: (repository, prNumber, reviewId) => {
+    reserveRepair: (repository, prNumber, reviewId) => {
       const [repo, pr] = key(repository, prNumber);
-      const job = get(repo, pr);
-      if (job === undefined) return { status: "unregistered" };
-      const decided = selectRepair.get(repo, pr, reviewId) as { outcome: string } | undefined;
-      if (decided !== undefined) {
-        return { status: "duplicate", previous: decided.outcome === "launched" ? "launched" : "over-budget" };
-      }
-      return job.reviewCycle >= job.maxReviewCycles
-        ? { status: "over-budget", job }
-        : { status: "within-budget", job };
-    },
-    commitRepair: (repository, prNumber, reviewId, outcome) => {
-      const [repo, pr] = key(repository, prNumber);
-      // One transaction: record the review id, and — only if this is the FIRST record of it and it
-      // launched — consume a cycle. A retry after a prior commit inserts nothing and bumps nothing.
+      // BEGIN IMMEDIATE takes the write lock up front, so the budget read and the cycle bump are one
+      // atomic step: a second concurrent reserve blocks here, then sees the already-consumed cycle (or
+      // the already-recorded review id) and can never pass the same under-limit check twice (finding 3).
       database.exec("BEGIN IMMEDIATE");
       try {
-        const info = insertRepair.run(repo, pr, reviewId, outcome);
-        if (info.changes > 0 && outcome === "launched") bumpCycle.run(repo, pr);
+        const job = get(repo, pr);
+        if (job === undefined) {
+          database.exec("COMMIT");
+          return { status: "unregistered" };
+        }
+        const decided = selectRepair.get(repo, pr, reviewId) as { outcome: string } | undefined;
+        if (decided !== undefined) {
+          database.exec("COMMIT");
+          return { status: "duplicate", previous: decided.outcome === "launched" ? "launched" : "over-budget" };
+        }
+        if (job.reviewCycle >= job.maxReviewCycles) {
+          insertRepair.run(repo, pr, reviewId, "over-budget");
+          database.exec("COMMIT");
+          return { status: "over-budget", job };
+        }
+        insertRepair.run(repo, pr, reviewId, "launched");
+        bumpCycle.run(repo, pr);
+        database.exec("COMMIT");
+        return { status: "within-budget", job: { ...job, reviewCycle: job.reviewCycle + 1 } };
+      } catch (cause) {
+        database.exec("ROLLBACK");
+        throw cause;
+      }
+    },
+    releaseRepair: (repository, prNumber, reviewId) => {
+      const [repo, pr] = key(repository, prNumber);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const removed = deleteRepair.get(repo, pr, reviewId) as { outcome: string } | undefined;
+        if (removed?.outcome === "launched") dropCycle.run(repo, pr);
         database.exec("COMMIT");
       } catch (cause) {
         database.exec("ROLLBACK");

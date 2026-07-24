@@ -111,7 +111,7 @@ describe("repair_pull_request Brain tool (#211)", () => {
       expect(launchedInput).toMatchObject({ mode: "review_continuation", repository: "acme/widgets", pullRequest: 42, brainWorkId: expect.stringMatching(/^brain-work:/u), sourceSurfaceId: SOURCE });
       // The launch reserved with the GitHub event as evidence (not an Intent).
       expect(inbox.specialistLaunch(result.workId as string)!.evidenceIds).toEqual([eventId]);
-      // Cycle consumed only after the launch was admitted.
+      // The cycle was atomically reserved and, since the launch succeeded, stays consumed.
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
     } finally {
       inbox.close();
@@ -214,14 +214,44 @@ describe("repair_pull_request Brain tool (#211)", () => {
     }
   });
 
-  it("NEGATIVE (round-1 finding 2): a failed launch consumes no cycle, so the review can still be repaired on retry", async () => {
+  it("NEGATIVE (round-1 finding 2): a failed launch releases its reservation, so the review can still be repaired", async () => {
     const registry = createCodingJobRegistry(":memory:");
     registry.upsert(job);
     const { inbox, batchId, eventId } = fixture(registry, async () => { throw new Error("Flue unreachable"); });
     try {
       await expect(call(batchId, eventId)).rejects.toThrow("Flue unreachable");
+      // The reservation was released: no cycle consumed, and a fresh reserve of the same review succeeds.
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
-      expect(registry.checkRepair("acme/widgets", 42, 501).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 501).status).toBe("within-budget");
+    } finally {
+      inbox.close();
+      registry.close();
+    }
+  });
+
+  it("FINDING 2 (round 3): rejects an evidence id that is real but not part of this Batch, and releases the reservation", async () => {
+    const registry = createCodingJobRegistry(":memory:");
+    registry.upsert(job);
+    let admissions = 0;
+    const { inbox, batchId } = fixture(registry, async () => { admissions += 1; return { runId: "r" }; });
+    try {
+      // A second review event that lands in a LATER batch — real, but not evidence for this Batch.
+      const offBatch = inbox.admitGitHubEvent({
+        githubAppId: "app-reviewer",
+        deliveryId: "review-other",
+        eventName: "pull_request_review",
+        action: "submitted",
+        repository: "acme/widgets",
+        summary: "unrelated review",
+        detail: {},
+      });
+      const result = createRepairPullRequestTool().run({
+        input: { batchId, surfaceId: SOURCE, repository: "acme/widgets", pullRequest: 42, reviewId: 501, evidenceIds: [offBatch.id] },
+      } as never) as Promise<Record<string, unknown>>;
+      await expect(result).rejects.toThrow(/is not part of Brain Batch/u);
+      expect(admissions).toBe(0);
+      // The reservation the tool took before launching was released — no cycle wasted.
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
     } finally {
       inbox.close();
       registry.close();

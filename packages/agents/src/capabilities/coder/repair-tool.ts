@@ -79,33 +79,43 @@ export const createRepairPullRequestTool = () =>
         };
       }
 
-      const check = registry.checkRepair(input.repository, input.pullRequest, input.reviewId);
-      if (check.status === "unregistered") return { kind: "repair_pull_request" as const, status: "external" as const };
-      if (check.status === "duplicate") return { kind: "repair_pull_request" as const, status: "duplicate" as const, previous: check.previous };
+      // Atomically decide AND reserve (budget + cycle in one step) so two concurrent reviews can never
+      // both launch past the same budget check (finding 3). On any subsequent side-effect failure we
+      // release the reservation, so a failed launch/demotion never permanently wastes a cycle.
+      const reservation = registry.reserveRepair(input.repository, input.pullRequest, input.reviewId);
+      if (reservation.status === "unregistered") return { kind: "repair_pull_request" as const, status: "external" as const };
+      if (reservation.status === "duplicate") return { kind: "repair_pull_request" as const, status: "duplicate" as const, previous: reservation.previous };
 
-      if (check.status === "over-budget") {
-        const { prUrl } = await demoteOverBudget(github, repo, input.pullRequest, check.job.maxReviewCycles);
-        // Record AFTER the demotion succeeds; the demotion is idempotent so a retry is safe.
-        registry.commitRepair(input.repository, input.pullRequest, input.reviewId, "over-budget");
-        return { kind: "repair_pull_request" as const, status: "over-budget" as const, prUrl, maxReviewCycles: check.job.maxReviewCycles };
+      if (reservation.status === "over-budget") {
+        try {
+          const { prUrl } = await demoteOverBudget(github, repo, input.pullRequest, reservation.job.maxReviewCycles);
+          return { kind: "repair_pull_request" as const, status: "over-budget" as const, prUrl, maxReviewCycles: reservation.job.maxReviewCycles };
+        } catch (cause) {
+          registry.releaseRepair(input.repository, input.pullRequest, input.reviewId);
+          throw cause;
+        }
       }
 
-      // Within budget: launch the repair through the Brain→delegation seam, citing the review event as
-      // provenance (no Intent needed), THEN consume the cycle.
-      const { workId, runId } = await launchSpecialistWork(
-        {
-          batchId: input.batchId,
-          sourceSurfaceId: input.surfaceId,
-          evidenceIds: input.evidenceIds,
-          mode: "review_continuation",
-          repository: check.job.repository,
-          pullRequest: input.pullRequest,
-          maxVerificationRounds: check.job.maxVerificationRounds,
-          maxReviewCycles: check.job.maxReviewCycles,
-        },
-        coderSpecialistSpec,
-      );
-      registry.commitRepair(input.repository, input.pullRequest, input.reviewId, "launched");
-      return { kind: "repair_pull_request" as const, status: "launched" as const, workId, runId };
+      // Within budget (cycle already reserved): launch the repair through the Brain→delegation seam,
+      // citing the review event as provenance (no Intent needed). Release the cycle if the launch fails.
+      try {
+        const { workId, runId } = await launchSpecialistWork(
+          {
+            batchId: input.batchId,
+            sourceSurfaceId: input.surfaceId,
+            evidenceIds: input.evidenceIds,
+            mode: "review_continuation",
+            repository: reservation.job.repository,
+            pullRequest: input.pullRequest,
+            maxVerificationRounds: reservation.job.maxVerificationRounds,
+            maxReviewCycles: reservation.job.maxReviewCycles,
+          },
+          coderSpecialistSpec,
+        );
+        return { kind: "repair_pull_request" as const, status: "launched" as const, workId, runId };
+      } catch (cause) {
+        registry.releaseRepair(input.repository, input.pullRequest, input.reviewId);
+        throw cause;
+      }
     },
   });

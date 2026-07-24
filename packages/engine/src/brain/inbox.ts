@@ -1269,13 +1269,19 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       }
       let evidenceIds: readonly string[];
       if (rawEvidenceIds !== undefined) {
-        // Explicit provenance (a GitHub-event-triggered launch, #211): each cited id must resolve to a
-        // real Conversation event OR admitted GitHub up-inbox event — the same strict check prompt_speaker
-        // applies (§4). No source Intent is required; the triggering event itself is the provenance.
+        // Explicit provenance (a GitHub-event-triggered launch, #211): each cited id must be part of
+        // THIS Batch — a GitHub event assigned to it, or evidence backing one of its Intents. Scoping to
+        // the batch (not a global existence check) keeps provenance honest: a valid-but-unrelated old
+        // event id from some other batch can never authorize this launch. The Intent-derived path below
+        // is batch-scoped by construction (selectBatchIntents); this makes the explicit path match.
         evidenceIds = canonicalIds(rawEvidenceIds, "Specialist launch evidence ids");
+        const batchEvidence = new Set<string>([
+          ...(selectBatchGitHubEvents.all(requestedBatchId) as unknown as GitHubEventRow[]).map(hydrateGitHubEvent).map((event) => event.id),
+          ...(selectBatchIntents.all(requestedBatchId) as unknown as IntentRow[]).map(hydrate).flatMap((intent) => [...intent.evidenceIds]),
+        ]);
         for (const evidenceId of evidenceIds) {
-          if (evidence.get(evidenceId) === undefined && selectGitHubEvent.get(evidenceId) === undefined) {
-            throw new Error(`Specialist launch evidence ${evidenceId} does not exist.`);
+          if (!batchEvidence.has(evidenceId)) {
+            throw new Error(`Specialist launch evidence ${evidenceId} is not part of Brain Batch ${requestedBatchId}.`);
           }
         }
       } else {

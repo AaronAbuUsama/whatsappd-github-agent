@@ -18,8 +18,8 @@ describe("coding-job registry", () => {
     try {
       registry.upsert(job);
       expect(registry.get("acme/widgets", 42)).toEqual({ ...job, reviewCycle: 0 });
-      // Consume one cycle (launch committed), then re-upsert (a republish): journey refreshes, cycle preserved.
-      registry.commitRepair("acme/widgets", 42, 1001, "launched");
+      // Reserve one cycle, then re-upsert (a republish): journey refreshes, consumed cycle preserved.
+      registry.reserveRepair("acme/widgets", 42, 1001);
       registry.upsert({ ...job, base: "release" });
       expect(registry.get("acme/widgets", 42)).toEqual({ ...job, base: "release", reviewCycle: 1 });
     } finally {
@@ -30,8 +30,22 @@ describe("coding-job registry", () => {
   it("only repairs a registered PR — an external/fork PR is never admitted", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {
-      // No row for PR 99 — a contributor's or fork-headed PR the Coder never opened.
-      expect(registry.checkRepair("acme/widgets", 99, 5000)).toEqual({ status: "unregistered" });
+      expect(registry.reserveRepair("acme/widgets", 99, 5000)).toEqual({ status: "unregistered" });
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("NEGATIVE (finding 3): reserving consumes the cycle atomically — the budget can never be exceeded", () => {
+    const registry = createCodingJobRegistry(":memory:");
+    try {
+      registry.upsert({ ...job, maxReviewCycles: 1 });
+      // Two DISTINCT review events on the same PR, budget 1. The first reserves and consumes the cycle
+      // in one atomic step; a second reserve (a concurrent/racing review) sees the already-consumed
+      // cycle and is over-budget — never a second under-limit pass, never a second launch past budget.
+      expect(registry.reserveRepair("acme/widgets", 42, 1).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 2).status).toBe("over-budget");
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
     } finally {
       registry.close();
     }
@@ -41,55 +55,54 @@ describe("coding-job registry", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {
       registry.upsert(job);
-      expect(registry.checkRepair("acme/widgets", 42, 1).status).toBe("within-budget");
-      registry.commitRepair("acme/widgets", 42, 1, "launched");
-      expect(registry.checkRepair("acme/widgets", 42, 2).status).toBe("within-budget");
-      registry.commitRepair("acme/widgets", 42, 2, "launched");
-      // The third distinct qualifying rejection would exceed the budget → over-budget.
-      expect(registry.checkRepair("acme/widgets", 42, 3).status).toBe("over-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 1).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 2).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 3).status).toBe("over-budget");
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(2);
     } finally {
       registry.close();
     }
   });
 
-  it("NEGATIVE: a cycle is consumed only on commit — checkRepair alone never bumps the budget", () => {
+  it("NEGATIVE: a released reservation gives the cycle back and can be re-reserved (failed launch → retry)", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {
       registry.upsert(job);
-      // Checking (and re-checking) the same review does not consume the budget — only a committed
-      // launch does. This is the finding-2 fix: a failed launch (no commit) never wastes a cycle.
-      registry.checkRepair("acme/widgets", 42, 7);
-      registry.checkRepair("acme/widgets", 42, 7);
+      expect(registry.reserveRepair("acme/widgets", 42, 7).status).toBe("within-budget");
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
+      // The launch failed → release: the cycle returns and the review is no longer recorded.
+      registry.releaseRepair("acme/widgets", 42, 7);
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
+      // A genuine retry re-reserves the same review from scratch.
+      expect(registry.reserveRepair("acme/widgets", 42, 7).status).toBe("within-budget");
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
     } finally {
       registry.close();
     }
   });
 
-  it("NEGATIVE: a repeated identical review commit neither re-records nor double-consumes", () => {
+  it("NEGATIVE: a repeated identical review event is duplicate — no second reservation, no second cycle", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {
       registry.upsert(job);
-      registry.commitRepair("acme/widgets", 42, 777, "launched");
-      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
-      expect(registry.checkRepair("acme/widgets", 42, 777)).toEqual({ status: "duplicate", previous: "launched" });
-      // A second commit for the same review id is an idempotent no-op — no second cycle consumed.
-      registry.commitRepair("acme/widgets", 42, 777, "launched");
+      expect(registry.reserveRepair("acme/widgets", 42, 777).status).toBe("within-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 777)).toEqual({ status: "duplicate", previous: "launched" });
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
     } finally {
       registry.close();
     }
   });
 
-  it("records an over-budget review without consuming a cycle, and reports it duplicate thereafter", () => {
+  it("reserves an over-budget review without consuming a cycle, and reports it duplicate thereafter", () => {
     const registry = createCodingJobRegistry(":memory:");
     try {
       registry.upsert({ ...job, maxReviewCycles: 0 });
-      expect(registry.checkRepair("acme/widgets", 42, 900).status).toBe("over-budget");
-      registry.commitRepair("acme/widgets", 42, 900, "over-budget");
-      expect(registry.checkRepair("acme/widgets", 42, 900)).toEqual({ status: "duplicate", previous: "over-budget" });
+      expect(registry.reserveRepair("acme/widgets", 42, 900).status).toBe("over-budget");
+      expect(registry.reserveRepair("acme/widgets", 42, 900)).toEqual({ status: "duplicate", previous: "over-budget" });
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
+      // Releasing a failed over-budget demotion lets a retry re-reserve it.
+      registry.releaseRepair("acme/widgets", 42, 900);
+      expect(registry.reserveRepair("acme/widgets", 42, 900).status).toBe("over-budget");
     } finally {
       registry.close();
     }
