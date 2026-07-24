@@ -29,10 +29,11 @@ export interface OpenPullRequestContext {
   readonly requiredDraft: boolean;
   readonly snapshotAfter: () => Promise<WorkspaceSnapshot>;
   readonly readFile: (path: string) => Promise<Uint8Array>;
-  // #211: for a review continuation, the exact PR the run must UPDATE. If publication would create a
-  // replacement instead (the PR was closed/moved mid-run), it fails closed and records `moved`.
-  readonly requireExistingPr?: number;
-  readonly record: { pr?: OpenPrRecord; moved?: boolean };
+  // #211: the single live re-verification for a review continuation, called immediately before EVERY
+  // mutating action here (branch push, PR update). Returns a block reason (fail closed) or undefined
+  // (proceed). Absent for a fresh-issue run, which has no prior live PR to re-verify against.
+  readonly reverifyContinuation?: () => Promise<string | undefined>;
+  readonly record: { pr?: OpenPrRecord; blocked?: string };
 }
 
 /**
@@ -81,6 +82,20 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
         };
       }
 
+      // The single fail-closed re-verify (§10), invoked immediately before EACH mutating action below —
+      // a continuation run takes minutes, so no mutation may trust the start-of-run snapshot. Records the
+      // reason so the conductor returns `blocked`; nothing is mutated.
+      const blockedByReverify = async (): Promise<{ opened: false; message: string } | undefined> => {
+        if (ctx.reverifyContinuation === undefined) return undefined;
+        const reason = await ctx.reverifyContinuation();
+        if (reason === undefined) return undefined;
+        ctx.record.blocked = reason;
+        return { opened: false, message: `Live re-verification failed before publishing — ${reason}. Nothing was mutated.` };
+      };
+
+      const beforeBranch = await blockedByReverify();
+      if (beforeBranch !== undefined) return beforeBranch;
+
       const head = await ensureBranch(ctx.github, ctx.repo, ctx.branch, ctx.seedBranchHead);
       if (head.sha !== ctx.seedBranchHead) {
         throw new Error("Coder branch moved after this run was seeded; start a new verified run before publishing.");
@@ -98,23 +113,17 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
       // Handler plumbing (never templating): guarantee the load-bearing `Closes #N` so a
       // merged PR auto-closes its issue and the ingress backstop correlates the webhook.
       const body = ensureClosesIssue(input.body, ctx.issue);
+
+      const beforePublish = await blockedByReverify();
+      if (beforePublish !== undefined) return beforePublish;
+
       const pr = await upsertPullRequest(ctx.github, ctx.repo, {
         branch: ctx.branch,
         base: ctx.base,
         title: input.title,
         body,
         draft: input.draft,
-        ...(ctx.requireExistingPr === undefined ? {} : { requireExisting: ctx.requireExistingPr }),
       });
-      if (pr.moved === true) {
-        // The reviewed PR is gone (closed/moved mid-run): repair commits rode the branch, but we opened
-        // no replacement. Fail closed — the conductor turns the recorded `moved` into a blocked outcome.
-        ctx.record.moved = true;
-        return {
-          opened: false,
-          message: `Pull request #${pr.number} is no longer open — repaired the branch but did not open a replacement pull request.`,
-        };
-      }
       // Report the PR's ACTUAL draft state (fresh → input.draft; reused → the existing PR's
       // real isDraft), never a blind stamp of input.draft — an honest state beats a lie.
       ctx.record.pr = { url: pr.url, number: pr.number, created: pr.created, draft: pr.draft };

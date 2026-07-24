@@ -30,7 +30,7 @@ import {
 } from "./schemas.ts";
 export type { CoderGitHub } from "./github.ts";
 import { coderBranch, downloadTarball, fetchDefaultBranch, fetchIssue, getBranchHead } from "./github.ts";
-import { fetchReviewContinuation, renderReviewContinuation } from "./continuation.ts";
+import { continuationBlockReason, fetchReviewContinuation, renderReviewContinuation, verifyLiveContinuation } from "./continuation.ts";
 import type { CodingJobRecord } from "./registry.ts";
 import { createOpenPullRequestTool } from "./tool.ts";
 import {
@@ -292,19 +292,16 @@ const run = async ({ harness, input, log }: {
     let continuationHeadSha: string | undefined;
     if (isContinuation) {
       const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
-      const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
-      // Fail closed on an unverifiable head repo (§10): a null head.repo — GitHub reports this when the
-      // source repo is deleted/unreachable — is treated the same as a verified different repo, both blocked.
-      const notSameRepo = live.headRepoFull === undefined || live.headRepoFull.toLowerCase() !== expectedHeadRepo;
-      if (live.state !== "open" || notSameRepo || live.headRef !== branch) {
+      // Same shared fail-closed guard the pre-mutation re-verify uses (§10) — one rule, checked here at
+      // the start and again immediately before every mutation, never a scattered ad-hoc check.
+      const reason = continuationBlockReason(live, repo, branch);
+      if (reason !== undefined) {
         waypoint("workflow", "completed");
         return {
           outcome: "blocked",
           branch,
           jobId,
-          summary:
-            `Pull request #${input.pullRequest} head is not the live Coder branch (${branch}); ` +
-            "refusing to mutate an external, fork-headed, moved, or closed pull request.",
+          summary: `Pull request #${input.pullRequest} cannot be repaired: ${reason}.`,
           verificationRounds: 0,
           reviewCycle,
         };
@@ -359,7 +356,7 @@ const run = async ({ harness, input, log }: {
       });
 
       const requiredDraft = coordinated.verification.verdict === "FAIL" || coordinated.verification.verdict === "BLOCKED";
-      const record: { pr?: OpenPrRecord; moved?: boolean } = {};
+      const record: { pr?: OpenPrRecord; blocked?: string } = {};
       const openPullRequest = createOpenPullRequestTool({
         github,
         repo,
@@ -373,9 +370,9 @@ const run = async ({ harness, input, log }: {
         requiredDraft,
         snapshotAfter: snapshot,
         readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
-        // A review continuation must UPDATE its exact PR; if it was closed/moved mid-run, publication
-        // fails closed rather than opening a silent replacement (checked again here at publish time).
-        ...(isContinuation ? { requireExistingPr: input.pullRequest! } : {}),
+        // A review continuation re-verifies live GitHub state (PR open, same-repo, head still on this
+        // branch, branch ref exists) immediately before EACH mutation — one primitive, no stale trust.
+        ...(isContinuation ? { reverifyContinuation: () => verifyLiveContinuation(github, repo, branch, input.pullRequest!) } : {}),
         record,
       });
 
@@ -393,9 +390,9 @@ const run = async ({ harness, input, log }: {
       });
       waypoint("publication", "completed", { pullRequest: record.pr?.number, draft: record.pr?.draft ?? requiredDraft });
 
-      // The reviewed PR was closed/moved mid-run and publication refused to open a replacement (§10
-      // fail-closed, re-checked at publish time): report blocked, never register a substitute PR.
-      if (record.moved === true) {
+      // Live re-verification failed before a mutation (PR closed/moved, branch deleted mid-run): report
+      // blocked, mutate nothing, never register a substitute PR (§10 fail-closed, re-checked at publish).
+      if (record.blocked !== undefined) {
         waypoint("workflow", "completed");
         return {
           outcome: "blocked",
@@ -404,7 +401,7 @@ const run = async ({ harness, input, log }: {
           finalVerdict: coordinated.verification.verdict,
           verificationRounds: coordinated.rounds,
           reviewCycle,
-          summary: `Pull request #${input.pullRequest} was closed or moved during the repair run; the branch was repaired but no replacement pull request was opened.`,
+          summary: `Pull request #${input.pullRequest} could not be repaired: ${record.blocked}.`,
         };
       }
 

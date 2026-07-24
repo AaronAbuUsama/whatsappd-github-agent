@@ -40,8 +40,8 @@ const makeGitHub = (opts: { branchExists: boolean; branchHead?: string; openPr?:
 
 const buildTool = (
   gh: CoderGitHub,
-  record: { pr?: OpenPrRecord; moved?: boolean },
-  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean; requireExistingPr?: number } = {},
+  record: { pr?: OpenPrRecord; blocked?: string },
+  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean; reverifyContinuation?: () => Promise<string | undefined> } = {},
 ) =>
   createOpenPullRequestTool({
     github: gh,
@@ -56,7 +56,7 @@ const buildTool = (
     requiredDraft: options.requiredDraft ?? false,
     snapshotAfter: options.snapshotAfter ?? (async () => after),
     readFile: async () => new TextEncoder().encode("changed bytes"),
-    ...(options.requireExistingPr === undefined ? {} : { requireExistingPr: options.requireExistingPr }),
+    ...(options.reverifyContinuation === undefined ? {} : { reverifyContinuation: options.reverifyContinuation }),
     record,
   });
 
@@ -188,20 +188,42 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("#211: a review continuation whose PR was closed mid-run records `moved` and opens no replacement", async () => {
-    // Branch exists (repair committed to it) but no open head→base PR remains — the human closed it.
-    const record: { pr?: OpenPrRecord; moved?: boolean } = {};
-    const { gh, create } = makeGitHub({ branchExists: true, branchHead: "seed-head" });
-    const result = (await buildTool(gh, record, { seedBranchHead: "seed-head", seedBranchExisted: true, requireExistingPr: 7 }).run({
-      input: { title: "t", body: "b", draft: false },
-    })) as { opened: boolean; message?: string };
+  it("#211: live re-verify blocks BEFORE any mutation — no branch push, no PR, when it fails", async () => {
+    // The continuation re-verify reports the PR/branch is gone: block before ensureBranch, commit, upsert.
+    const record: { pr?: OpenPrRecord; blocked?: string } = {};
+    const { gh, getRef, createRef, create } = makeGitHub({ branchExists: true, branchHead: "seed-head" });
+    const result = (await buildTool(gh, record, {
+      seedBranchHead: "seed-head",
+      seedBranchExisted: true,
+      reverifyContinuation: async () => "the Coder branch agent/coder/issue-42 no longer exists",
+    }).run({ input: { title: "t", body: "b", draft: false } })) as { opened: boolean; message?: string };
 
     expect(result.opened).toBe(false);
-    expect(result.message).toContain("no longer open");
-    expect(record.moved).toBe(true);
-    expect(record.pr).toBeUndefined(); // never records a substitute PR
-    expect(create).not.toHaveBeenCalled(); // never opens a replacement
-    expect(gh.git.createCommit).toHaveBeenCalledOnce(); // the repair commits still rode the branch
+    expect(result.message).toContain("no longer exists");
+    expect(record.blocked).toContain("no longer exists");
+    expect(record.pr).toBeUndefined();
+    // NOTHING was mutated — not even the branch (getRef/createRef/commit) or the PR.
+    expect(getRef).not.toHaveBeenCalled();
+    expect(createRef).not.toHaveBeenCalled();
+    expect(gh.git.createCommit).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("#211: live re-verify passing (undefined) lets the continuation publish normally", async () => {
+    const record: { pr?: OpenPrRecord; blocked?: string } = {};
+    const { gh, create } = makeGitHub({
+      branchExists: true,
+      openPr: { number: 9, node_id: "PR_9", html_url: "https://x/pr/9", draft: false },
+    });
+    const result = (await buildTool(gh, record, {
+      seedBranchExisted: true,
+      reverifyContinuation: async () => undefined,
+    }).run({ input: { title: "t", body: "b", draft: false } })) as { opened: boolean; number?: number };
+
+    expect(result.opened).toBe(true);
+    expect(result.number).toBe(9);
+    expect(record.blocked).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects a publication draft state that contradicts the final verdict", async () => {

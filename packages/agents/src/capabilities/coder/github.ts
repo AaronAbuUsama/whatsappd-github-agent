@@ -258,8 +258,8 @@ export const commitChanges = async (
 export const upsertPullRequest = async (
   gh: CoderGitHub,
   repo: GitHubRepositoryRef,
-  input: { branch: string; base: string; title: string; body: string; draft: boolean; requireExisting?: number },
-): Promise<{ number: number; url: string; created: boolean; draft: boolean; moved?: boolean }> => {
+  input: { branch: string; base: string; title: string; body: string; draft: boolean },
+): Promise<{ number: number; url: string; created: boolean; draft: boolean }> => {
   const head = `${repo.owner}:${input.branch}`;
   const { data: open } = await gh.pulls.list({
     owner: repo.owner,
@@ -269,12 +269,6 @@ export const upsertPullRequest = async (
     state: "open",
   });
   const existing = open[0];
-  // #211: a review continuation must update its EXACT PR. If the open head→base PR is a different one
-  // (the reviewed PR was closed and someone opened a new PR from the same branch), never mutate it —
-  // fail closed, same as when no PR is found at all.
-  if (input.requireExisting !== undefined && (existing === undefined || existing.number !== input.requireExisting)) {
-    return { number: input.requireExisting, url: "", created: false, draft: input.draft, moved: true };
-  }
   if (existing !== undefined) {
     await gh.pulls.update({
       owner: repo.owner,
@@ -294,12 +288,6 @@ export const upsertPullRequest = async (
       );
     }
     return { number: existing.number, url: existing.html_url, created: false, draft: input.draft };
-  }
-  // #211 fix: a review continuation must UPDATE the reviewed PR, never open a replacement. If it is no
-  // longer an open head→base PR (a human closed it mid-run), fail closed — the commits already rode the
-  // branch, but we open no new PR. The caller turns this into a `blocked` outcome.
-  if (input.requireExisting !== undefined) {
-    return { number: input.requireExisting, url: "", created: false, draft: input.draft, moved: true };
   }
   const { data } = await gh.pulls.create({
     owner: repo.owner,

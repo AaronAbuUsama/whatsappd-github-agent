@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { CoderGitHub } from "../../packages/agents/src/capabilities/coder/github.ts";
-import { demoteOverBudget, fetchReviewContinuation } from "../../packages/agents/src/capabilities/coder/continuation.ts";
+import { demoteOverBudget, fetchReviewContinuation, verifyLiveContinuation } from "../../packages/agents/src/capabilities/coder/continuation.ts";
 
 const repo = { owner: "acme", repo: "widgets" };
+const notFound = () => Object.assign(new Error("Not Found"), { status: 404 });
 
 describe("fetchReviewContinuation (#211)", () => {
   it("carries the live head, the actual base ref, formal reviews, and paginated unresolved threads", async () => {
@@ -11,7 +12,7 @@ describe("fetchReviewContinuation (#211)", () => {
       {
         repository: {
           pullRequest: {
-            reviews: { nodes: [{ state: "CHANGES_REQUESTED", body: "Fix the guard", author: { login: "reviewer[bot]" } }] },
+            reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ state: "CHANGES_REQUESTED", body: "Fix the guard", author: { login: "reviewer[bot]" } }] },
             reviewThreads: {
               pageInfo: { hasNextPage: true, endCursor: "c1" },
               nodes: [
@@ -25,7 +26,7 @@ describe("fetchReviewContinuation (#211)", () => {
       {
         repository: {
           pullRequest: {
-            reviews: { nodes: [] },
+            reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
             reviewThreads: {
               pageInfo: { hasNextPage: false, endCursor: null },
               nodes: [{ isResolved: false, path: "c.ts", line: 7, comments: { nodes: [{ body: "and here", author: null }] } }],
@@ -62,6 +63,65 @@ describe("fetchReviewContinuation (#211)", () => {
     // Only UNRESOLVED threads, across BOTH pages; the resolved one is dropped.
     expect(state.unresolvedThreads.map((t) => t.path)).toEqual(["a.ts", "c.ts"]);
     expect(graphql).toHaveBeenCalledTimes(2);
+  });
+
+  it("round 11: paginates formal REVIEWS across pages, not just the first", async () => {
+    const pages = [
+      {
+        repository: {
+          pullRequest: {
+            reviews: { pageInfo: { hasNextPage: true, endCursor: "r1" }, nodes: [{ state: "COMMENTED", body: "older", author: { login: "reviewer[bot]" } }] },
+            reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          },
+        },
+      },
+      {
+        repository: {
+          pullRequest: {
+            reviews: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ state: "CHANGES_REQUESTED", body: "newer", author: { login: "reviewer[bot]" } }] },
+            reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          },
+        },
+      },
+    ];
+    const graphql = vi.fn(async () => pages.shift());
+    const github = {
+      graphql,
+      pulls: { get: vi.fn(async () => ({ data: { number: 42, node_id: "n", html_url: "u", title: "t", draft: false, state: "open", head: { sha: "h", ref: "b", repo: { full_name: "acme/widgets" } }, base: { ref: "main" } } })) },
+    } as unknown as CoderGitHub;
+
+    const state = await fetchReviewContinuation(github, repo, 42);
+    // Both pages of reviews are accumulated — older feedback is not silently dropped.
+    expect(state.reviews.map((r) => r.body)).toEqual(["older", "newer"]);
+    expect(graphql).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("verifyLiveContinuation (#211 round 11 — single pre-mutation re-verify)", () => {
+  const liveGitHub = (opts: { state?: string; ref?: string; fullName?: string | null; branchExists?: boolean }) =>
+    ({
+      pulls: { get: vi.fn(async () => ({ data: { state: opts.state ?? "open", head: { ref: opts.ref ?? "agent/coder/issue-42", repo: opts.fullName === null ? null : { full_name: opts.fullName ?? "acme/widgets" } } } })) },
+      git: { getRef: vi.fn(async () => { if (opts.branchExists === false) throw notFound(); return { data: { object: { sha: "s" } } }; }) },
+    }) as unknown as CoderGitHub;
+
+  it("returns undefined when the PR is open, same-repo, on the branch, and the branch exists", async () => {
+    expect(await verifyLiveContinuation(liveGitHub({}), repo, "agent/coder/issue-42", 42)).toBeUndefined();
+  });
+
+  it("blocks a closed PR", async () => {
+    expect(await verifyLiveContinuation(liveGitHub({ state: "closed" }), repo, "agent/coder/issue-42", 42)).toMatch(/no longer open/u);
+  });
+
+  it("blocks a fork/unknown head repo", async () => {
+    expect(await verifyLiveContinuation(liveGitHub({ fullName: null }), repo, "agent/coder/issue-42", 42)).toMatch(/fork|verifiable/u);
+  });
+
+  it("blocks when the head ref moved off the Coder branch", async () => {
+    expect(await verifyLiveContinuation(liveGitHub({ ref: "other" }), repo, "agent/coder/issue-42", 42)).toMatch(/head is no longer/u);
+  });
+
+  it("blocks when the branch ref was deleted mid-run (even though the PR still looks live)", async () => {
+    expect(await verifyLiveContinuation(liveGitHub({ branchExists: false }), repo, "agent/coder/issue-42", 42)).toMatch(/no longer exists/u);
   });
 });
 

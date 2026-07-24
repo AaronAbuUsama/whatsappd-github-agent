@@ -156,47 +156,10 @@ describe("upsertPullRequest — one open PR per head→base", () => {
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ head: "agent/coder/issue-42", draft: true }));
   });
 
-  it("#211: a review continuation whose PR is gone fails closed — never opens a replacement", async () => {
-    // The reviewed PR was closed mid-run → no open head→base PR. requireExisting forbids a replacement.
-    const list = vi.fn(async () => ({ data: [] }));
-    const create = vi.fn();
-    const gh = { graphql: vi.fn(), pulls: { list, create } } as unknown as CoderGitHub;
-
-    const pr = await upsertPullRequest(gh, REPO, {
-      branch: "agent/coder/issue-42",
-      base: "main",
-      title: "t",
-      body: "b",
-      draft: false,
-      requireExisting: 7,
-    });
-
-    expect(pr).toEqual({ number: 7, url: "", created: false, draft: false, moved: true });
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it("#211: a review continuation never mutates a DIFFERENT open PR on the same branch", async () => {
-    // The reviewed PR (#42) was closed; a new PR (#50) was opened from the same branch/base. Never touch it.
-    const list = vi.fn(async () => ({ data: [{ number: 50, node_id: "PR_50", html_url: "https://x/pr/50", draft: false }] }));
-    const create = vi.fn();
-    const update = vi.fn();
-    const graphql = vi.fn();
-    const gh = { graphql, pulls: { list, create, update } } as unknown as CoderGitHub;
-
-    const pr = await upsertPullRequest(gh, REPO, {
-      branch: "agent/coder/issue-42",
-      base: "main",
-      title: "t",
-      body: "b",
-      draft: false,
-      requireExisting: 42,
-    });
-
-    expect(pr).toEqual({ number: 42, url: "", created: false, draft: false, moved: true });
-    expect(update).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-    expect(graphql).not.toHaveBeenCalled();
-  });
+  // The "review continuation must not open/mutate the wrong PR" guarantee moved OUT of upsertPullRequest
+  // into the single verifyLiveContinuation primitive (tested in continuation.test.ts / tool.test.ts):
+  // a run only reaches upsertPullRequest after re-verifying the PR is open with the head still on this
+  // branch, so upsertPullRequest simply updates the one open head→base PR.
 });
 
 describe("commitChanges — Git Data API out (blobs → tree → commit → ref)", () => {

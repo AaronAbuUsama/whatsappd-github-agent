@@ -1,6 +1,7 @@
 import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repository.ts";
 
 import type { CoderGitHub } from "./github.ts";
+import { getBranchHead } from "./github.ts";
 
 /**
  * #211 review continuation — the live GitHub PR state a repair run is planned from. GitHub is
@@ -27,12 +28,16 @@ export interface ReviewContinuationState {
   }[];
 }
 
-interface ThreadsQuery {
+interface PageInfo {
+  hasNextPage: boolean;
+  endCursor: string | null;
+}
+interface ContinuationQuery {
   repository: {
     pullRequest: {
-      reviews: { nodes: { state: string; body: string; author: { login: string } | null }[] };
+      reviews: { pageInfo: PageInfo; nodes: { state: string; body: string; author: { login: string } | null }[] };
       reviewThreads: {
-        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        pageInfo: PageInfo;
         nodes: {
           isResolved: boolean;
           path: string | null;
@@ -44,12 +49,15 @@ interface ThreadsQuery {
   };
 }
 
-const REVIEW_THREADS_QUERY = `
-  query ReviewContinuation($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+const REVIEW_CONTINUATION_QUERY = `
+  query ReviewContinuation($owner: String!, $repo: String!, $number: Int!, $reviewsCursor: String, $threadsCursor: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
-        reviews(first: 100) { nodes { state body author { login } } }
-        reviewThreads(first: 50, after: $cursor) {
+        reviews(first: 100, after: $reviewsCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { state body author { login } }
+        }
+        reviewThreads(first: 50, after: $threadsCursor) {
           pageInfo { hasNextPage endCursor }
           nodes {
             isResolved
@@ -64,15 +72,11 @@ const REVIEW_THREADS_QUERY = `
 `;
 
 /**
- * Refetch the live PR head, formal reviews, and paginated UNRESOLVED review threads (§ acceptance
- * criterion 1). REST supplies the head sha / branch ref / head-repo identity (the fork guard);
- * one GraphQL query, cursor-paginated over reviewThreads, supplies the reviews and the still-open
- * threads with their inline comments. Nothing here is persisted — the registry keeps only the
- * issue/PR journey and budgets, never GitHub-owned review state.
- *
- * ponytail: formal reviews are read single-page (first 100) — a PR with >100 formal reviews from a
- * finite bot loop does not exist; upgrade to a second cursor if it ever does. Review THREADS are
- * fully paginated because the criterion names them explicitly.
+ * Refetch the live PR head, formal reviews, and UNRESOLVED review threads (§ acceptance criterion 1).
+ * REST supplies the head sha / branch ref / head-repo identity (the fork guard); one GraphQL query,
+ * cursor-paginated over BOTH reviews and reviewThreads, supplies every formal review and still-open
+ * thread with its inline comments. Nothing here is persisted — the registry keeps only the issue/PR
+ * journey and budgets, never GitHub-owned review state.
  */
 export const fetchReviewContinuation = async (
   github: CoderGitHub,
@@ -82,32 +86,39 @@ export const fetchReviewContinuation = async (
   const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: pullRequest });
   const reviews: Array<ReviewContinuationState["reviews"][number]> = [];
   const unresolvedThreads: Array<ReviewContinuationState["unresolvedThreads"][number]> = [];
-  let cursor: string | undefined;
-  let seededReviews = false;
+  let reviewsCursor: string | undefined;
+  let threadsCursor: string | undefined;
+  let reviewsDone = false;
+  let threadsDone = false;
   do {
-    const page: ThreadsQuery = await github.graphql<ThreadsQuery>(REVIEW_THREADS_QUERY, {
+    const page: ContinuationQuery = await github.graphql<ContinuationQuery>(REVIEW_CONTINUATION_QUERY, {
       owner: repo.owner,
       repo: repo.repo,
       number: pullRequest,
-      cursor: cursor ?? null,
+      reviewsCursor: reviewsCursor ?? null,
+      threadsCursor: threadsCursor ?? null,
     });
     const node = page.repository.pullRequest;
-    if (!seededReviews) {
+    if (!reviewsDone) {
       for (const review of node.reviews.nodes) {
         reviews.push({ state: review.state, author: review.author?.login ?? "unknown", body: review.body });
       }
-      seededReviews = true;
+      reviewsDone = !node.reviews.pageInfo.hasNextPage;
+      reviewsCursor = node.reviews.pageInfo.endCursor ?? undefined;
     }
-    for (const thread of node.reviewThreads.nodes) {
-      if (thread.isResolved) continue;
-      unresolvedThreads.push({
-        path: thread.path ?? undefined,
-        line: thread.line ?? undefined,
-        comments: thread.comments.nodes.map((comment) => ({ author: comment.author?.login ?? "unknown", body: comment.body })),
-      });
+    if (!threadsDone) {
+      for (const thread of node.reviewThreads.nodes) {
+        if (thread.isResolved) continue;
+        unresolvedThreads.push({
+          path: thread.path ?? undefined,
+          line: thread.line ?? undefined,
+          comments: thread.comments.nodes.map((comment) => ({ author: comment.author?.login ?? "unknown", body: comment.body })),
+        });
+      }
+      threadsDone = !node.reviewThreads.pageInfo.hasNextPage;
+      threadsCursor = node.reviewThreads.pageInfo.endCursor ?? undefined;
     }
-    cursor = node.reviewThreads.pageInfo.hasNextPage ? node.reviewThreads.pageInfo.endCursor ?? undefined : undefined;
-  } while (cursor !== undefined);
+  } while (!reviewsDone || !threadsDone);
 
   return {
     number: pr.number,
@@ -121,6 +132,50 @@ export const fetchReviewContinuation = async (
     reviews,
     unresolvedThreads,
   };
+};
+
+/**
+ * The one shared fail-closed guard for the whole review-continuation path (§10). A repair may proceed
+ * only against a PR that is still OPEN, headed by our OWN repo (not a fork / unknown head), and whose
+ * head ref is still the exact Coder branch. Returns a human reason to block, or undefined to proceed.
+ * Pure so both the start-of-run check and the pre-mutation re-verify apply identical rules.
+ */
+export const continuationBlockReason = (
+  live: { readonly state: string; readonly headRepoFull: string | undefined; readonly headRef: string },
+  repo: GitHubRepositoryRef,
+  branch: string,
+): string | undefined => {
+  const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
+  if (live.state !== "open") return "the pull request is no longer open";
+  if (live.headRepoFull === undefined || live.headRepoFull.toLowerCase() !== expectedHeadRepo) {
+    return "the pull request head repository is a fork or is no longer verifiable";
+  }
+  if (live.headRef !== branch) return `the pull request head is no longer the Coder branch (${branch})`;
+  return undefined;
+};
+
+/**
+ * Re-verify live GitHub state IMMEDIATELY before a mutating action (§10). A review-continuation run can
+ * take minutes, so every mutation (branch push, PR update) must re-check — not trust the snapshot taken
+ * at the start of the run. Fetches the live PR + branch ref and returns a block reason, or undefined to
+ * proceed. This is THE single re-verification primitive; call it before each mutation rather than
+ * scattering ad-hoc checks (the recurring bug class this consolidates).
+ */
+export const verifyLiveContinuation = async (
+  github: CoderGitHub,
+  repo: GitHubRepositoryRef,
+  branch: string,
+  pullRequest: number,
+): Promise<string | undefined> => {
+  const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: pullRequest });
+  const reason = continuationBlockReason(
+    { state: pr.state, headRepoFull: pr.head.repo?.full_name, headRef: pr.head.ref },
+    repo,
+    branch,
+  );
+  if (reason !== undefined) return reason;
+  if ((await getBranchHead(github, repo, branch)) === undefined) return `the Coder branch ${branch} no longer exists`;
+  return undefined;
 };
 
 /** The Planner framing for a repair run — the triggering feedback and every unresolved thread. */
