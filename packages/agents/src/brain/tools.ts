@@ -2,7 +2,6 @@ import { defineTool } from "@flue/runtime";
 import * as v from "valibot";
 
 import { MAX_PUBLIC_ISSUE_BODY_LENGTH } from "../capabilities/issue-management/issue-repository.ts";
-import { getIssueManagementRuntime, repositoryName } from "../capabilities/issue-management/runtime.ts";
 import { deliverIssueFilingEffect, deliverPromptEffect, getBrainEffectsRuntime } from "./effects-runtime.ts";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -86,10 +85,12 @@ export const createFileIssueTool = () =>
   defineTool({
     name: "file_issue",
     description:
-      "Durably file one GitHub issue in the repository you choose, resolved from Graph relations. Supply the current Batch id and the originating Surface as provenance, and the target repository as `owner/repo`. Omit the repository to file into the configured default repository when the Graph resolves none. This creates the issue; report the outcome back separately with prompt_speaker.",
+      "Durably file one GitHub issue in the repository you choose, resolved from Graph relations. Supply the current Batch id and the originating Surface as provenance, and the target repository as `owner/repo`. There is no default: if you cannot resolve a repository, do not call this — report honestly instead; an issue is never auto-filed into a fallback repo. This creates the issue; report the outcome back separately with prompt_speaker.",
     input: v.object({
       batchId: nonEmptyString,
       surfaceId: nonEmptyString,
+      // Optional in the schema so an omission surfaces a domain error the Brain can recover from,
+      // rather than a generic validation failure — but the Brain must supply it (fail-closed below).
       repository: v.optional(v.pipe(nonEmptyString, v.regex(/^[^/\s]+\/[^/\s]+$/u, "repository must be owner/repo"))),
       kind: v.union([v.literal("bug"), v.literal("feature")]),
       title: v.pipe(nonEmptyString, v.maxLength(256)),
@@ -116,14 +117,21 @@ export const createFileIssueTool = () =>
       if (runtime.fileIssue === undefined) {
         throw new Error("Issue filing is not configured for this Brain runtime.");
       }
-      // No Graph relation resolved a repo → fall back to the configured default. policy.authorize()
-      // with no argument returns defaultRepository and still enforces the fail-closed allowlist.
-      const repository = input.repository ?? repositoryName(getIssueManagementRuntime().policy.authorize());
+      // Fail closed: routing is the Brain's, never a config default. If no repository was resolved,
+      // never silently misfile into defaultRepository — surface it so the Brain re-files with an
+      // explicit repo or reports honestly. (§8: config is authorization, never routing.)
+      if (input.repository === undefined) {
+        throw new Error(
+          "file_issue requires an explicit repository (owner/repo) resolved from the Graph. " +
+            "No repository was supplied and there is no default — re-file with the resolved repository, " +
+            "or report honestly that this Surface has no repository relation.",
+        );
+      }
       const effect = await deliverIssueFilingEffect(
         runtime.inbox.recordIssueFiling({
           batchId: input.batchId,
           sourceSurfaceId: input.surfaceId,
-          repository,
+          repository: input.repository,
           kind: input.kind,
           title: input.title,
           body: input.body,

@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createGraphStore, type GraphAttestationContext } from "../../packages/engine/src/graph/store.ts";
+import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
+import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -544,6 +546,43 @@ describe("append-only Graph", () => {
     expect(() => database.exec("UPDATE graph_attestations SET confidence = 1")).toThrow(/immutable/u);
     expect(() => database.exec("DELETE FROM graph_attestations")).toThrow(/immutable/u);
     database.close();
+  });
+
+  it("resolves a GitHub event's origin delivery id as provenance on a derived Graph fact (§10)", () => {
+    const root = mkdtempSync(join(tmpdir(), "graph-github-provenance-"));
+    roots.push(root);
+    const path = join(root, "application.sqlite");
+    // brain_github_events lives in the same application DB the graph store reads its provenance from.
+    createConversationArchive(path).close();
+    const inbox = createBrainInbox(path, { providerChatIdForSurface: () => undefined });
+    const event = inbox.admitGitHubEvent({
+      githubAppId: "app-planner",
+      deliveryId: "gh-delivery-42",
+      eventName: "issues",
+      action: "opened",
+      repository: "acme/widgets",
+      summary: "Issue #7 opened in acme/widgets",
+      detail: { issue: { number: 7 } },
+    });
+    inbox.close();
+
+    const store = createGraphStore(path);
+    store.attest({
+      context: brain([event.id]),
+      claim: {
+        kind: "entity",
+        input: {
+          type: "repository",
+          properties: { repo: "acme/widgets" },
+          identity: { platform: "github", externalId: "acme/widgets" },
+        },
+      },
+    });
+    // The derived fact carries the origin webhook delivery id — GitHub-origin facts stay provenance-complete.
+    expect(store.resolveIdentity("github", "acme/widgets", "repository")).toMatchObject({
+      provenance: { deliveryId: "gh-delivery-42" },
+    });
+    store.close();
   });
 
   it("migrates the shipped mutable Projection into explicit legacy Attestations once", () => {

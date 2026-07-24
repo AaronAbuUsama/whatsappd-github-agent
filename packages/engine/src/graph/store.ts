@@ -622,6 +622,9 @@ export const createGraphStore = (databasePath: string, options: GraphStoreOption
   const hasConversationArchive =
     database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_events'").get() !==
     undefined;
+  const hasGithubEvents =
+    database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'brain_github_events'").get() !==
+    undefined;
   const evidenceProvenance = (evidenceIds: readonly string[]): GraphProvenance => {
     for (const evidenceId of evidenceIds) {
       const row = hasConversationArchive
@@ -632,6 +635,14 @@ export const createGraphStore = (databasePath: string, options: GraphStoreOption
       if (row !== undefined) return { chatId: row.chat_id, messageId: row.provider_message_id };
       if (evidenceId.startsWith("github-delivery:")) {
         return { deliveryId: evidenceId.slice("github-delivery:".length) };
+      }
+      // A GitHub up-inbox event (brain_github_events) is its own evidence: resolve the origin webhook
+      // delivery id so a GitHub-origin derived fact stays provenance-complete (§10).
+      if (evidenceId.startsWith("github-event:") && hasGithubEvents) {
+        const event = database
+          .prepare("SELECT delivery_id FROM brain_github_events WHERE event_id = ?")
+          .get(evidenceId) as { delivery_id: string } | undefined;
+        if (event !== undefined) return { deliveryId: event.delivery_id };
       }
     }
     return {};

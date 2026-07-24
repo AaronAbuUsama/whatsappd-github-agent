@@ -21,10 +21,7 @@ import { createIssueFiler } from "../../packages/agents/src/brain/issue-filing.t
 import { brainGraphContext } from "../../packages/agents/src/brain/agent.ts";
 import { createGraphTools } from "../../packages/agents/src/capabilities/graph/tools.ts";
 import { createGraphStore } from "../../packages/engine/src/graph/store.ts";
-import {
-  configureIssueManagementRuntime,
-  createIssueManagementPolicy,
-} from "../../packages/agents/src/capabilities/issue-management/runtime.ts";
+import { createIssueManagementPolicy } from "../../packages/agents/src/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "../../packages/engine/src/github/operation-store.ts";
 import { createFakeIssueRepository } from "../../packages/test-support/src/fake-issue-repository.ts";
 import { wakeBrain } from "../../packages/agents/src/brain/dispatch.ts";
@@ -351,15 +348,9 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
   });
 
-  it("falls back to the configured default repository when file_issue omits one (no Graph relation)", async () => {
+  it("fails closed when file_issue omits the repository — never silently files into a default", async () => {
     const { inbox, batchId } = openFixture();
     const { repository, operations, filer } = filingRuntime();
-    // The tool resolves the default via the issue-management policy when no repository is supplied.
-    configureIssueManagementRuntime({
-      repository,
-      operations,
-      policy: createIssueManagementPolicy(REPOSITORY, [REPOSITORY]),
-    });
     configureBrainEffectsRuntime({
       inbox,
       wake: async () => undefined,
@@ -367,20 +358,20 @@ describe("Brain Effects and settlement", () => {
       fileIssue: filer,
     });
 
-    // A chat with no works_on Graph relation files with no repository argument at all.
-    const filed = await createFileIssueTool().run({ input: {
-      batchId,
-      surfaceId: SURFACE,
-      kind: "bug",
-      title: "Unmapped chat still needs to file a bug",
-      body: "No Graph relation resolves a repository for this chat.",
-    } });
-    expect(filed).toMatchObject({
-      kind: "file_issue",
-      status: "created",
-      url: "https://github.com/acme/widgets/issues/1",
-    });
-    expect(repository.events().some((event) => event.kind === "create")).toBe(true);
+    // A chat with no resolvable Graph relation must NOT silently misfile into defaultRepository —
+    // routing is the Brain's, never a config default (§8). The omission surfaces a clear error.
+    await expect(
+      createFileIssueTool().run({ input: {
+        batchId,
+        surfaceId: SURFACE,
+        kind: "bug",
+        title: "Unmapped chat needs a repository",
+        body: "No Graph relation resolves a repository for this chat.",
+      } }),
+    ).rejects.toThrow(/requires an explicit repository/);
+    // No issue was created and no filing effect was recorded.
+    expect(repository.events().some((event) => event.kind === "create")).toBe(false);
+    expect(inbox.effects(batchId).filter((effect) => effect.kind === "file_issue")).toHaveLength(0);
     operations.close();
     inbox.close();
   });
