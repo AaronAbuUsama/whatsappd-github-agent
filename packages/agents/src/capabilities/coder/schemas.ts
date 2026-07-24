@@ -43,6 +43,9 @@ export const coderJobInputSchema = v.pipe(
     repository: nonEmpty,
     issue: v.optional(positiveInteger),
     pullRequest: v.optional(positiveInteger),
+    // Launch-identity only (#211): a review_continuation carries the triggering review id so two distinct
+    // reviews of the same PR in one Batch produce distinct delegation work ids. The workflow never reads it.
+    reviewId: v.optional(positiveInteger),
     instructions: v.optional(nonEmpty),
     ...budgetEntries,
     brainWorkId: v.optional(nonEmpty),

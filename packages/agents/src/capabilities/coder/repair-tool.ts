@@ -136,6 +136,10 @@ export const createRepairPullRequestTool = () =>
             // is present, so a review_continuation without it silently loses its Graph wiring.
             issue: reservation.job.issue,
             pullRequest: input.pullRequest,
+            // Launch-identity uniqueness only: two distinct reviews for the SAME PR in one Batch have
+            // identical inputs otherwise, so the delegation work-id hash would collide and the second
+            // review's run would be deduped into the first's. The workflow does not read this field.
+            reviewId: input.reviewId,
             maxVerificationRounds: reservation.job.maxVerificationRounds,
             maxReviewCycles: reservation.job.maxReviewCycles,
           },

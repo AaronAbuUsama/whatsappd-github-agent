@@ -278,4 +278,39 @@ describe("repair_pull_request Brain tool (#211)", () => {
       registry.close();
     }
   });
+
+  it("round 8: two distinct reviews of the SAME PR in one Batch each launch their own run (no work-id collision)", async () => {
+    const registry = createCodingJobRegistry(":memory:");
+    registry.upsert(job); // maxReviewCycles 2
+    const root = mkdtempSync(join(tmpdir(), "ambient-repair-"));
+    roots.push(root);
+    const databasePath = join(root, "application.sqlite");
+    createConversationArchive(databasePath).close();
+    const inbox = createBrainInbox(databasePath, { providerChatIdForSurface: (s) => (s === SOURCE ? CHAT : undefined), now: () => "2026-07-24T00:00:00.000Z" });
+    const a = inbox.admitGitHubEvent({ githubAppId: "app-reviewer", deliveryId: "review-501", eventName: "pull_request_review", action: "submitted", repository: "acme/widgets", summary: "r1", detail: { review: { id: 501 }, pullRequest: { number: 42 } } });
+    const b = inbox.admitGitHubEvent({ githubAppId: "app-reviewer", deliveryId: "review-502", eventName: "pull_request_review", action: "submitted", repository: "acme/widgets", summary: "r2", detail: { review: { id: 502 }, pullRequest: { number: 42 } } });
+    const batch = inbox.claimBatch()!;
+    expect(batch.githubEvents.map((e) => e.id).sort()).toEqual([a.id, b.id].sort());
+    inbox.markBatchDispatched(batch.id, { dispatchId: "d", acceptedAt: "2026-07-24T00:00:01.000Z" });
+    const github = fakeGitHub();
+    configureCoderRuntime({ github: async () => github, sandbox: (() => ({})) as never, workspacesRoot: "/tmp", registry, coderAppSlug: "ambient-coder", reviewerAppSlug: SLUG });
+    let n = 0;
+    const launches: Record<string, unknown>[] = [];
+    configureDelegationRuntime({ inbox, wake: async () => undefined, providerChatIdForSurface: () => CHAT, findAdmittedRun: async () => undefined, admitWorkflow: async (_w, input) => { launches.push(input); return { runId: `run:${++n}` }; } });
+    const callWith = (reviewId: number, eventId: string) =>
+      createRepairPullRequestTool().run({ input: { batchId: batch.id, surfaceId: SOURCE, repository: "acme/widgets", pullRequest: 42, reviewId, evidenceIds: [eventId] } } as never) as Promise<Record<string, unknown>>;
+    try {
+      const r1 = await callWith(501, a.id);
+      const r2 = await callWith(502, b.id);
+      expect(r1).toMatchObject({ status: "launched", runId: "run:1" });
+      expect(r2).toMatchObject({ status: "launched", runId: "run:2" });
+      // Distinct work ids and two real admissions — the second review is NOT deduped into the first.
+      expect(r1.workId).not.toBe(r2.workId);
+      expect(launches).toHaveLength(2);
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(2);
+    } finally {
+      inbox.close();
+      registry.close();
+    }
+  });
 });

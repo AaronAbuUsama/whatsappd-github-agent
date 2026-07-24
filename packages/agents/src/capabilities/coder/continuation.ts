@@ -160,6 +160,10 @@ export const convertPullRequestToDraft = async (github: CoderGitHub, nodeId: str
  *
  * The marker match is restricted to OUR OWN bot's comments — by `botLogin` when known, else any
  * Bot author — so a human comment that quotes the marker is never adopted and edited (round-4 finding).
+ *
+ * ponytail: in the degraded fallback (coderAppSlug unresolved at boot → botLogin undefined), a match is
+ * any Bot-authored marker comment. A DIFFERENT bot posting a comment containing our exact private marker
+ * could then be adopted — a narrow two-part coincidence, accepted; upgrade path = always resolve the slug.
  */
 export const upsertLifecycleComment = async (
   github: CoderGitHub,
