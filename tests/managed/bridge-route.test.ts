@@ -21,6 +21,7 @@ const runtimeControl = (
     stages: ["admission", "dispatch", "settled-silent"],
   }),
   synchronizedChats,
+  reloadManagedChats: () => undefined,
   stop: async () => undefined,
 });
 

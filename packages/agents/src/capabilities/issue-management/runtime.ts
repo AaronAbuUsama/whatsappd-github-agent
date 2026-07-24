@@ -10,6 +10,12 @@ export const repositoryName = ({ owner, repo }: RepositoryRef): string => `${own
 
 export interface IssueManagementPolicy {
   authorize(requested?: string): RepositoryRef;
+  /**
+   * Live-reload the write allowlist in place (#179). The default repository is fixed at construction
+   * (a restart-only knob); only the allowlist Set is rebuilt, so `authorize` — already captured by
+   * the Speaker's issue tools — enforces the new allowlist with no restart.
+   */
+  reload(allowedRepositories: readonly string[]): void;
 }
 
 export const createIssueManagementPolicy = (
@@ -17,8 +23,13 @@ export const createIssueManagementPolicy = (
   allowedRepositories: readonly string[],
 ): IssueManagementPolicy => {
   parseRepository(defaultRepository);
-  const configured = allowedRepositories.length === 0 ? [defaultRepository] : allowedRepositories;
-  const allowed = new Set(configured.map((repository) => repositoryName(parseRepository(repository)).toLowerCase()));
+  const allowed = new Set<string>();
+  const load = (repositories: readonly string[]): void => {
+    const configured = repositories.length === 0 ? [defaultRepository] : repositories;
+    allowed.clear();
+    for (const repository of configured) allowed.add(repositoryName(parseRepository(repository)).toLowerCase());
+  };
+  load(allowedRepositories);
   return {
     authorize: (requested = defaultRepository) => {
       const repository = parseRepository(requested);
@@ -28,6 +39,7 @@ export const createIssueManagementPolicy = (
       }
       return repository;
     },
+    reload: (repositories) => load(repositories),
   };
 };
 

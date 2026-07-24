@@ -217,6 +217,12 @@ export const getWhatsAppRuntimeStatus = (): WhatsAppRuntimeStatus => structuredC
 
 export interface WhatsAppRuntimeControl {
   readonly stop: () => Promise<void>;
+  /**
+   * Live-reload the managed-chat authorization gate in place (#179): the newly added chats engage the
+   * gate with no restart and the WhatsApp stream is untouched. Only the authorization Set changes —
+   * the session, model, and port are restart-only and are never reached from here.
+   */
+  readonly reloadManagedChats: (chatIds: readonly string[]) => void;
   readonly synchronizedChats: () => Promise<readonly ChatCandidate[]>;
   readonly smokeCanary: (
     nonce: string,
@@ -307,6 +313,14 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   });
   speakerActivity.recoverDirectivesWith((dispatchId) => deliveries.directiveForDispatch(dispatchId));
   let activeCanary: { readonly chatId: string; readonly text: string } | undefined;
+  // Set once the account authenticates; a live gate reload needs it to activate a new chat's Surface
+  // (#179). Undefined until online, so a reload before pairing only opens the gate — as intended.
+  let authenticatedJid: string | undefined;
+  // The single source of truth for the managed-chat set, seeded from the static boot config and
+  // advanced by every reload (#179). The post-auth boot path reads THIS, not the original
+  // `options.managedChats` closure — so a reload that arrives while still pairing is not reverted
+  // when authentication completes and applies the (then-stale) startup set.
+  let currentManagedChats: readonly string[] = options.managedChats;
   const account = createWhatsAppAccount({
     storeDirectory: storeDir,
     archive: inbox.recorder,
@@ -371,7 +385,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
-    yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, options.managedChats));
+    authenticatedJid = authenticatedAccount.jid;
+    yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, currentManagedChats));
     yield* Effect.sync(() =>
       configureIntentEscalationRuntime({
         inbox: brainInbox,
@@ -418,9 +433,9 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     if (account.initialArchiveReady !== undefined && options.sessionFactory === undefined) {
       yield* Effect.promise(() => account.initialArchiveReady!());
       for (const state of historicalReplay.states()) {
-        if (!options.managedChats.includes(state.chatId)) historicalReplay.disable(state.chatId);
+        if (!currentManagedChats.includes(state.chatId)) historicalReplay.disable(state.chatId);
       }
-      for (const chatId of options.managedChats) {
+      for (const chatId of currentManagedChats) {
         const state = historicalReplay.get(chatId);
         if (state === undefined) historicalReplay.admit(chatId);
         else if (state.mode === "disabled") historicalReplay.retry(chatId);
@@ -501,13 +516,26 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     }
   });
   return {
+    reloadManagedChats: (chatIds) => {
+      currentManagedChats = chatIds;
+      gate.reload(chatIds);
+      // Re-run the SAME boot operation against the new set (#179): activateConfigured retires every
+      // active Surface not in the set and (re)activates the ones in it, preserving surface_ids for
+      // chats that remain. So a newly-authorized chat gains a Surface it can escalate through, AND a
+      // de-authorized chat's outbound Surface is retired — closing outbound Brain delivery in lockstep
+      // with the gate closing inbound. A no-op until the account is authenticated.
+      // ponytail: correct because every Surface binding originates from managedChats (boot + this
+      // reload are the only writers). If a Brain-opened DM binding outside managedChats is ever added,
+      // switch this to a configured-only retirement so it isn't swept.
+      if (authenticatedJid !== undefined) surfaces.activateConfigured(authenticatedJid, chatIds);
+    },
     synchronizedChats: async () => await account.synchronizedChats(),
     smokeCanary: async (nonce, timeoutMillis) => {
       const chatId = options.canaryChat;
       if (chatId === undefined) {
         throw new WhatsAppSmokeCanaryError(409, "No dedicated smoke canary group is configured.");
       }
-      if (!options.managedChats.some((managed) => managed.toLowerCase() === chatId.toLowerCase())) {
+      if (!currentManagedChats.some((managed) => managed.toLowerCase() === chatId.toLowerCase())) {
         throw new WhatsAppSmokeCanaryError(400, "The configured smoke canary group is not a Managed Chat.");
       }
       if (activeCanary !== undefined) {
