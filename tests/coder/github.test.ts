@@ -155,6 +155,11 @@ describe("upsertPullRequest — one open PR per head→base", () => {
     expect(pr).toEqual({ number: 10, url: "https://x/pr/10", created: true, draft: true });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ head: "agent/coder/issue-42", draft: true }));
   });
+
+  // The "review continuation must not open/mutate the wrong PR" guarantee moved OUT of upsertPullRequest
+  // into the single verifyLiveContinuation primitive (tested in continuation.test.ts / tool.test.ts):
+  // a run only reaches upsertPullRequest after re-verifying the PR is open with the head still on this
+  // branch, so upsertPullRequest simply updates the one open head→base PR.
 });
 
 describe("commitChanges — Git Data API out (blobs → tree → commit → ref)", () => {

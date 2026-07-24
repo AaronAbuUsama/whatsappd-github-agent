@@ -19,6 +19,15 @@ export interface CoderGitHub {
       repo: string;
       issue_number: number;
     }): Promise<{ data: { title: string; body?: string | null } }>;
+    // #211: PR-level lifecycle comments are issue comments; the over-budget notice is upserted on
+    // a hidden marker so redelivery/retry updates the one comment instead of duplicating it.
+    listComments(input: { owner: string; repo: string; issue_number: number; per_page: number; page: number }): Promise<{
+      data: ReadonlyArray<{ id: number; body?: string | null; user?: { login?: string; type?: string } | null }>;
+    }>;
+    createComment(input: { owner: string; repo: string; issue_number: number; body: string }): Promise<{
+      data: { id: number; html_url: string };
+    }>;
+    updateComment(input: { owner: string; repo: string; comment_id: number; body: string }): Promise<{ data: unknown }>;
   };
   readonly git: {
     getRef(input: { owner: string; repo: string; ref: string }): Promise<{ data: { object: { sha: string } } }>;
@@ -79,6 +88,28 @@ export interface CoderGitHub {
       title: string;
       body: string;
     }): Promise<{ data: unknown }>;
+    // #211 review continuation: the live PR head, branch ref, and head-repo identity — the
+    // structural fork/external guard (a fork's head.repo.full_name differs) and the exact live
+    // branch to repair. `node_id` is the GraphQL id for the draft-conversion mutation.
+    get(input: { owner: string; repo: string; pull_number: number }): Promise<{
+      data: {
+        number: number;
+        node_id?: string;
+        html_url: string;
+        title: string;
+        body?: string | null;
+        draft?: boolean;
+        state: string;
+        head: { sha: string; ref: string; repo: { full_name?: string } | null };
+        base: { ref: string };
+      };
+    }>;
+    // #211 finding 1: independently re-fetch the triggering review so the tool can verify, in trusted
+    // code, that it was a REQUEST_CHANGES authored by the configured Reviewer App — the model may not
+    // be trusted to assert the review's state or author.
+    getReview(input: { owner: string; repo: string; pull_number: number; review_id: number }): Promise<{
+      data: { state: string; user: { login: string } | null };
+    }>;
   };
 }
 

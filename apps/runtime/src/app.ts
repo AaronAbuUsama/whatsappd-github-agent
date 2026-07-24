@@ -11,6 +11,7 @@ import { createGraphStore } from "@ambient-agent/engine/graph/store.ts";
 import { seedRepositoryFacts } from "@ambient-agent/agents/capabilities/graph/seed-repositories.ts";
 import { installDelegationBridge } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { configureCoderRuntime } from "@ambient-agent/agents/capabilities/coder/runtime.ts";
+import { createCodingJobRegistry } from "@ambient-agent/agents/capabilities/coder/registry.ts";
 import { configureReviewerRuntime } from "@ambient-agent/agents/capabilities/reviewer/runtime.ts";
 import { reviewerSlug, type ReviewerGitHub } from "@ambient-agent/agents/capabilities/reviewer/github.ts";
 import { reviewer } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
@@ -59,13 +60,28 @@ import {
 const configureCoderRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
+  registry: ReturnType<typeof createCodingJobRegistry>,
+  reviewerAppSlug: string | undefined,
 ): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
   const resolver = createInstallationResolver(credential);
+  // #211 round-4: resolve the Coder App's own slug (App-identity JWT route) so the over-budget lifecycle
+  // comment is only ever matched to OUR bot's comment. Best-effort — a boot GitHub blip must not take the
+  // Coder path down, so failure leaves it undefined and the comment scan degrades to any Bot author.
+  let coderAppSlug: string | undefined;
+  try {
+    coderAppSlug = await reviewerSlug(githubAppJwtClient(credential) as unknown as ReviewerGitHub);
+  } catch (cause) {
+    console.warn("[coder] could not resolve the coder App slug; lifecycle-comment author filtering degrades to bot-type", cause);
+  }
   configureCoderRuntime({
     github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub,
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
+    registry,
+    // #211 finding 1: the repair tool authorizes a review only if authored by <reviewer-slug>[bot].
+    ...(reviewerAppSlug === undefined ? {} : { reviewerAppSlug }),
+    ...(coderAppSlug === undefined ? {} : { coderAppSlug }),
   });
 };
 
@@ -138,8 +154,13 @@ export const createAmbientAgentApp = async ({
   // The Coder Specialist (#158) runs under its own App identity in the config-bound per-job
   // sandbox the selector resolved (ADR 0021, #251) — shared with the Reviewer. A missing or
   // mispasted coder App credential fails boot loudly rather than mounting a dead capability.
-  await configureCoderRuntimeBinding(paths, agentSandbox);
+  // #211: the coding-job registry — the durable PR→job map that lets a Reviewer REQUEST_CHANGES
+  // find the issue/branch/budgets to repair against. Its own SQLite file (not the audited,
+  // migration-governed application database), rebuilt lazily; it holds no GitHub-owned review state.
+  const codingJobRegistry = createCodingJobRegistry(join(dirname(paths.applicationDatabase), "coding-jobs.sqlite"));
+  // Resolve the Reviewer App first so its slug can authorize repair reviews in the Coder runtime (#211).
   const reviewerProvisioned = await configureReviewerRuntimeBinding(paths, agentSandbox);
+  await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry, reviewerProvisioned?.appSlug);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
   // The Speaker/Planner file one identity, but issues may be filed across orgs — resolve the
   // installation-scoped client per issue repository (multi-org). Every issue op carries a full
