@@ -33,6 +33,8 @@
     "./capabilities/coder/workflow.ts": "./src/capabilities/coder/workflow.ts",
     "./capabilities/coder/workspace.ts": "./src/capabilities/coder/workspace.ts",
     "./capabilities/coder/runtime.ts": "./src/capabilities/coder/runtime.ts",
+    "./capabilities/coder/registry.ts": "./src/capabilities/coder/registry.ts",
+    "./capabilities/coder/continuation.ts": "./src/capabilities/coder/continuation.ts",
     "./capabilities/reviewer/workflow.ts": "./src/capabilities/reviewer/workflow.ts",
     "./capabilities/reviewer/runtime.ts": "./src/capabilities/reviewer/runtime.ts",
     "./capabilities/reviewer/github.ts": "./src/capabilities/reviewer/github.ts"

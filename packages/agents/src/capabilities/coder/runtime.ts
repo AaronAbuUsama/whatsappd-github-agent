@@ -3,6 +3,7 @@ import type { SandboxFactory } from "@flue/runtime";
 import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repository.ts";
 import { createFlueGlobal } from "@ambient-agent/engine/shared/flue-global.ts";
 import type { CoderGitHub } from "./github.ts";
+import type { CodingJobRegistry } from "./registry.ts";
 
 /**
  * The Coder's deployment bindings, configured once at the composition root — never
@@ -17,6 +18,12 @@ export interface CoderRuntime {
   readonly github: (repo: GitHubRepositoryRef) => Promise<CoderGitHub>;
   readonly sandbox: SandboxFactory;
   readonly workspacesRoot: string;
+  /**
+   * #211: the coding-job registry. Present in production; a `review_continuation` run and the
+   * PR-journey record both require it, but `new_issue` runs stay functional without it (the
+   * legacy delegation tests configure no registry), so it is optional at the boundary.
+   */
+  readonly registry?: CodingJobRegistry;
 }
 
 const runtimeSlot = createFlueGlobal<CoderRuntime>(

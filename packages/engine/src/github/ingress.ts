@@ -136,6 +136,10 @@ export type GitHubIngressResult =
   | { readonly status: "deferred"; readonly deliveryId: string; readonly repository: string; readonly reason: string }
   | { readonly status: "failed"; readonly record: GitHubIngressRecord }
   | { readonly status: "review-launched"; readonly deliveryId: string; readonly repository: string; readonly runId: string }
+  // #211: a Reviewer-App REQUEST_CHANGES on a registered Coder PR launched a repair run, or was
+  // idempotently handled without a run (over-budget demotion, or a duplicate review event).
+  | { readonly status: "repair-launched"; readonly deliveryId: string; readonly repository: string; readonly runId: string }
+  | { readonly status: "repair-handled"; readonly deliveryId: string; readonly repository: string }
   | {
       // The event was admitted to the single Brain up-inbox (§4); the Brain — not the ingress —
       // decides which Surface(s) hear it. `dispatchId` is the up-inbox admission id.
@@ -168,6 +172,18 @@ export const createGitHubIngress = (options: {
   readonly review?: {
     readonly repositories: readonly string[];
     readonly launch: (input: { repository: string; pullRequest: number; expectedHeadSha: string }) => Promise<{ runId: string }>;
+    /**
+     * #211: launch a repair for a Reviewer-App REQUEST_CHANGES on a registered Coder PR. The
+     * callback owns registration, the idempotency guard (keyed on review id), and the two-cycle
+     * budget: it either launches a `review_continuation` run, idempotently `handled` the event
+     * without a run (over-budget demotion to draft + one lifecycle comment, or a duplicate review),
+     * or reports the PR `unregistered` (external/fork) — which is never mutated and reaches the Brain.
+     */
+    readonly repair?: (input: { repository: string; pullRequest: number; reviewId: number }) => Promise<
+      | { readonly status: "launched"; readonly runId: string }
+      | { readonly status: "handled" }
+      | { readonly status: "unregistered" }
+    >;
     readonly command?: {
       readonly appSlug: string;
       readonly permission: (input: { owner: string; repo: string; username: string }) => Promise<string>;
@@ -367,6 +383,46 @@ export const createGitHubIngress = (options: {
     } else if (isPullRequest && "pull_request" in payload && payload.action !== "opened") {
       settle({ status: "unsupported", repository, settledAt: now().toISOString() });
       return { status: "unsupported", deliveryId: delivery.deliveryId };
+    }
+
+    // #211 repair: only a REQUEST_CHANGES by the configured Reviewer App, on an allowlisted repo,
+    // can launch automatic repair. The callback owns registration + idempotency + the budget; an
+    // unregistered (external/fork) PR is never mutated and falls through to the Brain up-inbox.
+    if (
+      isPullRequestReviewSubmitted &&
+      "review" in payload &&
+      payload.review.state === "changes_requested" &&
+      options.review?.repair !== undefined &&
+      options.review.command !== undefined &&
+      options.review.repositories.some((candidate) => candidate.toLowerCase() === repository) &&
+      payload.sender.login.toLowerCase() === `${options.review.command.appSlug.toLowerCase()}[bot]`
+    ) {
+      try {
+        const outcome = await options.review.repair({
+          repository,
+          pullRequest: payload.pull_request.number,
+          reviewId: payload.review.id,
+        });
+        if (outcome.status !== "unregistered") {
+          settle({
+            status: "done",
+            repository,
+            ambience: "ambience",
+            dispatchId: outcome.status === "launched" ? outcome.runId : `repair-handled:${payload.review.id}`,
+            acceptedAt: receivedAt,
+            settledAt: now().toISOString(),
+          });
+          return outcome.status === "launched"
+            ? { status: "repair-launched", deliveryId: delivery.deliveryId, repository, runId: outcome.runId }
+            : { status: "repair-handled", deliveryId: delivery.deliveryId, repository };
+        }
+        // unregistered → fall through to the Brain up-inbox admission below.
+      } catch (cause) {
+        const error = errorMessage(cause);
+        settle({ status: "failed", repository, error, settledAt: now().toISOString() });
+        logger.error({ event: "github.ingress.failed", deliveryId: delivery.deliveryId, repository, error });
+        return { status: "failed", record: getRecord()! };
+      }
     }
 
     // One immutable, provenance-bearing event for the single Brain up-inbox (§4). Routing is the

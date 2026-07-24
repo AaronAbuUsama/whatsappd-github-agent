@@ -30,6 +30,8 @@ import {
 } from "./schemas.ts";
 export type { CoderGitHub } from "./github.ts";
 import { coderBranch, downloadTarball, fetchDefaultBranch, fetchIssue, getBranchHead } from "./github.ts";
+import { fetchReviewContinuation, renderReviewContinuation } from "./continuation.ts";
+import type { CodingJobRecord } from "./registry.ts";
 import { createOpenPullRequestTool } from "./tool.ts";
 import {
   coderOutcome,
@@ -47,7 +49,7 @@ export interface CodingWaypoint {
   readonly event: "coding.waypoint";
   readonly schemaVersion: 1;
   readonly jobId: string;
-  readonly mode: "new_issue";
+  readonly mode: "new_issue" | "review_continuation";
   readonly stage: CodingStage;
   readonly status: CodingWaypointStatus;
   readonly reviewCycle: number;
@@ -217,12 +219,32 @@ const run = async ({ harness, input, log }: {
   input: CoderJobInput;
   log: FlueLogger;
 }): Promise<CoderResult> => {
-  const { github: resolveGithub, workspacesRoot } = getCoderRuntime();
+  const { github: resolveGithub, workspacesRoot, registry } = getCoderRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
   const github = await resolveGithub(repo);
-  const branch = coderBranch(input.issue);
   const jobId = crypto.randomUUID();
-  const reviewCycle = 0;
+  const isContinuation = input.mode === "review_continuation";
+  // A review_continuation run is keyed by the live PR it repairs; the underlying issue, branch, and
+  // consumed budget all come from the coding-job registry (never the caller). Being registered is
+  // the safety key — a row exists only for a Coder-authored PR on its own branch, so an external or
+  // fork-headed PR is never resolvable here. Defense in depth: the ingress already gates on this.
+  let job: CodingJobRecord | undefined;
+  if (isContinuation) {
+    if (registry === undefined) throw new Error("review_continuation requires a coding-job registry");
+    job = registry.get(input.repository, input.pullRequest!);
+    if (job === undefined) {
+      return {
+        outcome: "no-op",
+        jobId,
+        summary: `Pull request #${input.pullRequest} is not registered to a coding job; no repair run.`,
+        verificationRounds: 0,
+        reviewCycle: 0,
+      };
+    }
+  }
+  const issueNumber = isContinuation ? job!.issue : input.issue!;
+  const branch = isContinuation ? job!.branch : coderBranch(issueNumber);
+  const reviewCycle = isContinuation ? job!.reviewCycle : 0;
   let activeStage: CodingStage = "workflow";
   const waypoint = (
     stage: CodingStage,
@@ -256,13 +278,36 @@ const run = async ({ harness, input, log }: {
 
   waypoint("workflow", "started");
   try {
-    const issue = await fetchIssue(github, repo, input.issue);
+    // Review continuation refetches the live PR and repairs the EXACT live Coder branch. The
+    // fork/external guard is structural and hard: a fork-headed PR (head.repo differs), a PR whose
+    // head branch is no longer the Coder branch, or a closed PR is never mutated — return blocked.
+    let continuationFraming = "";
+    if (isContinuation) {
+      const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
+      const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
+      const forkHeaded = live.headRepoFull !== undefined && live.headRepoFull.toLowerCase() !== expectedHeadRepo;
+      if (live.state !== "open" || forkHeaded || live.headRef !== branch) {
+        waypoint("workflow", "completed");
+        return {
+          outcome: "blocked",
+          branch,
+          jobId,
+          summary:
+            `Pull request #${input.pullRequest} head is not the live Coder branch (${branch}); ` +
+            "refusing to mutate an external, fork-headed, moved, or closed pull request.",
+          verificationRounds: 0,
+          reviewCycle,
+        };
+      }
+      continuationFraming = renderReviewContinuation(live);
+    }
+    const issue = await fetchIssue(github, repo, issueNumber);
     const base = await fetchDefaultBranch(github, repo);
     const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
     const existingBranchHead = await getBranchHead(github, repo, branch);
     const seedBranchHead = existingBranchHead ?? baseSha;
     const tarball = await downloadTarball(github, repo, seedBranchHead);
-    const repoDir = `${workspacesRoot}/issue-${input.issue}`;
+    const repoDir = `${workspacesRoot}/issue-${issueNumber}`;
     const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
 
     try {
@@ -277,12 +322,13 @@ const run = async ({ harness, input, log }: {
       const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
       const before = await snapshot();
       const session = await harness.session("coordinator");
-      const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+      const requesterFraming = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+      const framing = `${requesterFraming}${continuationFraming}`;
       const graphContext = renderGraphContext(input.graphContext);
       const coordinated = await runInternalCodingLoop({
         session,
         plannerPrompt: plannerTaskPrompt({
-          issue: input.issue,
+          issue: issueNumber,
           title: issue.title,
           body: issue.body,
           repository: input.repository,
@@ -290,8 +336,8 @@ const run = async ({ harness, input, log }: {
           framing,
           graphContext,
         }),
-        coderPrompt: (round, plan, prior) => coderTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan, priorVerification: prior }),
-        verifierPrompt: (round, plan) => verifierTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan }),
+        coderPrompt: (round, plan, prior) => coderTaskPrompt({ issue: issueNumber, title: issue.title, repoDir, round, plan, priorVerification: prior }),
+        verifierPrompt: (round, plan) => verifierTaskPrompt({ issue: issueNumber, title: issue.title, repoDir, round, plan }),
         cwd: repoDir,
         maxVerificationRounds: input.maxVerificationRounds,
         waypoint,
@@ -306,7 +352,7 @@ const run = async ({ harness, input, log }: {
         base,
         seedBranchHead,
         seedBranchExisted: existingBranchHead !== undefined,
-        issue: input.issue,
+        issue: issueNumber,
         issueTitle: issue.title,
         before,
         requiredDraft,
@@ -317,7 +363,7 @@ const run = async ({ harness, input, log }: {
 
       waypoint("publication", "started", { draft: requiredDraft });
       await session.task(publicationTaskPrompt({
-        issue: input.issue,
+        issue: issueNumber,
         title: issue.title,
         plan: coordinated.plan,
         verification: coordinated.verification,
@@ -329,8 +375,23 @@ const run = async ({ harness, input, log }: {
       });
       waypoint("publication", "completed", { pullRequest: record.pr?.number, draft: record.pr?.draft ?? requiredDraft });
 
+      // Register (or refresh) the PR→job journey so a later Reviewer REQUEST_CHANGES can find the
+      // issue, branch, and budgets to repair against. Idempotent and cycle-preserving: a
+      // review_continuation republish refreshes the same row without resetting the consumed budget.
+      if (record.pr !== undefined) {
+        registry?.upsert({
+          repository: input.repository,
+          prNumber: record.pr.number,
+          issue: issueNumber,
+          branch,
+          base,
+          maxVerificationRounds: input.maxVerificationRounds,
+          maxReviewCycles: input.maxReviewCycles,
+        });
+      }
+
       const result = coderOutcome(record.pr, {
-        issue: input.issue,
+        issue: issueNumber,
         branch,
         jobId,
         finalVerdict: coordinated.verification.verdict,
