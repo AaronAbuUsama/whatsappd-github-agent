@@ -1,7 +1,6 @@
 import type { GitHubRepositoryRef } from "@ambient-agent/engine/github/repository.ts";
 
 import type { CoderGitHub } from "./github.ts";
-import type { CodingJobRegistry } from "./registry.ts";
 
 /**
  * #211 review continuation — the live GitHub PR state a repair run is planned from. GitHub is
@@ -17,6 +16,9 @@ export interface ReviewContinuationState {
   readonly headSha: string;
   readonly headRef: string;
   readonly headRepoFull: string | undefined;
+  // The live PR's actual base branch — the run must publish against THIS, not a re-derived default
+  // branch, or a PR whose base is not the repo default would update the wrong PR (finding 3).
+  readonly baseRef: string;
   readonly reviews: readonly { readonly state: string; readonly author: string; readonly body: string }[];
   readonly unresolvedThreads: readonly {
     readonly path: string | undefined;
@@ -115,6 +117,7 @@ export const fetchReviewContinuation = async (
     headSha: pr.head.sha,
     headRef: pr.head.ref,
     headRepoFull: pr.head.repo?.full_name,
+    baseRef: pr.base.ref,
     reviews,
     unresolvedThreads,
   };
@@ -177,55 +180,28 @@ export const upsertLifecycleComment = async (
   }
 };
 
-/** The ingress-facing repair outcome: a launched run, an idempotently-handled non-launch, or an unowned PR. */
-export type RepairLaunchResult =
-  | { readonly status: "launched"; readonly runId: string }
-  | { readonly status: "handled" }
-  | { readonly status: "unregistered" };
-
 /**
- * The trusted, idempotent repair entry point wired into the GitHub ingress. It admits one
- * REQUEST_CHANGES review through the registry (which atomically dedups on review id and consumes
- * a repair cycle only when within budget), then either invokes a `review_continuation` Coder run
- * on the exact live branch, or — when the qualifying rejection would exceed the budget — launches
- * NO run and instead demotes the PR to draft with one idempotent lifecycle comment. An unregistered
- * PR (external contributor / fork) is never touched and falls through to the Brain.
+ * The over-budget terminal effect: demote the live PR to draft (if it is not already) and upsert the
+ * one idempotent lifecycle comment. Both operations are idempotent, so the Brain tool can safely
+ * re-run this on retry without duplicating anything. Returns the PR URL for the Brain to report.
  */
-export const createRepairLauncher = (deps: {
-  readonly registry: CodingJobRegistry;
-  readonly github: (repo: GitHubRepositoryRef) => Promise<CoderGitHub>;
-  readonly invokeCoder: (input: Record<string, unknown>) => Promise<{ runId: string }>;
-  readonly parseRepository: (repository: string) => GitHubRepositoryRef;
-}) => async (input: { repository: string; pullRequest: number; reviewId: number }): Promise<RepairLaunchResult> => {
-  const decision = deps.registry.admitRepair(input.repository, input.pullRequest, input.reviewId);
-  if (decision.status === "unregistered") return { status: "unregistered" };
-  if (decision.status === "duplicate") return { status: "handled" };
-
-  if (decision.status === "launched") {
-    const { runId } = await deps.invokeCoder({
-      mode: "review_continuation",
-      repository: decision.job.repository,
-      pullRequest: input.pullRequest,
-      maxVerificationRounds: decision.job.maxVerificationRounds,
-      maxReviewCycles: decision.job.maxReviewCycles,
-    });
-    return { status: "launched", runId };
-  }
-
-  // over-budget: launch nothing; demote to draft and post the one idempotent lifecycle comment.
-  const repo = deps.parseRepository(decision.job.repository);
-  const github = await deps.github(repo);
-  const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: input.pullRequest });
+export const demoteOverBudget = async (
+  github: CoderGitHub,
+  repo: GitHubRepositoryRef,
+  prNumber: number,
+  maxReviewCycles: number,
+): Promise<{ prUrl: string }> => {
+  const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: prNumber });
   if ((pr.draft ?? false) === false && pr.node_id !== undefined) {
     await convertPullRequestToDraft(github, pr.node_id);
   }
   await upsertLifecycleComment(
     github,
     repo,
-    input.pullRequest,
-    `The standalone Reviewer requested changes again, but this pull request has reached its configured repair budget ` +
-      `of ${decision.job.maxReviewCycles} external review cycle${decision.job.maxReviewCycles === 1 ? "" : "s"}. ` +
-      `No further automatic repair will run; converting to draft for human attention.`,
+    prNumber,
+    `Changes were requested again, but this pull request has reached its configured repair budget of ` +
+      `${maxReviewCycles} external review cycle${maxReviewCycles === 1 ? "" : "s"}. No further automatic repair ` +
+      `will run; converting to draft for human attention.`,
   );
-  return { status: "handled" };
+  return { prUrl: pr.html_url };
 };

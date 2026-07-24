@@ -1,23 +1,69 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { CoderGitHub } from "../../packages/agents/src/capabilities/coder/github.ts";
-import { createCodingJobRegistry } from "../../packages/agents/src/capabilities/coder/registry.ts";
-import { createRepairLauncher } from "../../packages/agents/src/capabilities/coder/continuation.ts";
+import { demoteOverBudget, fetchReviewContinuation } from "../../packages/agents/src/capabilities/coder/continuation.ts";
 
-const job = {
-  repository: "acme/widgets",
-  prNumber: 42,
-  issue: 210,
-  branch: "agent/coder/issue-210",
-  base: "main",
-  maxVerificationRounds: 3,
-  maxReviewCycles: 2,
-};
+const repo = { owner: "acme", repo: "widgets" };
 
-const parseRepository = (repository: string) => {
-  const [owner, repo] = repository.split("/");
-  return { owner: owner!, repo: repo! };
-};
+describe("fetchReviewContinuation (#211)", () => {
+  it("carries the live head, the actual base ref, formal reviews, and paginated unresolved threads", async () => {
+    const pages = [
+      {
+        repository: {
+          pullRequest: {
+            reviews: { nodes: [{ state: "CHANGES_REQUESTED", body: "Fix the guard", author: { login: "reviewer[bot]" } }] },
+            reviewThreads: {
+              pageInfo: { hasNextPage: true, endCursor: "c1" },
+              nodes: [
+                { isResolved: false, path: "a.ts", line: 10, comments: { nodes: [{ body: "here", author: { login: "reviewer[bot]" } }] } },
+                { isResolved: true, path: "b.ts", line: 3, comments: { nodes: [{ body: "resolved", author: { login: "reviewer[bot]" } }] } },
+              ],
+            },
+          },
+        },
+      },
+      {
+        repository: {
+          pullRequest: {
+            reviews: { nodes: [] },
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [{ isResolved: false, path: "c.ts", line: 7, comments: { nodes: [{ body: "and here", author: null }] } }],
+            },
+          },
+        },
+      },
+    ];
+    const graphql = vi.fn(async () => pages.shift());
+    const github = {
+      graphql,
+      pulls: {
+        get: vi.fn(async () => ({
+          data: {
+            number: 42,
+            node_id: "PR_node",
+            html_url: "https://github.com/acme/widgets/pull/42",
+            title: "t",
+            draft: false,
+            state: "open",
+            head: { sha: "h", ref: "agent/coder/issue-210", repo: { full_name: "acme/widgets" } },
+            base: { ref: "release-2" },
+          },
+        })),
+      },
+    } as unknown as CoderGitHub;
+
+    const state = await fetchReviewContinuation(github, repo, 42);
+    // finding 3: the live PR base is carried, not re-derived from the default branch.
+    expect(state.baseRef).toBe("release-2");
+    expect(state.headRef).toBe("agent/coder/issue-210");
+    expect(state.headRepoFull).toBe("acme/widgets");
+    expect(state.reviews).toEqual([{ state: "CHANGES_REQUESTED", author: "reviewer[bot]", body: "Fix the guard" }]);
+    // Only UNRESOLVED threads, across BOTH pages; the resolved one is dropped.
+    expect(state.unresolvedThreads.map((t) => t.path)).toEqual(["a.ts", "c.ts"]);
+    expect(graphql).toHaveBeenCalledTimes(2);
+  });
+});
 
 /** A github double that records mutations, seeded with the live PR draft state. */
 const fakeGitHub = (draft: boolean) => {
@@ -30,7 +76,7 @@ const fakeGitHub = (draft: boolean) => {
       return {};
     }),
     pulls: {
-      get: vi.fn(async () => ({ data: { number: 42, node_id: "PR_node", draft, state: "open", html_url: "", title: "", head: { sha: "h", ref: job.branch, repo: { full_name: "acme/widgets" } }, base: { ref: "main" } } })),
+      get: vi.fn(async () => ({ data: { number: 42, node_id: "PR_node", draft, state: "open", html_url: "https://github.com/acme/widgets/pull/42", title: "", head: { sha: "h", ref: "agent/coder/issue-210", repo: { full_name: "acme/widgets" } }, base: { ref: "main" } } })),
     },
     issues: {
       listComments: vi.fn(async () => ({ data: comments })),
@@ -49,83 +95,18 @@ const fakeGitHub = (draft: boolean) => {
   return { github, comments, graphqlCalls };
 };
 
-describe("repair launcher (#211)", () => {
-  it("HARD SAFETY: an unregistered (external/fork) PR is never mutated and launches nothing", async () => {
-    const registry = createCodingJobRegistry(":memory:");
-    const invokeCoder = vi.fn(async () => ({ runId: "r" }));
-    const github = vi.fn(async () => fakeGitHub(false).github);
-    try {
-      const repair = createRepairLauncher({ registry, github, invokeCoder, parseRepository });
-      // No registry row for PR 99 → a contributor's/fork PR the Coder never opened.
-      expect(await repair({ repository: "acme/widgets", pullRequest: 99, reviewId: 1 })).toEqual({ status: "unregistered" });
-      expect(invokeCoder).not.toHaveBeenCalled();
-      expect(github).not.toHaveBeenCalled();
-    } finally {
-      registry.close();
-    }
-  });
-
-  it("launches a review_continuation run on the exact live branch for a registered PR", async () => {
-    const registry = createCodingJobRegistry(":memory:");
-    registry.upsert(job);
-    const invokeCoder = vi.fn(async () => ({ runId: "run-1" }));
-    const github = vi.fn(async () => fakeGitHub(false).github);
-    try {
-      const repair = createRepairLauncher({ registry, github, invokeCoder, parseRepository });
-      expect(await repair({ repository: "acme/widgets", pullRequest: 42, reviewId: 1 })).toEqual({ status: "launched", runId: "run-1" });
-      expect(invokeCoder).toHaveBeenCalledWith({
-        mode: "review_continuation",
-        repository: "acme/widgets",
-        pullRequest: 42,
-        maxVerificationRounds: 3,
-        maxReviewCycles: 2,
-      });
-      // No PR mutation on a launch — GitHub is the durable boundary; the run does the writing.
-      expect(github).not.toHaveBeenCalled();
-    } finally {
-      registry.close();
-    }
-  });
-
-  it("NEGATIVE: exceeding the budget launches no run; it demotes to draft with ONE idempotent comment", async () => {
-    const registry = createCodingJobRegistry(":memory:");
-    registry.upsert({ ...job, maxReviewCycles: 0 });
-    const invokeCoder = vi.fn(async () => ({ runId: "r" }));
+describe("demoteOverBudget (#211)", () => {
+  it("converts a ready PR to draft and upserts exactly ONE idempotent lifecycle comment", async () => {
     const seam = fakeGitHub(false);
-    const github = vi.fn(async () => seam.github);
-    try {
-      const repair = createRepairLauncher({ registry, github, invokeCoder, parseRepository });
-      // First over-budget review: no run, PR converted to draft, one lifecycle comment created.
-      expect(await repair({ repository: "acme/widgets", pullRequest: 42, reviewId: 1 })).toEqual({ status: "handled" });
-      expect(invokeCoder).not.toHaveBeenCalled();
-      expect(seam.graphqlCalls.some((q) => q.includes("convertPullRequestToDraft"))).toBe(true);
-      expect(seam.comments).toHaveLength(1);
-      const firstBody = seam.comments[0]!.body;
+    const first = await demoteOverBudget(seam.github, repo, 42, 2);
+    expect(first.prUrl).toBe("https://github.com/acme/widgets/pull/42");
+    expect(seam.graphqlCalls.some((q) => q.includes("convertPullRequestToDraft"))).toBe(true);
+    expect(seam.comments).toHaveLength(1);
+    const body = seam.comments[0]!.body;
 
-      // A second, distinct over-budget review updates the SAME comment — never a duplicate.
-      expect(await repair({ repository: "acme/widgets", pullRequest: 42, reviewId: 2 })).toEqual({ status: "handled" });
-      expect(seam.comments).toHaveLength(1);
-      expect(seam.comments[0]!.body).toBe(firstBody);
-      expect(invokeCoder).not.toHaveBeenCalled();
-    } finally {
-      registry.close();
-    }
-  });
-
-  it("NEGATIVE: a repeated identical review event neither launches nor re-comments", async () => {
-    const registry = createCodingJobRegistry(":memory:");
-    registry.upsert(job);
-    const invokeCoder = vi.fn(async () => ({ runId: "run-1" }));
-    const seam = fakeGitHub(false);
-    const github = vi.fn(async () => seam.github);
-    try {
-      const repair = createRepairLauncher({ registry, github, invokeCoder, parseRepository });
-      await repair({ repository: "acme/widgets", pullRequest: 42, reviewId: 7 });
-      expect(await repair({ repository: "acme/widgets", pullRequest: 42, reviewId: 7 })).toEqual({ status: "handled" });
-      expect(invokeCoder).toHaveBeenCalledTimes(1);
-      expect(seam.comments).toHaveLength(0);
-    } finally {
-      registry.close();
-    }
+    // A retry (crash recovery, or a later over-budget review) updates the SAME comment, never duplicates.
+    await demoteOverBudget(seam.github, repo, 42, 2);
+    expect(seam.comments).toHaveLength(1);
+    expect(seam.comments[0]!.body).toBe(body);
   });
 });

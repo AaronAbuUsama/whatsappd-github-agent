@@ -282,6 +282,9 @@ const run = async ({ harness, input, log }: {
     // fork/external guard is structural and hard: a fork-headed PR (head.repo differs), a PR whose
     // head branch is no longer the Coder branch, or a closed PR is never mutated — return blocked.
     let continuationFraming = "";
+    // The PR base to publish against: the repo default for a new issue; the LIVE PR's actual base for
+    // a review continuation, so a PR based off a non-default branch updates the right PR (finding 3).
+    let continuationBase: string | undefined;
     if (isContinuation) {
       const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
       const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
@@ -299,10 +302,11 @@ const run = async ({ harness, input, log }: {
           reviewCycle,
         };
       }
+      continuationBase = live.baseRef;
       continuationFraming = renderReviewContinuation(live);
     }
     const issue = await fetchIssue(github, repo, issueNumber);
-    const base = await fetchDefaultBranch(github, repo);
+    const base = continuationBase ?? (await fetchDefaultBranch(github, repo));
     const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
     const existingBranchHead = await getBranchHead(github, repo, branch);
     const seedBranchHead = existingBranchHead ?? baseSha;

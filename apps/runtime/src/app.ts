@@ -12,12 +12,10 @@ import { seedRepositoryFacts } from "@ambient-agent/agents/capabilities/graph/se
 import { installDelegationBridge } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { configureCoderRuntime } from "@ambient-agent/agents/capabilities/coder/runtime.ts";
 import { createCodingJobRegistry } from "@ambient-agent/agents/capabilities/coder/registry.ts";
-import { createRepairLauncher } from "@ambient-agent/agents/capabilities/coder/continuation.ts";
 import { configureReviewerRuntime } from "@ambient-agent/agents/capabilities/reviewer/runtime.ts";
 import { reviewerSlug, type ReviewerGitHub } from "@ambient-agent/agents/capabilities/reviewer/github.ts";
 import { reviewer } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
-import { coder, type CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
-import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
+import type { CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
 import {
   createInstallationResolver,
   githubAppJwtClient,
@@ -63,18 +61,15 @@ const configureCoderRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
   registry: ReturnType<typeof createCodingJobRegistry>,
-): Promise<{ github: (repo: { owner: string; repo: string }) => Promise<CoderGitHub> }> => {
+): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
   const resolver = createInstallationResolver(credential);
-  const github = async (repo: { owner: string; repo: string }) =>
-    (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub;
   configureCoderRuntime({
-    github,
+    github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub,
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
     registry,
   });
-  return { github };
 };
 
 /**
@@ -150,7 +145,7 @@ export const createAmbientAgentApp = async ({
   // find the issue/branch/budgets to repair against. Its own SQLite file (not the audited,
   // migration-governed application database), rebuilt lazily; it holds no GitHub-owned review state.
   const codingJobRegistry = createCodingJobRegistry(join(dirname(paths.applicationDatabase), "coding-jobs.sqlite"));
-  const coderBinding = await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry);
+  await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry);
   const reviewerProvisioned = await configureReviewerRuntimeBinding(paths, agentSandbox);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
   // The Speaker/Planner file one identity, but issues may be filed across orgs — resolve the
@@ -205,16 +200,6 @@ export const createAmbientAgentApp = async ({
             const admitted = await invoke(reviewer, { input });
             return admitted;
           },
-          // #211: a Reviewer-App REQUEST_CHANGES on a registered Coder PR repairs it. The launcher
-          // owns the registry idempotency guard + two-cycle budget; over-budget demotes to draft
-          // and posts one lifecycle comment under the Coder App identity, launching no run.
-          repair: createRepairLauncher({
-            registry: codingJobRegistry,
-            github: coderBinding.github,
-            invokeCoder: (input) => invoke(coder, { input } as never),
-            parseRepository: (repository) =>
-              parseGitHubRepository(repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`)),
-          }),
           command: {
             appSlug: reviewerProvisioned.appSlug,
             permission: async (input) => {

@@ -25,15 +25,15 @@ export interface CodingJobRecord {
 }
 
 /**
- * The atomic decision for one qualifying REQUEST_CHANGES review, keyed on the review id so a
- * webhook redelivery or a repeated identical review event converges rather than launching a
- * second run / demoting twice. `launched` consumes one repair cycle; `over-budget` is the
- * qualifying rejection that would exceed the configured budget — it launches NO run and the
- * caller demotes the PR to draft with one idempotent lifecycle comment; `duplicate` is a
- * review id already decided (idempotent no-op); `unregistered` is not a Coder-owned PR.
+ * The read-only verdict for one REQUEST_CHANGES review, keyed on the review id so a repeated
+ * identical review (a webhook redelivery, or the Brain re-processing an unsettled Batch after a
+ * crash) converges rather than launching a second run / demoting twice. `within-budget` and
+ * `over-budget` are provisional — nothing is consumed until `commitRepair` runs AFTER the side
+ * effect actually succeeds, so a failed launch/demotion never silently wastes a cycle (finding 2).
+ * `duplicate` is a review already committed (idempotent no-op); `unregistered` is not a Coder PR.
  */
-export type RepairDecision =
-  | { readonly status: "launched"; readonly job: CodingJobRecord }
+export type RepairCheck =
+  | { readonly status: "within-budget"; readonly job: CodingJobRecord }
   | { readonly status: "over-budget"; readonly job: CodingJobRecord }
   | { readonly status: "duplicate"; readonly previous: "launched" | "over-budget" }
   | { readonly status: "unregistered" };
@@ -42,8 +42,15 @@ export interface CodingJobRegistry {
   /** Record (or refresh) a Coder-owned PR's journey and budgets. Preserves `reviewCycle`. */
   upsert(job: Omit<CodingJobRecord, "reviewCycle">): void;
   get(repository: string, prNumber: number): CodingJobRecord | undefined;
-  /** Atomically decide and record one review's repair, consuming a cycle only when launched. */
-  admitRepair(repository: string, prNumber: number, reviewId: number): RepairDecision;
+  /** Pure read: what would this review do? Consumes nothing — call `commitRepair` after the effect. */
+  checkRepair(repository: string, prNumber: number, reviewId: number): RepairCheck;
+  /**
+   * Finalize one review AFTER its side effect succeeded: idempotently record the review id and, for a
+   * launch, consume exactly one repair cycle. Committing after the effect means a crash BEFORE this
+   * leaves the review un-recorded — the worst case is a visible, recoverable re-launch on retry, never
+   * a silently-wasted budget (finding 2, option b). A repeated commit for the same review is a no-op.
+   */
+  commitRepair(repository: string, prNumber: number, reviewId: number, outcome: "launched" | "over-budget"): void;
   close(): void;
 }
 
@@ -110,7 +117,7 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
     "SELECT outcome FROM coding_job_repairs WHERE repository = ? AND pr_number = ? AND review_id = ?",
   );
   const insertRepair = database.prepare(
-    "INSERT INTO coding_job_repairs (repository, pr_number, review_id, outcome) VALUES (?, ?, ?, ?)",
+    "INSERT OR IGNORE INTO coding_job_repairs (repository, pr_number, review_id, outcome) VALUES (?, ?, ?, ?)",
   );
   const bumpCycle = database.prepare(
     "UPDATE coding_jobs SET review_cycle = review_cycle + 1 WHERE repository = ? AND pr_number = ?",
@@ -128,7 +135,7 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
       upsert.run(repo, prNumber, job.issue, job.branch, job.base, job.maxVerificationRounds, job.maxReviewCycles);
     },
     get,
-    admitRepair: (repository, prNumber, reviewId) => {
+    checkRepair: (repository, prNumber, reviewId) => {
       const [repo, pr] = key(repository, prNumber);
       const job = get(repo, pr);
       if (job === undefined) return { status: "unregistered" };
@@ -136,13 +143,23 @@ export const createCodingJobRegistry = (databasePath: string): CodingJobRegistry
       if (decided !== undefined) {
         return { status: "duplicate", previous: decided.outcome === "launched" ? "launched" : "over-budget" };
       }
-      if (job.reviewCycle >= job.maxReviewCycles) {
-        insertRepair.run(repo, pr, reviewId, "over-budget");
-        return { status: "over-budget", job };
+      return job.reviewCycle >= job.maxReviewCycles
+        ? { status: "over-budget", job }
+        : { status: "within-budget", job };
+    },
+    commitRepair: (repository, prNumber, reviewId, outcome) => {
+      const [repo, pr] = key(repository, prNumber);
+      // One transaction: record the review id, and — only if this is the FIRST record of it and it
+      // launched — consume a cycle. A retry after a prior commit inserts nothing and bumps nothing.
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const info = insertRepair.run(repo, pr, reviewId, outcome);
+        if (info.changes > 0 && outcome === "launched") bumpCycle.run(repo, pr);
+        database.exec("COMMIT");
+      } catch (cause) {
+        database.exec("ROLLBACK");
+        throw cause;
       }
-      bumpCycle.run(repo, pr);
-      insertRepair.run(repo, pr, reviewId, "launched");
-      return { status: "launched", job: { ...job, reviewCycle: job.reviewCycle + 1 } };
     },
     close: () => database.close(),
   };
