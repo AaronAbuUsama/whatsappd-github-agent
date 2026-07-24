@@ -2,11 +2,15 @@ import type { GraphAttestationContext } from "@ambient-agent/engine/graph/store.
 
 const contexts = new Map<string, GraphAttestationContext>();
 
-export const scribeAttemptContext = (attemptId: string): GraphAttestationContext => {
-  const context = contexts.get(attemptId);
-  if (context === undefined) throw new Error(`Scribe attempt ${attemptId} has no trusted Attestation context.`);
-  return context;
-};
+/**
+ * The trusted Attestation context for a live in-process attempt, or `undefined` when there is
+ * none. A miss means this attempt is an orphaned durable-submission recovery on a fresh process:
+ * the in-memory context is gone, and the application-owned ScribeInbox already re-drives the same
+ * Batch under a fresh attempt. The caller settles such a recovery as a no-op rather than throwing,
+ * which previously left the submission unsettled and re-recovering on every boot (#330).
+ */
+export const scribeAttemptContext = (attemptId: string): GraphAttestationContext | undefined =>
+  contexts.get(attemptId);
 
 export const withScribeAttemptContext = async <T>(
   attemptId: string,
