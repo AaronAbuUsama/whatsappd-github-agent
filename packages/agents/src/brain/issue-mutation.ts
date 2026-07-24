@@ -14,7 +14,12 @@ const sameSet = (left: readonly string[], right: readonly string[]): boolean => 
  * requested field must match (same equality the capability's own reconcile uses); a partial-field update
  * reconciles when its present fields match. Bodies compared are public (footer already stripped by get). */
 const issueReflects = (mutation: IssueMutation, issue: Issue): boolean => {
-  if (mutation.kind === "set-issue-state") return issue.state === mutation.state;
+  // State AND reason must match: observing merely `closed` is not proof the Brain's specific request
+  // (e.g. reason `duplicate`) landed — a different actor may have closed it as `completed`. Recording the
+  // wrong reason as reconciled would falsify provenance, so a reason mismatch stays uncertain.
+  if (mutation.kind === "set-issue-state") {
+    return issue.state === mutation.state && issue.stateReason === mutation.reason;
+  }
   if (mutation.kind !== "update-issue") return false;
   return (
     (mutation.title === undefined || issue.title === mutation.title) &&

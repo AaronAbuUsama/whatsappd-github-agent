@@ -972,6 +972,51 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
   });
 
+  it("does not reconcile a recovered set-issue-state when another actor closed it with a different reason", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, mutator } = mutationRuntime();
+    const issue = repository.seed({ repository: REPO_REF, title: "Contested close", body: "Body" });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      mutateIssue: mutator,
+    });
+    const pending = inbox.recordIssueMutation({
+      batchId,
+      sourceSurfaceId: SURFACE,
+      mutation: { kind: "set-issue-state", repository: REPOSITORY, number: issue.number, state: "closed", reason: "duplicate" },
+    });
+    const operationId = `issue-mutation:${pending.id}`;
+    // A DIFFERENT actor closed the issue as `completed` while the Brain's close-as-`duplicate` crashed
+    // mid-flight. The issue is `closed`, but NOT for the reason the Brain requested — reconciling here
+    // would durably record the wrong reason as if the Brain's specific request had landed.
+    await repository.setState({
+      repository: REPO_REF,
+      number: issue.number,
+      state: "closed",
+      reason: "completed",
+      operation: { id: "other-actor" },
+    });
+    repository.resetEvents();
+    operations.begin({
+      operationId,
+      kind: "set-issue-state",
+      repository: REPOSITORY,
+      issueNumber: issue.number,
+      target: { state: "closed", reason: "duplicate" },
+      startedAt: "2026-07-22T12:00:00.000Z",
+    });
+    operations.uncertain(operationId, "Process restarted after the provider mutation began", "2026-07-22T12:00:01.000Z");
+
+    const recovered = await deliverIssueMutationEffect(pending);
+    expect(recovered.status).toBe("completed");
+    // State matches (closed) but the reason does not (completed != duplicate) — stay honestly uncertain.
+    expect(recovered.outcome).toMatchObject({ status: "uncertain" });
+    operations.close();
+    inbox.close();
+  });
+
   it("settles a non-retryable issue-mutation failure as uncertain so the Batch is not wedged", async () => {
     const { inbox, batchId } = openFixture();
     const { repository, operations, mutator } = mutationRuntime();
