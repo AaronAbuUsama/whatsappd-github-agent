@@ -478,6 +478,38 @@ const requiredComment = (discussion: IssueDiscussion, commentId: number): IssueC
   return comment;
 };
 
+/**
+ * The two read-only issue tools, resolving the issue-management runtime lazily per call (not at
+ * construction). This is what lets the Brain agent mount them: its tool list is built before the
+ * runtime is configured at boot, so an eager `createIssueManagementTools()` would throw. Read-only —
+ * safe to expose to the Brain so it can look up exact issue/comment numbers before a mutation Effect.
+ */
+export const createIssueReadTools = (): ToolDefinition[] => [
+  defineTool({
+    name: "github_read_issue",
+    description: "Read one issue from an authorized GitHub repository.",
+    input: v.object({ repository: repositoryInput, number: issueNumber }),
+    output: issueSchema,
+    run: async ({ input, signal }) => {
+      const options = getIssueManagementRuntime();
+      const repository = options.policy.authorize(input.repository);
+      return publicIssue(await options.repository.get({ repository, number: input.number, signal }));
+    },
+  }),
+  defineTool({
+    name: "github_read_issue_discussion",
+    description:
+      "Read one issue and every current discussion comment before choosing a discussion or lifecycle mutation.",
+    input: v.object({ repository: repositoryInput, number: issueNumber }),
+    output: discussionSchema,
+    run: async ({ input, signal }) => {
+      const options = getIssueManagementRuntime();
+      const repository = options.policy.authorize(input.repository);
+      return publicDiscussion(await options.repository.discussion({ repository, number: input.number, signal }));
+    },
+  }),
+];
+
 export const createIssueManagementTools = (
   options: IssueManagementToolOptions = getIssueManagementRuntime(),
 ): ToolDefinition[] => {

@@ -18,6 +18,7 @@ import { createDelegationTools } from "../capabilities/delegation/tools.ts";
 import { coderSpecialistSpec } from "../capabilities/coder/workflow.ts";
 import { reviewerSpecialistSpec } from "../capabilities/reviewer/workflow.ts";
 import { createBrainGraphTools } from "../capabilities/graph/tools.ts";
+import { createIssueReadTools } from "../capabilities/issue-management/tools.ts";
 import { getBrainEffectsRuntime } from "./effects-runtime.ts";
 
 export const description = "The one continuing global Brain: the coworker's silent mind and decision owner.";
@@ -52,6 +53,9 @@ export default defineAgent(() => ({
     ...createBrainGraphTools(brainGraphContext),
     ...createDelegationTools([coderSpecialistSpec, reviewerSpecialistSpec]),
     createPromptSpeakerTool(),
+    // Read-only issue lookups so the Brain can resolve exact issue/comment numbers its own workflow
+    // (and its mutation tools) require, before choosing a mutation Effect.
+    ...createIssueReadTools(),
     createFileIssueTool(),
     createCreateIssueCommentTool(),
     createUpdateIssueTool(),

@@ -25,6 +25,8 @@ import {
 } from "../../packages/agents/src/brain/tools.ts";
 import { createIssueFiler } from "../../packages/agents/src/brain/issue-filing.ts";
 import { createIssueMutator } from "../../packages/agents/src/brain/issue-mutation.ts";
+import brain from "../../packages/agents/src/brain/agent.ts";
+import { commentProviderBody, issueOperationMarker } from "../../packages/installation/src/issue-operation-footer.ts";
 import { brainGraphContext } from "../../packages/agents/src/brain/agent.ts";
 import { createGraphTools } from "../../packages/agents/src/capabilities/graph/tools.ts";
 import { createGraphStore } from "../../packages/engine/src/graph/store.ts";
@@ -370,6 +372,24 @@ describe("Brain Effects and settlement", () => {
     expect(prompt.status).toBe("accepted");
     graph.close();
     inbox.close();
+  });
+
+  it("mounts the read-only issue tools on the Brain so it can resolve exact numbers before mutating", async () => {
+    const config = await brain.initialize({ id: "global", env: {} });
+    const toolNames = config.tools?.map((tool) => tool.name);
+    // The Brain's instructions tell it to read the issue first; those tools must actually be mounted.
+    expect(toolNames).toContain("github_read_issue");
+    expect(toolNames).toContain("github_read_issue_discussion");
+    // Alongside the five mutation tools it wires as down-flow Effects.
+    for (const name of [
+      "create_issue_comment",
+      "update_issue",
+      "update_issue_comment",
+      "delete_issue_comment",
+      "set_issue_state",
+    ]) {
+      expect(toolNames).toContain(name);
+    }
   });
 
   it("records deliberate silence as a completed local effect before settlement", async () => {
@@ -817,6 +837,57 @@ describe("Brain Effects and settlement", () => {
     expect(recovered.outcome).toMatchObject({ status: "reconciled", commentId: expect.any(Number) });
     // Dedup came from strongly-consistent Operation Identity — no second comment was ever posted.
     expect(repository.events().some((event) => event.kind === "create-comment")).toBe(false);
+    operations.close();
+    inbox.close();
+  });
+
+  it("reconciles a recovered comment mutation GitHub already applied even when completion was lost to a crash", async () => {
+    const { inbox, batchId } = openFixture();
+    const { repository, operations, mutator } = mutationRuntime();
+    const issue = repository.seed({ repository: REPO_REF, title: "Crash mid-comment", body: "Body" });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => { throw new Error("not expected"); },
+      mutateIssue: mutator,
+    });
+    const pending = inbox.recordIssueMutation({
+      batchId,
+      sourceSurfaceId: SURFACE,
+      mutation: { kind: "create-comment", repository: REPOSITORY, number: issue.number, body: "Posted before the crash." },
+    });
+    const operationId = `issue-mutation:${pending.id}`;
+    // GitHub applied the comment (Operation-Identity marker embedded), but the local completion write was
+    // lost to a crash — the operation is left non-completed (uncertain), yet the comment is observable.
+    const seeded = repository.seedComment({
+      repository: REPO_REF,
+      number: issue.number,
+      author: "ambient-agent",
+      body: commentProviderBody("Posted before the crash.", [issueOperationMarker({ id: operationId })]),
+    });
+    operations.begin({
+      operationId,
+      kind: "create-comment",
+      repository: REPOSITORY,
+      issueNumber: issue.number,
+      target: { body: "Posted before the crash." },
+      startedAt: "2026-07-22T12:00:00.000Z",
+    });
+    operations.uncertain(operationId, "Process restarted after the provider mutation began", "2026-07-22T12:00:01.000Z");
+
+    const recovered = await deliverIssueMutationEffect(pending);
+    // Recovery observes the real comment and reconciles WITH its commentId — never settles blind `uncertain`.
+    expect(recovered.status).toBe("completed");
+    expect(recovered.outcome).toMatchObject({ status: "reconciled", commentId: seeded.id });
+    expect(repository.events().some((event) => event.kind === "create-comment")).toBe(false);
+    // The consequence that makes this matter: a completed create-comment record now authorizes deleting it.
+    expect(() =>
+      inbox.recordIssueMutation({
+        batchId,
+        sourceSurfaceId: SURFACE,
+        mutation: { kind: "delete-comment", repository: REPOSITORY, number: issue.number, commentId: seeded.id },
+      }),
+    ).not.toThrow();
     operations.close();
     inbox.close();
   });

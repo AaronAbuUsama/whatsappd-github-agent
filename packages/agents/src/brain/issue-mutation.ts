@@ -90,25 +90,32 @@ export const createIssueMutator =
       const repository = runtime.policy.authorize(mutation.repository);
 
       // Crash recovery: a prior attempt for this exact Effect already began (and may have applied) the
-      // mutation. Never re-mutate — reconcile by observation. A completed prior Operation is durable, so
-      // observe minimal detail and report reconciled; an unresolved prior stays honestly uncertain.
+      // mutation. Never re-mutate — reconcile by observation. GitHub may have applied the mutation even
+      // when the local Operation is not `completed` (the completion write was lost to the crash), so
+      // observe the provider for BOTH completed and unresolved priors and reconcile whenever the change
+      // is actually present. Only a prior with no observable effect settles honestly `uncertain`.
       const prior = runtime.operations.get(operationId);
       if (prior !== undefined) {
-        if (prior.status !== "completed") {
-          return {
-            status: "uncertain",
-            reason: `A prior attempt to ${mutation.kind} for this Effect did not complete; its outcome is unresolved.`,
-          };
-        }
         if (mutation.kind === "create-comment" || mutation.kind === "update-comment") {
           const matches = await runtime.repository.findCommentByOperation({
             repository,
             number: mutation.number,
             operation: { id: operationId },
           });
-          return matches.length === 1
-            ? { status: "reconciled", commentId: matches[0]!.id, url: matches[0]!.url }
-            : { status: "reconciled" };
+          // Recording the real commentId matters: recordIssueMutation authorizes a later delete/edit only
+          // against completed create-comment history, so a lost-completion crash must still reconcile it.
+          if (matches.length === 1) return { status: "reconciled", commentId: matches[0]!.id, url: matches[0]!.url };
+          if (prior.status === "completed") return { status: "reconciled" };
+          return {
+            status: "uncertain",
+            reason: `A prior attempt to ${mutation.kind} for this Effect did not complete and no matching comment was observed.`,
+          };
+        }
+        if (prior.status !== "completed") {
+          return {
+            status: "uncertain",
+            reason: `A prior attempt to ${mutation.kind} for this Effect did not complete; its outcome is unresolved.`,
+          };
         }
         if (mutation.kind === "delete-comment") return { status: "reconciled", commentId: mutation.commentId };
         const issue = await runtime.repository.get({ repository, number: mutation.number });
