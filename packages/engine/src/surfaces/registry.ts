@@ -14,6 +14,13 @@ export interface SurfaceRegistry {
     providerAccountId: string,
     providerChatIds: readonly string[],
   ) => readonly SurfaceBinding[];
+  /**
+   * Additively activate one chat's Surface (#179 live reload) — insert it, or reactivate its existing
+   * binding, WITHOUT retiring any other active Surface. Unlike {@link activateConfigured} this never
+   * retires the chats absent from its argument, so a live authorization reload can register a
+   * newly-allowed chat's Surface without disturbing in-flight Surfaces. Idempotent for an already-active chat.
+   */
+  readonly activate: (providerAccountId: string, providerChatId: string) => SurfaceBinding;
   readonly activeSurface: (providerAccountId: string, providerChatId: string) => SurfaceBinding | undefined;
   readonly activeBinding: (surfaceId: string) => SurfaceBinding | undefined;
   readonly close: () => void;
@@ -110,6 +117,29 @@ export const createSurfaceRegistry = (databasePath: string): SurfaceRegistry => 
         }
         database.exec("COMMIT");
         return active;
+      } catch (cause) {
+        database.exec("ROLLBACK");
+        throw cause;
+      }
+    },
+    activate: (rawAccountId, rawChatId) => {
+      const providerAccountId = required(rawAccountId, "Provider account id");
+      const providerChatId = required(rawChatId, "Provider chat id");
+      const now = new Date().toISOString();
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const existing = selectAny.get(providerAccountId, providerChatId) as BindingRow | undefined;
+        const binding =
+          existing !== undefined
+            ? (reactivate.run(now, existing.surface_id), hydrate(existing))
+            : ((): SurfaceBinding => {
+                const surfaceId = `surface:${randomUUID()}`;
+                insertSurface.run(surfaceId, now);
+                insertBinding.run(surfaceId, providerAccountId, providerChatId, now);
+                return { id: surfaceId, providerAccountId, providerChatId };
+              })();
+        database.exec("COMMIT");
+        return binding;
       } catch (cause) {
         database.exec("ROLLBACK");
         throw cause;

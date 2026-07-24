@@ -3,15 +3,14 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as v from "valibot";
 
-import { atomicWriteManagedConfig } from "./configuration.ts";
 import { ManagedConfigSchema, type ManagedConfig } from "./schema.ts";
 
 /**
- * The single-row, DB-backed managed-configuration store (#179). It lives in `application.sqlite`
- * alongside every other application table and holds the full validated {@link ManagedConfig} as the
- * live source the runtime reloads its AUTHORIZATION KNOBS from (managedChats, allowedRepositories,
- * reviewRepositories) without a restart. `config.json` on disk stays the durable source of truth —
- * the store is re-seeded from it at every boot; a live authorization change writes both.
+ * The single-row, DB-backed managed-configuration store (#179). It holds the full validated
+ * {@link ManagedConfig} as the re-validated live snapshot the runtime reloads its AUTHORIZATION KNOBS
+ * from (managedChats, allowedRepositories, reviewRepositories) without a restart. `config.json` on disk
+ * stays the durable source of truth — the real `ambient-agent config` command commits there; the store
+ * is re-seeded from it at boot and refreshed from it on every reload.
  *
  * Every read re-parses through {@link ManagedConfigSchema}, so a hand-edited or partially-written row
  * is refused loudly rather than reloaded silently — the same fail-closed posture as boot config.
@@ -56,42 +55,4 @@ export const createManagedConfigStore = (databasePath: string): ManagedConfigSto
     },
     close: () => database.close(),
   };
-};
-
-/** The subset of authorization knobs a live reload may change (#179); every other field is restart-only. */
-export interface ManagedAuthorizationKnobs {
-  readonly managedChats?: readonly string[];
-  readonly allowedRepositories?: readonly string[];
-  readonly reviewRepositories?: readonly string[];
-}
-
-/**
- * Commit a live authorization change (#179): merge the requested knobs over the current configuration,
- * re-validate the WHOLE thing through {@link ManagedConfigSchema} (so every cross-field invariant —
- * defaultRepository ∈ allowedRepositories, reviewRepositories ⊆ allowedRepositories, etc. — still
- * holds), then persist to `config.json` (durable across restarts) and the DB store (the live reload
- * source). Pure file + DB I/O — it never opens a WhatsApp client, so it is safe to run against a live
- * box, unlike the interactive `ambient-agent config` command. The runtime still has to be told to
- * reload afterwards (e.g. SIGHUP); this only writes the new authoritative values.
- */
-export const writeManagedAuthorization = async (
-  configPath: string,
-  store: ManagedConfigStore,
-  knobs: ManagedAuthorizationKnobs,
-  write: (path: string, value: unknown) => Promise<void> = atomicWriteManagedConfig,
-): Promise<ManagedConfig> => {
-  const current = store.current();
-  const next = {
-    ...current,
-    ...(knobs.managedChats === undefined ? {} : { managedChats: [...knobs.managedChats] }),
-    github: {
-      ...current.github,
-      ...(knobs.allowedRepositories === undefined ? {} : { allowedRepositories: [...knobs.allowedRepositories] }),
-      ...(knobs.reviewRepositories === undefined ? {} : { reviewRepositories: [...knobs.reviewRepositories] }),
-    },
-  };
-  const validated = v.parse(ManagedConfigSchema, next);
-  await write(configPath, validated);
-  store.replace(validated);
-  return validated;
 };

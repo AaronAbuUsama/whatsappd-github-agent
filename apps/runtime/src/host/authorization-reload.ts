@@ -14,6 +14,12 @@ export interface ManagedAuthorizationTargets {
   readonly policy: Pick<IssueManagementPolicy, "reload">;
   /** The Reviewer ingress allowlist — a mutable array the ingress reads live; rebuilt in place. */
   readonly reviewRepositories: string[];
+  /**
+   * Re-seed the repository Graph facts (#19/S2) so a newly-allowed repository exists as a Graph entity
+   * the Brain's `lookup_graph` can resolve — not merely pass `policy.authorize`. `seedRepositoryFacts`
+   * is idempotent, so re-running it on unchanged repos is a no-op.
+   */
+  readonly reseedRepositoryGraph: (config: ManagedConfig) => void;
 }
 
 /**
@@ -25,6 +31,7 @@ export const applyManagedAuthorization = (config: ManagedConfig, targets: Manage
   targets.reloadManagedChats(config.managedChats);
   targets.policy.reload(config.github.allowedRepositories);
   targets.reviewRepositories.splice(0, targets.reviewRepositories.length, ...config.github.reviewRepositories);
+  targets.reseedRepositoryGraph(config);
 };
 
 /**
@@ -32,12 +39,10 @@ export const applyManagedAuthorization = (config: ManagedConfig, targets: Manage
  * trigger for a live authorization change (write the new values, then `kill -HUP` / `systemctl reload`).
  * It touches nothing about the WhatsApp session, so it can never disturb the single-home session store.
  */
-export const reloadAuthorizationOnSignal = (reload: () => void): void => {
+export const reloadAuthorizationOnSignal = (reload: () => void | Promise<void>): void => {
   process.on("SIGHUP", () => {
-    try {
-      reload();
-    } catch (cause) {
-      process.stderr.write(`Authorization reload on SIGHUP failed: ${String(cause)}\n`);
-    }
+    void Promise.resolve()
+      .then(reload)
+      .catch((cause) => process.stderr.write(`Authorization reload on SIGHUP failed: ${String(cause)}\n`));
   });
 };

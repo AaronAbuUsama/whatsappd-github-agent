@@ -20,7 +20,7 @@ import {
   githubAppJwtClient,
   type InstallationResolver,
 } from "@ambient-agent/installation/github-app-client.ts";
-import { readProvisionedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
+import { readManagedConfig, readProvisionedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
 import { createManagedConfigStore } from "@ambient-agent/installation/managed-config-store.ts";
 import { applyManagedAuthorization, reloadAuthorizationOnSignal } from "./host/authorization-reload.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
@@ -247,15 +247,25 @@ export const createAmbientAgentApp = async ({
     stopRuntimeOnSignal(whatsapp);
   });
 
-  // S8 (#179): reload the authorization knobs in place on SIGHUP. Only the gate Set and the two repo
-  // allowlists are rebuilt; the WhatsApp session, model provider, port and sandbox stay restart-only.
-  reloadAuthorizationOnSignal(() =>
+  // S8 (#179): reload the authorization knobs in place on SIGHUP — the operator's trigger after the
+  // real `ambient-agent config` command commits to config.json (its durable source of truth). We re-read
+  // config.json, refresh the DB-backed store from it, and apply the re-validated snapshot: the gate Set
+  // (+ each authorized chat's Surface), the two repo allowlists, and the repository Graph facts all
+  // catch up with no restart. The WhatsApp session, model provider, port and sandbox stay restart-only.
+  reloadAuthorizationOnSignal(async () => {
+    const next = await readManagedConfig(paths.config);
+    managedConfigStore.replace(next);
     applyManagedAuthorization(managedConfigStore.current(), {
       reloadManagedChats: (chatIds) => whatsappControl?.reloadManagedChats(chatIds),
       policy,
       reviewRepositories,
-    }),
-  );
+      reseedRepositoryGraph: (config) =>
+        seedRepositoryFacts(graph, {
+          allowedRepositories: config.github.allowedRepositories,
+          surfaceRepositories: config.github.surfaceRepositories,
+        }),
+    });
+  });
 
   return app;
 };

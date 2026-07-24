@@ -313,6 +313,9 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   });
   speakerActivity.recoverDirectivesWith((dispatchId) => deliveries.directiveForDispatch(dispatchId));
   let activeCanary: { readonly chatId: string; readonly text: string } | undefined;
+  // Set once the account authenticates; a live gate reload needs it to activate a new chat's Surface
+  // (#179). Undefined until online, so a reload before pairing only opens the gate — as intended.
+  let authenticatedJid: string | undefined;
   const account = createWhatsAppAccount({
     storeDirectory: storeDir,
     archive: inbox.recorder,
@@ -377,6 +380,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
+    authenticatedJid = authenticatedAccount.jid;
     yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, options.managedChats));
     yield* Effect.sync(() =>
       configureIntentEscalationRuntime({
@@ -507,7 +511,15 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     }
   });
   return {
-    reloadManagedChats: (chatIds) => gate.reload(chatIds),
+    reloadManagedChats: (chatIds) => {
+      gate.reload(chatIds);
+      // Additively register a Surface for each authorized chat so a newly-allowed chat can escalate
+      // an intent and reach an active Surface — not merely pass the gate (#179). Idempotent for chats
+      // that already have one; never retires others. A no-op until the account is authenticated.
+      if (authenticatedJid !== undefined) {
+        for (const chatId of chatIds) surfaces.activate(authenticatedJid, chatId);
+      }
+    },
     synchronizedChats: async () => await account.synchronizedChats(),
     smokeCanary: async (nonce, timeoutMillis) => {
       const chatId = options.canaryChat;

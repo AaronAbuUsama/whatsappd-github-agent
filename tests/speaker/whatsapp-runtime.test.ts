@@ -637,6 +637,34 @@ describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
     await runtime.stop();
   });
 
+  it("activates a Surface for a chat added by a live reload, so it can escalate an intent (#179 fix 2)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    const jid = "15550000000:7@s.whatsapp.net";
+
+    // Before the reload the added chat has no Surface — an intent from it could not be routed.
+    const before = createSurfaceRegistry(applicationDatabase);
+    expect(before.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    before.close();
+
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+
+    // The reload registered a Surface additively — the new chat can now reach an active Surface, and
+    // the pre-existing chat's Surface is untouched (never retired).
+    const after = createSurfaceRegistry(applicationDatabase);
+    expect(after.activeSurface(jid, OTHER_CHAT)).toMatchObject({ providerChatId: OTHER_CHAT });
+    expect(after.activeSurface(jid, CHAT)).toMatchObject({ providerChatId: CHAT });
+    after.close();
+    await runtime.stop();
+  });
+
   it("opens a reaction-only Window and carries it into Speaker while excluding receipts", async () => {
     const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();
