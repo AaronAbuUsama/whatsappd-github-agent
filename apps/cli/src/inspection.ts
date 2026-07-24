@@ -1,4 +1,4 @@
-import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
+import { createInstallationResolver } from "@ambient-agent/installation/github-app-client.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
 import { createManagedChatInbox, inspectWindowDeliveryCounts } from "@ambient-agent/engine/intake/managed-chat-inbox.ts";
@@ -108,6 +108,7 @@ export const createInspectionReporter = ({
     dependencies.uncertainWorkFor ??
     (async (paths: ManagedPaths): Promise<UncertainWorkController> => {
       const credential = await readManagedGitHubAppCredential(paths.githubAppCredentials.planner);
+      const resolver = createInstallationResolver(credential);
       const archive = createConversationArchive(paths.applicationDatabase);
       try {
         // Opening the inbox performs the one-way Window-ledger migration (ADR 0014).
@@ -117,7 +118,9 @@ export const createInspectionReporter = ({
       }
       return createUncertainWorkController({
         operations: createIssueOperationStore(paths.applicationDatabase),
-        repository: createOctokitIssueRepository(githubAppClient(credential)),
+        repository: createOctokitIssueRepository((repository) =>
+          resolver.octokitFor(repository.owner, repository.repo),
+        ),
       });
     });
 

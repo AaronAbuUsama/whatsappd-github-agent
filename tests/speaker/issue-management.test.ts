@@ -5,7 +5,6 @@ import { DatabaseSync } from "node:sqlite";
 
 import { Octokit } from "@octokit/rest";
 import { describe, expect, it } from "vite-plus/test";
-import * as v from "valibot";
 
 import speaker from "../../packages/agents/src/speaker/agent.ts";
 import {
@@ -14,7 +13,6 @@ import {
 } from "../../packages/agents/src/capabilities/issue-management/runtime.ts";
 import {
   isUncertainIssueMutationError,
-  MAX_PUBLIC_COMMENT_BODY_LENGTH,
   MAX_PUBLIC_ISSUE_BODY_LENGTH,
 } from "../../packages/agents/src/capabilities/issue-management/issue-repository.ts";
 import { createIssueManagementTools } from "../../packages/agents/src/capabilities/issue-management/tools.ts";
@@ -60,6 +58,22 @@ describe("Issue Management configuration", () => {
     ).rejects.toThrow("not in the configured GitHub write allowlist");
     expect(repository.events()).toEqual([]);
     expect(operations.list()).toEqual([]);
+  });
+
+  it("reloads the write allowlist in place while keeping the default repository fixed (#179)", () => {
+    const policy = createIssueManagementPolicy("acme/widgets", ["acme/widgets"]);
+    expect(() => policy.authorize("acme/gadgets")).toThrow("not in the configured GitHub write allowlist");
+
+    policy.reload(["acme/widgets", "acme/gadgets"]);
+
+    expect(policy.authorize("acme/gadgets")).toEqual({ owner: "acme", repo: "gadgets" });
+    // The default repository is a restart-only knob and stays authorized across a reload.
+    expect(policy.authorize()).toEqual({ owner: "acme", repo: "widgets" });
+
+    // Reloading to an empty allowlist falls back to the default repository, never open.
+    policy.reload([]);
+    expect(policy.authorize()).toEqual({ owner: "acme", repo: "widgets" });
+    expect(() => policy.authorize("acme/gadgets")).toThrow("not in the configured GitHub write allowlist");
   });
 });
 
@@ -219,6 +233,38 @@ describe("production Issue Management tools", () => {
     expect(() => githubIssueProviderBody(literal, ["<!-- ambience-operation:create-id -->"])).toThrow(
       "reserved Ambient Agent Operation Identity syntax",
     );
+  });
+
+  it("resolves the installation-scoped client per issue owner when given a resolver (multi-org)", async () => {
+    // Each owner gets its own Octokit; the resolver stands in for createInstallationResolver.octokitFor.
+    const seen: string[] = [];
+    const clientFor = (owner: string) => {
+      const requestFetch: typeof fetch = async (input) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url.endsWith(`/repos/${owner}/repo/issues/7`)) {
+          return Response.json({
+            number: 7,
+            html_url: `https://github.com/${owner}/repo/issues/7`,
+            title: "Cross-org read",
+            body: "Body",
+            state: "open",
+          });
+        }
+        return Response.json({});
+      };
+      return new Octokit({ request: { fetch: requestFetch } });
+    };
+    const resolve = async (repository: { owner: string; repo: string }): Promise<Octokit> => {
+      seen.push(repository.owner);
+      return clientFor(repository.owner);
+    };
+    const repository = createOctokitIssueRepository(resolve);
+
+    await repository.get({ repository: { owner: "Xelmar-tech", repo: "repo" }, number: 7 });
+    await repository.get({ repository: { owner: "TheCallApp", repo: "repo" }, number: 7 });
+
+    // A second owner routes through the resolver rather than a single pinned client.
+    expect(seen).toEqual(["Xelmar-tech", "TheCallApp"]);
   });
 
   it("reads the narrow legacy trailing UUID marker without treating arbitrary text as owned metadata", () => {
@@ -996,72 +1042,26 @@ describe("production Issue Management tools", () => {
     expect(repository.events().filter((event) => event.kind === "set-issue-state")).toEqual([]);
   });
 
-  it("registers only bounded direct issue tools without model-controlled Operation Identity or administration", async () => {
+  it("keeps the Speaker a local mouth with no issue-management or work-launching tools", async () => {
     configured();
     const config = await speaker.initialize({ id: CHAT, env: {} });
-    expect(config.skills?.map((skill) => skill.name)).toEqual(["whatsapp-participation", "issue-management"]);
+    expect(config.skills?.map((skill) => skill.name)).toEqual(["whatsapp-participation"]);
     await expect(
       readFile(join(process.cwd(), "packages/agents/src/capabilities/issue-management/SKILL.md"), "utf8"),
     ).resolves.toContain('version: "2.0.0"');
-    expect(config.tools?.map((tool) => tool.name)).toEqual([
+    // lookup_work is a read-only work-state pull (#319); the Speaker still cannot launch or mutate work.
+    const toolNames = config.tools?.map((tool) => tool.name);
+    expect(toolNames).toEqual([
       "react",
       "say",
       "whatsapp_read_thread",
       "whatsapp_search",
-      "github_search_issues",
-      "github_read_issue",
-      "github_list_issue_options",
-      "github_create_issue",
-      "github_update_issue",
-      "github_read_issue_discussion",
-      "github_create_issue_comment",
-      "github_update_issue_comment",
-      "github_delete_issue_comment",
-      "github_set_issue_state",
+      "say_directive",
+      "escalate_intent",
+      "lookup_work",
       "lookup_graph",
-      "record_entity",
-      "merge_entities",
-      "start_coder_job",
-      "check_jobs",
     ]);
-    expect(config.tools?.some((tool) => tool.name === "github_delete_issue")).toBe(false);
-    const create = config.tools?.find((tool) => tool.name === "github_create_issue");
-    expect(create).toBeDefined();
-    if (create === undefined) throw new Error("Expected the Issue Management create Tool");
-    expect(
-      v.parse(create.input as v.GenericSchema, {
-        operationId: "model-injected",
-        title: "x",
-        body: "y",
-        kind: "bug",
-      }),
-    ).not.toHaveProperty("operationId");
-    expect(JSON.stringify(create.input)).not.toContain("operationId");
-    const update = config.tools?.find((tool) => tool.name === "github_update_issue");
-    expect(update).toBeDefined();
-    if (update === undefined) throw new Error("Expected the Issue Management update Tool");
-    expect(
-      v.parse(update.input as v.GenericSchema, {
-        number: 1,
-        body: "",
-        operationId: "model-injected",
-      }),
-    ).toEqual({ number: 1, body: "" });
-    expect(() =>
-      v.parse(update.input as v.GenericSchema, {
-        number: 1,
-        body: "x".repeat(MAX_PUBLIC_ISSUE_BODY_LENGTH + 1),
-      }),
-    ).toThrow();
-    const createComment = config.tools?.find((tool) => tool.name === "github_create_issue_comment");
-    expect(createComment).toBeDefined();
-    if (createComment === undefined) throw new Error("Expected the Issue Management create-comment Tool");
-    expect(() =>
-      v.parse(createComment.input as v.GenericSchema, {
-        number: 1,
-        body: "x".repeat(MAX_PUBLIC_COMMENT_BODY_LENGTH + 1),
-      }),
-    ).toThrow();
+    expect(toolNames?.some((name) => name.startsWith("start_"))).toBe(false);
   });
 
   it("deletes the discarded proof workflow and provider path", async () => {

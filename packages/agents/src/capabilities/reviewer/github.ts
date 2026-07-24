@@ -91,6 +91,32 @@ export const reviewerLogin = async (github: ReviewerGitHub): Promise<string> =>
 export const reviewerHeadMarker = (headSha: string): string =>
   `<!-- ambient-agent-review-head:${headSha} -->`;
 
+// Why a PR head is ineligible for review, or undefined when it is eligible. A head is eligible
+// when open and non-draft; when expectedHeadSha is pinned (legacy webhook/command launch) the
+// live head must also match it. An on-request Brain launch leaves expectedHeadSha undefined and
+// reviews whatever head is live, so on that path only closed/merged or draft can disqualify —
+// the blocked summary must name the real disqualifier, never a head-pin story that never happened.
+export const reviewIneligibilityReason = (
+  pr: { state: string; draft?: boolean; merged?: boolean; head: { sha: string } },
+  expectedHeadSha?: string,
+): string | undefined => {
+  if (pr.state !== "open") {
+    return pr.merged
+      ? "Review skipped because the pull request is already merged."
+      : "Review skipped because the pull request is closed.";
+  }
+  if (pr.draft) return "Review skipped because the pull request is still a draft.";
+  if (expectedHeadSha !== undefined && pr.head.sha !== expectedHeadSha) {
+    return "Review skipped because the admitted pull-request head is no longer the live eligible head.";
+  }
+  return undefined;
+};
+
+export const reviewHeadEligible = (
+  pr: { state: string; draft?: boolean; head: { sha: string } },
+  expectedHeadSha?: string,
+): boolean => reviewIneligibilityReason(pr, expectedHeadSha) === undefined;
+
 export const findReviewForHead = async (
   github: ReviewerGitHub,
   repo: GitHubRepositoryRef,

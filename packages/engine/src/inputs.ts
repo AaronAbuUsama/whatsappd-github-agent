@@ -36,6 +36,7 @@ const whatsappWindowInputSchema = v.object({
   messages: v.array(
     v.object({
       id: nonEmptyString,
+      evidenceId: v.optional(nonEmptyString),
       chatId: nonEmptyString,
       from: nonEmptyString,
       pushName: v.optional(v.string()),
@@ -180,44 +181,23 @@ export type GitHubIngressInput =
   | GitHubPullRequestOpenedInput
   | GitHubPullRequestReviewSubmittedInput;
 
-/**
- * A finished Specialist run returning as an input (MEMORY-STATE-SPEC §8, ADR 0001).
- *
- * An ENVELOPE, not the payload: the same member carries every Specialist, so the
- * transport facts (`runId`, `status`) and each Specialist's own output live at
- * different levels. `status` is the TRANSPORT status — the boot sweep sets
- * `"interrupted"` with no `result` at all; the durable-gated bridge sets `"ok"` and
- * nests the workflow's output under `result` (the Coder issue defines its `result`
- * shape). `graphContext` stays flat on the envelope (§5), never double-wrapped.
- */
-export const specialistResultInputSchema = v.object({
-  type: v.literal("specialist.result"),
-  chatId: v.optional(nonEmptyString),
-  runId: nonEmptyString,
-  status: v.union([v.literal("ok"), v.literal("interrupted")]),
-  result: v.optional(v.unknown()),
+export const brainDirectiveInputSchema = v.object({
+  type: v.literal("brain.directive"),
+  directive: v.object({
+    id: nonEmptyString,
+    surfaceId: nonEmptyString,
+    objective: nonEmptyString,
+    brief: v.object({
+      summary: nonEmptyString,
+      evidenceIds: v.pipe(v.array(nonEmptyString), v.minLength(1)),
+    }),
+  }),
   graphContext,
 });
 
-export type SpecialistResultInput = v.InferOutput<typeof specialistResultInputSchema>;
+export type BrainDirectiveInput = v.InferOutput<typeof brainDirectiveInputSchema>;
 
-/**
- * The rare, domain-significant progress a Specialist explicitly interrupts the thread
- * with (§8 Progress, ADR 0001's `workflow.progress`) — same delivery seam as
- * `specialist.result`. `milestone` carries the workflow-specific payload.
- */
-export const specialistMilestoneInputSchema = v.object({
-  type: v.literal("specialist.milestone"),
-  chatId: v.optional(nonEmptyString),
-  runId: nonEmptyString,
-  milestone: v.optional(v.unknown()),
-  graphContext,
-});
-
-export type SpecialistMilestoneInput = v.InferOutput<typeof specialistMilestoneInputSchema>;
-export type SpecialistInput = SpecialistResultInput | SpecialistMilestoneInput;
-
-export type SpeakerInput = WhatsAppWindowInput | GitHubIngressInput | SpecialistInput;
+export type SpeakerInput = WhatsAppWindowInput | GitHubIngressInput | BrainDirectiveInput;
 
 export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowInput =>
   v.parse(whatsappWindowInputSchema, {
@@ -225,7 +205,10 @@ export const whatsappWindowInput = (window: ConversationWindow): WhatsAppWindowI
     windowId: window.id,
     chatId: window.chatId,
     reason: window.reason,
-    messages: window.messages,
+    messages: window.messages.map((message) => ({
+      ...message,
+      evidenceId: `arrival:${message.chatId}:${message.id}`,
+    })),
     updates: window.updates,
     ...(window.eventOrder === undefined ? {} : { eventOrder: window.eventOrder }),
   });
@@ -247,11 +230,7 @@ export const speakerDigestSeeds = (input: SpeakerInput): DigestSeeds => {
       identities: [...identities].map((externalId) => ({ platform: "whatsapp", externalId })),
     };
   }
-  // A returning Specialist carries only its home thread as a seed; its GitHub work is
-  // already in the graph the digest walk reaches from the thread.
-  if (input.type === "specialist.result" || input.type === "specialist.milestone") {
-    return { ...(input.chatId === undefined ? {} : { chatId: input.chatId }), identities: [] };
-  }
+  if (input.type === "brain.directive") return { identities: [] };
   const repo = `${input.repository.owner}/${input.repository.repo}`;
   const externalIds = new Set<string>([repo, input.sender.login]);
   if (input.type === "github.issue.opened") {

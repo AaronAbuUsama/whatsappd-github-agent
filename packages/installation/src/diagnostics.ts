@@ -3,7 +3,10 @@ import { open } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { assertSupportedFlueSchemaVersion } from "@flue/runtime/adapter";
 
-import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "@ambient-agent/engine/intake/database-versions.ts";
+import {
+  APPLICATION_DATABASE_ID,
+  APPLICATION_DATABASE_SCHEMA_VERSION,
+} from "@ambient-agent/engine/intake/database-versions.ts";
 import { inspectGitHubCredentialComponent } from "./installation.ts";
 import type { ManagedPaths } from "./paths.ts";
 import {
@@ -138,13 +141,183 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
     ],
   ],
   ["graph_identities", ["platform", "external_id", "entity_id", "display_name"]],
-  // The delegation run ledger (MEMORY-STATE-SPEC §8) — launch memory beside the archive.
+  [
+    "graph_attestations",
+    [
+      "attestation_id",
+      "author_kind",
+      "author_id",
+      "claim_kind",
+      "claim_json",
+      "confidence",
+      "evidence_set_id",
+      "evidence_ids_json",
+      "batch_id",
+      "attested_at",
+    ],
+  ],
+  ["graph_projection_meta", ["singleton", "version", "rebuilt_at"]],
+  // Pre-Brain delegation launch memory remains readable on upgraded installations.
   ["delegation_launches", ["run_id", "chat_id", "workflow", "launched_at", "settled_at"]],
+  // One-way compatibility: runtime migrates this cursor table into Historical Replay and drops it.
   [
     "scribe_backfills",
     [
-      "chat_id", "mode", "phase", "snapshot_high_water", "snapshot_unknown_time",
-      "snapshot_occurred_at_ms", "snapshot_sequence", "after_sequence", "run_id", "last_error", "updated_at_ms",
+      "chat_id",
+      "mode",
+      "phase",
+      "snapshot_high_water",
+      "snapshot_unknown_time",
+      "snapshot_occurred_at_ms",
+      "snapshot_sequence",
+      "after_sequence",
+      "run_id",
+      "last_error",
+      "updated_at_ms",
+    ],
+  ],
+  [
+    "historical_replay_surfaces",
+    [
+      "chat_id",
+      "mode",
+      "phase",
+      "snapshot_high_water",
+      "snapshot_unknown_time",
+      "snapshot_occurred_at_ms",
+      "snapshot_sequence",
+      "after_sequence",
+      "run_id",
+      "last_error",
+      "updated_at_ms",
+    ],
+  ],
+  ["surfaces", ["surface_id", "created_at"]],
+  ["surface_bindings", ["surface_id", "provider_account_id", "provider_chat_id", "bound_at", "retired_at"]],
+  ["brain_intents", ["intent_id", "source_surface_id", "interpretation", "evidence_ids_json", "admitted_at"]],
+  ["brain_batches", ["batch_id", "created_at", "dispatch_id", "accepted_at", "settled_at"]],
+  ["brain_inbox_inputs", ["input_id", "kind", "intent_id", "admitted_at", "batch_id"]],
+  [
+    "brain_knowledge_deltas",
+    [
+      "delta_id",
+      "scribe_batch_id",
+      "attestation_ids_json",
+      "evidence_ids_json",
+      "projection_version",
+      "admitted_at",
+      "batch_id",
+    ],
+  ],
+  [
+    "brain_github_events",
+    [
+      "event_id",
+      "github_app_id",
+      "delivery_id",
+      "event_name",
+      "action",
+      "repository",
+      "summary",
+      "detail_json",
+      "admitted_at",
+      "batch_id",
+    ],
+  ],
+  [
+    "brain_scheduled_wakes",
+    ["wake_id", "kind", "reason", "due_at", "created_at", "admitted_at", "cancelled_at", "batch_id"],
+  ],
+  [
+    "brain_effects",
+    [
+      "effect_id",
+      "batch_id",
+      "kind",
+      "payload_json",
+      "status",
+      "dispatch_id",
+      "accepted_at",
+      "completed_at",
+      "created_at",
+    ],
+  ],
+  [
+    "brain_specialist_launches",
+    [
+      "work_id",
+      "batch_id",
+      "source_surface_id",
+      "evidence_ids_json",
+      "specialist",
+      "input_json",
+      "requested_at",
+      "status",
+      "run_id",
+      "accepted_at",
+    ],
+  ],
+  [
+    "brain_specialist_results",
+    [
+      "result_id",
+      "work_id",
+      "run_id",
+      "source_batch_id",
+      "source_surface_id",
+      "evidence_ids_json",
+      "specialist",
+      "transport_status",
+      "result_json",
+      "admitted_at",
+      "batch_id",
+    ],
+  ],
+  ["brain_work_milestones", ["milestone_id", "work_id", "note", "at"]],
+  [
+    "surface_deliveries",
+    [
+      "delivery_id",
+      "directive_id",
+      "surface_id",
+      "provider_chat_id",
+      "text",
+      "status",
+      "provider_message_id",
+      "conversation_event_id",
+      "error",
+      "attempted_at",
+      "settled_at",
+    ],
+  ],
+  ["scribe_batches", ["batch_id", "created_at_ms", "active_attempt_id", "completed_at_ms"]],
+  [
+    "scribe_observations",
+    [
+      "observation_sequence",
+      "evidence_id",
+      "occurred_at_ms",
+      "source",
+      "input_json",
+      "admitted_at_ms",
+      "batch_id",
+    ],
+  ],
+  [
+    "scribe_attempts",
+    ["attempt_id", "batch_id", "status", "started_at_ms", "finished_at_ms", "error"],
+  ],
+  [
+    "directive_outcomes",
+    [
+      "directive_id",
+      "delivery_id",
+      "surface_id",
+      "status",
+      "provider_message_id",
+      "conversation_event_id",
+      "detail",
+      "settled_at",
     ],
   ],
 ] as const satisfies ReadonlyArray<readonly [string, readonly string[]]>;

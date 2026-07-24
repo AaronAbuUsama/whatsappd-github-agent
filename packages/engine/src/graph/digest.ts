@@ -35,6 +35,7 @@ const digestEntitySchema = v.object({
   properties: v.record(v.string(), v.unknown()),
   confidence: v.number(),
   lowConfidence: v.boolean(),
+  supportingAttestationIds: v.array(v.string()),
 });
 const digestRelationSchema = v.object({
   fromId: v.string(),
@@ -42,6 +43,7 @@ const digestRelationSchema = v.object({
   toId: v.string(),
   confidence: v.number(),
   lowConfidence: v.boolean(),
+  supportingAttestationIds: v.array(v.string()),
 });
 const digestCommitmentSchema = v.object({
   entityId: v.string(),
@@ -50,15 +52,51 @@ const digestCommitmentSchema = v.object({
   confidence: v.number(),
   lowConfidence: v.boolean(),
   overdue: v.boolean(),
+  supportingAttestationIds: v.array(v.string()),
+});
+
+/**
+ * A down-flow work item surfaced onto the digest (§3.8, S3): one active Bounded Workflow
+ * plus its latest streamed Milestone, so a Speaker turn sees in-flight work without a pull.
+ */
+const digestWorkItemSchema = v.object({
+  workId: v.string(),
+  specialist: v.string(),
+  sourceSurfaceId: v.string(),
+  startedAt: v.string(),
+  latestMilestone: v.optional(v.object({ note: v.string(), at: v.string() })),
 });
 
 /** The pushed digest — one shape, shared by the Speaker input and the Specialist job input. */
 export const graphDigestSchema = v.object({
+  schemaVersion: v.literal("graph-digest.v1"),
+  projectionVersion: v.string(),
   seeds: v.array(v.string()),
   entities: v.array(digestEntitySchema),
   relations: v.array(digestRelationSchema),
   commitments: v.array(digestCommitmentSchema),
+  // Optional so Specialist-job digests and pre-existing rows parse unchanged.
+  workItems: v.optional(v.array(digestWorkItemSchema)),
 });
+
+export type DigestWorkItem = v.InferOutput<typeof digestWorkItemSchema>;
+
+/**
+ * Compose active work items onto a computed graph digest, never replacing it (§5.4 — the
+ * funnel composes rather than replaces). Returns the same digest when there is no work. The
+ * appended items are held inside the same MAX_GRAPH_DIGEST_BYTES budget as the base digest:
+ * capped, then trimmed oldest-first until the whole graphContext fits.
+ */
+export const composeWorkItems = (digest: GraphDigest, workItems: readonly DigestWorkItem[]): GraphDigest => {
+  if (workItems.length === 0) return digest;
+  // Input is oldest-first; keep the most recent work — cap to the newest N, then drop oldest-first
+  // (shift from the front) until the whole graphContext fits, so a Speaker sees what is most in flight.
+  const composed = { ...digest, workItems: workItems.slice(-MAX_WORK_ITEMS) };
+  while (Buffer.byteLength(JSON.stringify(composed)) > MAX_GRAPH_DIGEST_BYTES && composed.workItems.length > 0) {
+    composed.workItems.shift();
+  }
+  return composed.workItems.length === 0 ? digest : composed;
+};
 
 export type GraphDigest = v.InferOutput<typeof graphDigestSchema>;
 export type DigestEntity = v.InferOutput<typeof digestEntitySchema>;
@@ -75,6 +113,12 @@ export interface DigestOptions {
 }
 
 const DEFAULT_LOW_CONFIDENCE = 0.75;
+const MAX_ENTITIES = 64;
+const MAX_RELATIONS = 128;
+const MAX_COMMITMENTS = 32;
+const MAX_WORK_ITEMS = 32;
+const MAX_SUPPORTING_ATTESTATIONS = 8;
+export const MAX_GRAPH_DIGEST_BYTES = 64 * 1024;
 
 /** Roll-up edges followed for one extra hop off GitHub work-in-view (§5 D3, "secondary hops"). */
 const SECONDARY_HOPS: readonly GraphRelationType[] = ["resolves", "part_of", "advances"];
@@ -87,11 +131,7 @@ const isOverdue = (due: unknown, nowMs: number): boolean => {
   return !Number.isNaN(dueMs) && dueMs < nowMs;
 };
 
-export const computeGraphDigest = (
-  store: GraphStore,
-  seeds: DigestSeeds,
-  options: DigestOptions = {},
-): GraphDigest => {
+export const computeGraphDigest = (store: GraphStore, seeds: DigestSeeds, options: DigestOptions = {}): GraphDigest => {
   const nowMs = (options.now?.() ?? new Date()).getTime();
   const threshold = options.lowConfidenceThreshold ?? DEFAULT_LOW_CONFIDENCE;
   const low = (confidence: number): boolean => confidence <= threshold;
@@ -99,7 +139,7 @@ export const computeGraphDigest = (
   // 1. Resolve seed keys → entity ids through graph_identities.
   const seedIds = new Set<string>();
   if (seeds.chatId !== undefined) {
-    const thread = store.resolveIdentity("whatsapp", seeds.chatId);
+    const thread = store.resolveIdentity("whatsapp", seeds.chatId, "thread");
     if (thread !== undefined) seedIds.add(thread.entityId);
   }
   for (const seed of seeds.identities) {
@@ -114,18 +154,25 @@ export const computeGraphDigest = (
     if (entity !== undefined && !entities.has(entity.entityId)) entities.set(entity.entityId, entity);
   };
   const edgeKey = (fromId: string, relation: string, toId: string): string => `${fromId}\u0000${relation}\u0000${toId}`;
-  const record = (fromId: string, relation: GraphRelationType, toId: string, confidence: number): void => {
-    relations.set(edgeKey(fromId, relation, toId), { fromId, relation, toId, confidence, lowConfidence: low(confidence) });
+  const record = (edge: ReturnType<GraphStore["relationsFrom"]>[number]): void => {
+    relations.set(edgeKey(edge.fromId, edge.relation, edge.toId), {
+      fromId: edge.fromId,
+      relation: edge.relation,
+      toId: edge.toId,
+      confidence: edge.confidence,
+      lowConfidence: low(edge.confidence),
+      supportingAttestationIds: edge.attestationIds.slice(-MAX_SUPPORTING_ATTESTATIONS),
+    });
   };
 
   for (const seedId of seedIds) remember(store.getEntity(seedId));
   for (const seedId of seedIds) {
     for (const edge of store.relationsFrom(seedId)) {
-      record(edge.fromId, edge.relation, edge.toId, edge.confidence);
+      record(edge);
       remember(store.getEntity(edge.toId));
     }
     for (const edge of store.relationsTo(seedId)) {
-      record(edge.fromId, edge.relation, edge.toId, edge.confidence);
+      record(edge);
       remember(store.getEntity(edge.fromId));
     }
   }
@@ -136,7 +183,7 @@ export const computeGraphDigest = (
     if (!SECONDARY_HOP_TYPES.has(entity.type)) continue;
     for (const relation of SECONDARY_HOPS) {
       for (const edge of store.relationsFrom(entity.entityId, relation)) {
-        record(edge.fromId, edge.relation, edge.toId, edge.confidence);
+        record(edge);
         remember(store.getEntity(edge.toId));
       }
     }
@@ -155,6 +202,7 @@ export const computeGraphDigest = (
         confidence: entity.confidence,
         lowConfidence: low(entity.confidence),
         overdue: isOverdue(entity.properties.due, nowMs),
+        supportingAttestationIds: entity.attestationIds.slice(-MAX_SUPPORTING_ATTESTATIONS),
       });
       continue;
     }
@@ -164,12 +212,34 @@ export const computeGraphDigest = (
       properties: entity.properties,
       confidence: entity.confidence,
       lowConfidence: low(entity.confidence),
+      supportingAttestationIds: entity.attestationIds.slice(-MAX_SUPPORTING_ATTESTATIONS),
     });
   }
 
-  return { seeds: [...seedIds], entities: plainEntities, relations: [...relations.values()], commitments };
+  const digest: GraphDigest = {
+    schemaVersion: "graph-digest.v1",
+    projectionVersion: store.projectionVersion(),
+    seeds: [...seedIds].sort().slice(0, MAX_ENTITIES),
+    entities: plainEntities.sort((left, right) => left.entityId.localeCompare(right.entityId)).slice(0, MAX_ENTITIES),
+    relations: [...relations.values()]
+      .sort((left, right) => edgeKey(left.fromId, left.relation, left.toId).localeCompare(edgeKey(right.fromId, right.relation, right.toId)))
+      .slice(0, MAX_RELATIONS),
+    commitments: commitments
+      .sort((left, right) => left.entityId.localeCompare(right.entityId))
+      .slice(0, MAX_COMMITMENTS),
+  };
+  while (Buffer.byteLength(JSON.stringify(digest)) > MAX_GRAPH_DIGEST_BYTES) {
+    if (digest.relations.length > 0) digest.relations.pop();
+    else if (digest.entities.length > 0) digest.entities.pop();
+    else if (digest.commitments.length > 0) digest.commitments.pop();
+    else break;
+  }
+  return digest;
 };
 
 /** True when a digest carries nothing worth spending a transcript turn on. */
 export const isEmptyDigest = (digest: GraphDigest): boolean =>
-  digest.entities.length === 0 && digest.relations.length === 0 && digest.commitments.length === 0;
+  digest.entities.length === 0
+  && digest.relations.length === 0
+  && digest.commitments.length === 0
+  && (digest.workItems ?? []).length === 0;

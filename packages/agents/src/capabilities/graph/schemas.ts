@@ -1,41 +1,18 @@
 import * as v from "valibot";
 
-import type {
-  EntityUpsert,
-  GraphProvenance,
-  GraphRelationType,
-  RelationUpsert,
-} from "@ambient-agent/engine/graph/store.ts";
+import type { EntityUpsert, GraphRelationType, RelationUpsert } from "@ambient-agent/engine/graph/store.ts";
+export { GraphConstraintError, isGraphConstraintError } from "@ambient-agent/engine/graph/store.ts";
 
 /**
  * Typing lives here, at the tool boundary (MEMORY-STATE-SPEC §3): one valibot schema
  * per entity/relation type, validated before commit. The database enforces only the
  * enums, keys, and uniqueness. Two rules valibot cannot express — `blocks` acyclic and
- * `made_by` exactly-one — are handler checks (see tools.ts) that raise a typed error.
+ * `made_by` exactly-one — are store checks that raise a typed error after retry deduplication.
  */
-
-export class GraphConstraintError extends Error {
-  readonly constraint: "blocks-acyclic" | "made-by-single";
-  constructor(constraint: "blocks-acyclic" | "made-by-single", message: string) {
-    super(message);
-    this.name = "GraphConstraintError";
-    this.constraint = constraint;
-  }
-}
-
-export const isGraphConstraintError = (value: unknown): value is GraphConstraintError =>
-  value instanceof GraphConstraintError;
 
 const nonEmpty = v.pipe(v.string(), v.trim(), v.minLength(1));
 const entityId = nonEmpty;
 const confidence = v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1)));
-const provenanceSchema = v.optional(
-  v.object({
-    chatId: v.optional(v.string()),
-    messageId: v.optional(v.string()),
-    deliveryId: v.optional(v.string()),
-  }),
-);
 const platform = v.picklist(["whatsapp", "github"]);
 const identitySchema = v.object({ platform, externalId: nonEmpty, displayName: v.optional(nonEmpty) });
 const githubNode = { repo: nonEmpty, title: nonEmpty, state: nonEmpty, cachedAt: nonEmpty } as const;
@@ -43,10 +20,10 @@ const githubNumber = v.pipe(v.number(), v.integer(), v.minValue(1));
 
 // The eleven entity types, one schema each, discriminated on `type`.
 export const entitySchema = v.variant("type", [
-  v.object({ type: v.literal("person"), identity: identitySchema, name: v.optional(nonEmpty), confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("agent"), identity: identitySchema, name: v.optional(nonEmpty), confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("thread"), chatId: nonEmpty, confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("topic"), id: v.optional(entityId), label: nonEmpty, confidence, provenance: provenanceSchema }),
+  v.object({ type: v.literal("person"), identity: identitySchema, name: v.optional(nonEmpty), confidence }),
+  v.object({ type: v.literal("agent"), identity: identitySchema, name: v.optional(nonEmpty), confidence }),
+  v.object({ type: v.literal("thread"), chatId: nonEmpty, confidence }),
+  v.object({ type: v.literal("topic"), id: v.optional(entityId), label: nonEmpty, confidence }),
   v.object({
     type: v.literal("commitment"),
     id: v.optional(entityId),
@@ -54,7 +31,6 @@ export const entitySchema = v.variant("type", [
     status: v.picklist(["open", "done", "dropped"]),
     due: v.optional(nonEmpty),
     confidence,
-    provenance: provenanceSchema,
   }),
   v.object({
     type: v.literal("goal"),
@@ -62,13 +38,12 @@ export const entitySchema = v.variant("type", [
     description: nonEmpty,
     target: v.optional(nonEmpty),
     confidence,
-    provenance: provenanceSchema,
   }),
-  v.object({ type: v.literal("repository"), ...githubNode, number: v.optional(githubNumber), confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("issue"), ...githubNode, number: githubNumber, confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("pull_request"), ...githubNode, number: githubNumber, confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("milestone"), ...githubNode, number: githubNumber, confidence, provenance: provenanceSchema }),
-  v.object({ type: v.literal("project"), ...githubNode, number: githubNumber, confidence, provenance: provenanceSchema }),
+  v.object({ type: v.literal("repository"), ...githubNode, number: v.optional(githubNumber), confidence }),
+  v.object({ type: v.literal("issue"), ...githubNode, number: githubNumber, confidence }),
+  v.object({ type: v.literal("pull_request"), ...githubNode, number: githubNumber, confidence }),
+  v.object({ type: v.literal("milestone"), ...githubNode, number: githubNumber, confidence }),
+  v.object({ type: v.literal("project"), ...githubNode, number: githubNumber, confidence }),
 ]);
 
 export type EntityInput = v.InferOutput<typeof entitySchema>;
@@ -77,7 +52,7 @@ export type EntityInput = v.InferOutput<typeof entitySchema>;
 // from/to type rules in the spec are documentation; the database and these schemas
 // carry only what they can enforce cheaply.
 const edge = <R extends GraphRelationType>(relation: R) =>
-  v.object({ relation: v.literal(relation), fromId: entityId, toId: entityId, confidence, provenance: provenanceSchema });
+  v.object({ relation: v.literal(relation), fromId: entityId, toId: entityId, confidence });
 
 export const relationSchema = v.variant("relation", [
   edge("participates_in"),
@@ -95,18 +70,9 @@ export const relationSchema = v.variant("relation", [
 
 export type RelationInput = v.InferOutput<typeof relationSchema>;
 
-const provenance = (input: EntityInput | RelationInput): GraphProvenance | undefined =>
-  input.provenance === undefined
-    ? undefined
-    : {
-        ...(input.provenance.chatId === undefined ? {} : { chatId: input.provenance.chatId }),
-        ...(input.provenance.messageId === undefined ? {} : { messageId: input.provenance.messageId }),
-        ...(input.provenance.deliveryId === undefined ? {} : { deliveryId: input.provenance.deliveryId }),
-      };
-
 /** Derive the store upsert — including the natural key for keyed types — from a validated entity. */
 export const toEntityUpsert = (entity: EntityInput): EntityUpsert => {
-  const shared = { confidence: entity.confidence, provenance: provenance(entity) };
+  const shared = { confidence: entity.confidence };
   switch (entity.type) {
     case "person":
     case "agent":
@@ -146,7 +112,13 @@ export const toEntityUpsert = (entity: EntityInput): EntityUpsert => {
     case "repository":
       return {
         type: "repository",
-        properties: { repo: entity.repo, number: entity.number, title: entity.title, state: entity.state, cached_at: entity.cachedAt },
+        properties: {
+          repo: entity.repo,
+          number: entity.number,
+          title: entity.title,
+          state: entity.state,
+          cached_at: entity.cachedAt,
+        },
         identity: { platform: "github", externalId: entity.repo },
         ...shared,
       };
@@ -154,21 +126,39 @@ export const toEntityUpsert = (entity: EntityInput): EntityUpsert => {
     case "pull_request":
       return {
         type: entity.type,
-        properties: { repo: entity.repo, number: entity.number, title: entity.title, state: entity.state, cached_at: entity.cachedAt },
+        properties: {
+          repo: entity.repo,
+          number: entity.number,
+          title: entity.title,
+          state: entity.state,
+          cached_at: entity.cachedAt,
+        },
         identity: { platform: "github", externalId: `${entity.repo}#${entity.number}` },
         ...shared,
       };
     case "milestone":
       return {
         type: "milestone",
-        properties: { repo: entity.repo, number: entity.number, title: entity.title, state: entity.state, cached_at: entity.cachedAt },
+        properties: {
+          repo: entity.repo,
+          number: entity.number,
+          title: entity.title,
+          state: entity.state,
+          cached_at: entity.cachedAt,
+        },
         identity: { platform: "github", externalId: `${entity.repo}/milestones/${entity.number}` },
         ...shared,
       };
     case "project":
       return {
         type: "project",
-        properties: { repo: entity.repo, number: entity.number, title: entity.title, state: entity.state, cached_at: entity.cachedAt },
+        properties: {
+          repo: entity.repo,
+          number: entity.number,
+          title: entity.title,
+          state: entity.state,
+          cached_at: entity.cachedAt,
+        },
         identity: { platform: "github", externalId: `${entity.repo}/projects/${entity.number}` },
         ...shared,
       };
@@ -180,5 +170,4 @@ export const toRelationUpsert = (edge: RelationInput): RelationUpsert => ({
   relation: edge.relation,
   toId: edge.toId,
   confidence: edge.confidence,
-  provenance: provenance(edge),
 });

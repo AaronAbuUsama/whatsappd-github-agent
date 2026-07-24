@@ -1,8 +1,8 @@
 /**
  * Scribe coalescer tuning — much laggier than the Speaker's (3s / 10s / 10),
  * because nothing the Scribe extracts is urgent (#149). Feel/eval-tuned later, so
- * they are DI knobs, not literals: override per deployment or per test. Durability
- * is best-effort in-memory (no ledger, #141 D2); a crash drops ≤ one `maxWait`.
+ * they are DI knobs, not literals: override per deployment or per test. The live
+ * quiet-period buffer is best-effort in-memory; Historical Replay cursors are durable.
  */
 import { Duration } from "effect";
 import type { DebounceParams } from "@ambient-agent/engine/coalescer/debounce-actor.ts";

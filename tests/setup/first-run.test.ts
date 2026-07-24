@@ -171,6 +171,7 @@ describe("transactional first-run setup", () => {
       modelChoice: {
         provider: "openai",
         profiles: {
+          brain: { id: "gpt-5.4", thinkingLevel: "high" },
           speaker: { id: "gpt-5.4-mini", thinkingLevel: "low" },
           scribe: { id: "gpt-5.4-mini", thinkingLevel: "medium" },
           planner: { id: "gpt-5.4", thinkingLevel: "high" },

@@ -16,12 +16,12 @@
     "./github-issue-repository.ts": "./src/github-issue-repository.ts",
     "./schema.ts": "./src/schema.ts",
     "./installation.ts": "./src/installation.ts",
+    "./managed-config-store.ts": "./src/managed-config-store.ts",
     "./migration.ts": "./src/migration.ts",
     "./paths.ts": "./src/paths.ts",
     "./qr.ts": "./src/qr.ts",
     "./runtime-dependencies.ts": "./src/runtime-dependencies.ts",
     "./runtime-health.ts": "./src/runtime-health.ts",
-    "./specialist-return.ts": "./src/specialist-return.ts",
     "./tenant-credentials.ts": "./src/tenant-credentials.ts",
     "./uncertain-work.ts": "./src/uncertain-work.ts",
     "./whatsapp-account.ts": "./src/whatsapp-account.ts"

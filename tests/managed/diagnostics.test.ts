@@ -5,7 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
-import { APPLICATION_DATABASE_ID, APPLICATION_DATABASE_SCHEMA_VERSION } from "../../packages/engine/src/intake/database-versions.ts";
+import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
+import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
+import { createSurfaceDeliveryStore } from "../../packages/engine/src/surfaces/delivery.ts";
+import {
+  APPLICATION_DATABASE_ID,
+  APPLICATION_DATABASE_SCHEMA_VERSION,
+} from "../../packages/engine/src/intake/database-versions.ts";
 import { inspectManagedServices } from "../../packages/installation/src/diagnostics.ts";
 import { managedPaths } from "../../packages/installation/src/paths.ts";
 
@@ -150,6 +156,26 @@ describe("managed service diagnostics", () => {
       expect.objectContaining({ name: "whatsapp-session", state: "paired" }),
       expect.objectContaining({ name: "github-credential" }),
     ]);
+  });
+
+  it("accepts the owned Brain and Surface tables created by the conversation runtime", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ambient-diagnostics-coworker-"));
+    roots.push(root);
+    const paths = managedPaths({ dataDirectory: root });
+    await mkdir(paths.whatsapp, { mode: 0o700 });
+    await Promise.all([
+      writeFile(paths.applicationDatabase, ""),
+      writeFile(paths.flueDatabase, ""),
+      writeFile(join(paths.whatsapp, "creds.json"), JSON.stringify({ registered: true })),
+    ]);
+    createConversationArchive(paths.applicationDatabase).close();
+    createSurfaceRegistry(paths.applicationDatabase).close();
+    createBrainInbox(paths.applicationDatabase, { providerChatIdForSurface: () => undefined }).close();
+    createSurfaceDeliveryStore(paths.applicationDatabase, { providerChatIdForSurface: () => undefined }).close();
+
+    await expect(inspectManagedServices(paths)).resolves.toContainEqual(
+      expect.objectContaining({ name: "application-database", state: "ready", code: "database.ready" }),
+    );
   });
 
   it("reports the application database healthy after upgrading the current projection schema", async () => {

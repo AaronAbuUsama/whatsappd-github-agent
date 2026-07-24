@@ -1,22 +1,34 @@
+import { dirname, join } from "node:path";
+
 import type { Hono } from "hono";
 
 import { configureBraintrustTracing } from "@ambient-agent/engine/braintrust.ts";
 import { composeSpeaker } from "@ambient-agent/agents/speaker/compose.ts";
-import { dispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
+import { admitGitHubEventToBrain } from "@ambient-agent/engine/github/up-inbox.ts";
 import { createIssueManagementPolicy } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "@ambient-agent/engine/github/operation-store.ts";
 import { createGraphStore } from "@ambient-agent/engine/graph/store.ts";
-import { createRunLedger } from "@ambient-agent/agents/capabilities/delegation/ledger.ts";
-import { sweepUnsettledLaunches } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
+import { seedRepositoryFacts } from "@ambient-agent/agents/capabilities/graph/seed-repositories.ts";
+import { installDelegationBridge } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
 import { configureCoderRuntime } from "@ambient-agent/agents/capabilities/coder/runtime.ts";
+import { createCodingJobRegistry } from "@ambient-agent/agents/capabilities/coder/registry.ts";
 import { configureReviewerRuntime } from "@ambient-agent/agents/capabilities/reviewer/runtime.ts";
 import { reviewerSlug, type ReviewerGitHub } from "@ambient-agent/agents/capabilities/reviewer/github.ts";
 import { reviewer } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
 import type { CoderGitHub } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
-import { githubAppClient } from "@ambient-agent/installation/github-app-client.ts";
-import { readProvisionedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
+import {
+  createInstallationResolver,
+  githubAppJwtClient,
+  type InstallationResolver,
+} from "@ambient-agent/installation/github-app-client.ts";
+import { readManagedConfig, readProvisionedGitHubAppCredential } from "@ambient-agent/installation/configuration.ts";
+import { createManagedConfigStore } from "@ambient-agent/installation/managed-config-store.ts";
+import { applyManagedAuthorization, reloadAuthorizationOnSignal } from "./host/authorization-reload.ts";
 import { createOctokitIssueRepository } from "@ambient-agent/installation/github-issue-repository.ts";
 import { invoke } from "@flue/runtime";
+import { createFlueClient } from "@flue/sdk";
+import { configureScribeAttemptDispatch } from "@ambient-agent/agents/scribe/coalescer.ts";
+import { scribeDirectBaseUrl, scribeDirectToken } from "@ambient-agent/agents/scribe/direct-access.ts";
 import {
   getWhatsAppRuntimeStatus,
   startWhatsAppRuntime,
@@ -48,12 +60,28 @@ import {
 const configureCoderRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
+  registry: ReturnType<typeof createCodingJobRegistry>,
+  reviewerAppSlug: string | undefined,
 ): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
+  const resolver = createInstallationResolver(credential);
+  // #211 round-4: resolve the Coder App's own slug (App-identity JWT route) so the over-budget lifecycle
+  // comment is only ever matched to OUR bot's comment. Best-effort — a boot GitHub blip must not take the
+  // Coder path down, so failure leaves it undefined and the comment scan degrades to any Bot author.
+  let coderAppSlug: string | undefined;
+  try {
+    coderAppSlug = await reviewerSlug(githubAppJwtClient(credential) as unknown as ReviewerGitHub);
+  } catch (cause) {
+    console.warn("[coder] could not resolve the coder App slug; lifecycle-comment author filtering degrades to bot-type", cause);
+  }
   configureCoderRuntime({
-    github: githubAppClient(credential) as unknown as CoderGitHub,
+    github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub,
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
+    registry,
+    // #211 finding 1: the repair tool authorizes a review only if authored by <reviewer-slug>[bot].
+    ...(reviewerAppSlug === undefined ? {} : { reviewerAppSlug }),
+    ...(coderAppSlug === undefined ? {} : { coderAppSlug }),
   });
 };
 
@@ -68,17 +96,19 @@ const configureCoderRuntimeBinding = async (
 const configureReviewerRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
-): Promise<{ github: ReviewerGitHub; appSlug: string } | undefined> => {
+): Promise<{ resolver: InstallationResolver; appSlug: string } | undefined> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.reviewer, "reviewer");
-  const github = githubAppClient(credential) as unknown as ReviewerGitHub;
+  const resolver = createInstallationResolver(credential);
   try {
-    const appSlug = await reviewerSlug(github);
+    // The App slug is App-identity (a JWT route), the same across every installation, so it is
+    // resolved once against the App JWT rather than any one installation.
+    const appSlug = await reviewerSlug(githubAppJwtClient(credential) as unknown as ReviewerGitHub);
     configureReviewerRuntime({
-      github,
+      github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as ReviewerGitHub,
       sandbox: agentSandbox.sandbox,
       workspacesRoot: agentSandbox.workspacesRoot,
     });
-    return { github, appSlug };
+    return { resolver, appSlug };
   } catch (cause) {
     console.warn("[reviewer] could not resolve the reviewer App identity; automatic PR review is unprovisioned", cause);
     return undefined;
@@ -88,7 +118,6 @@ const configureReviewerRuntimeBinding = async (
 export const createAmbientAgentApp = async ({
   authentication,
   configuration,
-  deployment,
   githubCredential,
   paths,
   agentSandbox,
@@ -97,6 +126,13 @@ export const createAmbientAgentApp = async ({
 }: ManagedRuntimeDependencies): Promise<Hono> => {
   const { provider, profiles } = configuration.model;
   configureAgentModelProfiles(profiles, provider);
+  const scribeClient = createFlueClient({
+    baseUrl: scribeDirectBaseUrl(configuration.runtime.port),
+    token: scribeDirectToken(),
+  });
+  configureScribeAttemptDispatch((attemptId, batch) =>
+    scribeClient.agents.prompt("scribe", attemptId, { message: JSON.stringify(batch) }),
+  );
   // Register Braintrust tracing here, inside the runtime bundle, so the isolate-scoped
   // @flue/runtime observer attaches to the same isolate that emits events (#252). The key
   // arrives through the dependencies the CLI read from credentials/braintrust.json; tracing
@@ -112,63 +148,93 @@ export const createAmbientAgentApp = async ({
       ? await connectPiChatGptSubscription({ authentication, profiles })
       : await connectPiApiKeyProvider({ provider, apiKey: modelApiKey ?? "", profiles });
   const issueOperations = createIssueOperationStore(paths.applicationDatabase);
+  installDelegationBridge();
   const runtimeId = runtimeInstallationId(githubCredential.webhookSecret);
   // The Coder Specialist (#158) runs under its own App identity in the config-bound per-job
   // sandbox the selector resolved (ADR 0021, #251) — shared with the Reviewer. A missing or
   // mispasted coder App credential fails boot loudly rather than mounting a dead capability.
-  await configureCoderRuntimeBinding(paths, agentSandbox);
+  // #211: the coding-job registry — the durable PR→job map that lets a Reviewer REQUEST_CHANGES
+  // find the issue/branch/budgets to repair against. Its own SQLite file (not the audited,
+  // migration-governed application database), rebuilt lazily; it holds no GitHub-owned review state.
+  const codingJobRegistry = createCodingJobRegistry(join(dirname(paths.applicationDatabase), "coding-jobs.sqlite"));
+  // Resolve the Reviewer App first so its slug can authorize repair reviews in the Coder runtime (#211).
   const reviewerProvisioned = await configureReviewerRuntimeBinding(paths, agentSandbox);
+  await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry, reviewerProvisioned?.appSlug);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
-  // A SpeakerInput is a SpeakerInput, so the funnel delivers a specialist result to both
-  // Speaker and Scribe. Held out here so the boot sweep can reuse it after the port is wired.
-  const delegation = {
-    ledger: createRunLedger(paths.applicationDatabase),
-    dispatch: (request: Parameters<typeof dispatchSpeaker>[0]) => dispatchSpeaker(request),
-  };
+  // The Speaker/Planner file one identity, but issues may be filed across orgs — resolve the
+  // installation-scoped client per issue repository (multi-org). Every issue op carries a full
+  // {owner, repo}, so we route through the repo-installation lookup, which works for both User and
+  // Organization owners. A single transient lookup failure falls back to the stored installation id.
+  const plannerResolver = createInstallationResolver(githubCredential);
+  // S2 (#19): seed the authorized repositories and surface→repository relations as Graph facts
+  // with provenance, so the Brain resolves the target repository from the Graph per decision
+  // instead of guessing (F4). Authorization stays in config; this is the relation, not the
+  // permission boundary. Idempotent — a re-run against unchanged config is a no-op.
+  const graph = createGraphStore(paths.applicationDatabase);
+  seedRepositoryFacts(graph, {
+    allowedRepositories: configuration.github.allowedRepositories,
+    surfaceRepositories: configuration.github.surfaceRepositories,
+  });
+  // S8 (#179): the DB-backed live source for authorization-knob reloads. Re-seeded from config.json
+  // (the durable source of truth) at every boot; a live change writes both, then a SIGHUP reload
+  // rebuilds the gate Set and repo allowlists in place — no restart, WhatsApp stream untouched. It is
+  // its own SQLite file, deliberately NOT a table in the audited application database: that schema is
+  // migration-governed and rejects unknown tables, and this store is ephemeral (rebuilt from config).
+  const managedConfigStore = createManagedConfigStore(
+    join(dirname(paths.applicationDatabase), "managed-config.sqlite"),
+  );
+  managedConfigStore.replace(configuration);
+  // Hoisted so the SIGHUP reload can rebuild them in place. `reviewRepositories` is the exact mutable
+  // array the ingress reads live (see ingress `review.repositories`), so splicing it updates the
+  // Reviewer allowlist with no re-wiring.
+  const policy = createIssueManagementPolicy(
+    configuration.github.defaultRepository,
+    configuration.github.allowedRepositories,
+  );
+  const reviewRepositories = [...configuration.github.reviewRepositories];
   const app = composeSpeaker({
-    issues: createOctokitIssueRepository(githubAppClient(githubCredential)),
-    operations: issueOperations,
-    policy: createIssueManagementPolicy(
-      configuration.github.defaultRepository,
-      configuration.github.allowedRepositories,
+    issues: createOctokitIssueRepository((repository) =>
+      plannerResolver.octokitFor(repository.owner, repository.repo),
     ),
+    operations: issueOperations,
+    policy,
     ingress: {
       settings: {
         databasePath: paths.applicationDatabase,
-        // Broadcast: a supported GitHub event fans out to every managed thread's Speaker,
-        // each judging relevance itself (#144). The repo→chat mapping now survives only for
-        // specialist-return (resolveSpecialistReturnChat), not inbound routing.
-        managedChats: configuration.managedChats,
       },
-      dispatch: async (chatId, input) => await dispatchSpeaker({ id: chatId, input }),
+      // GitHub events enter the single Brain up-inbox (§4). The Brain — not a routing table —
+      // decides which Surface(s) hear each event. The port is configured once the Brain inbox
+      // exists, inside startWhatsAppRuntime, so this resolves lazily.
+      admit: (event) => admitGitHubEventToBrain(event),
       ...(reviewerProvisioned ? {
         review: {
-          repositories: configuration.github.reviewRepositories,
+          repositories: reviewRepositories,
           launch: async (input) => {
             const admitted = await invoke(reviewer, { input });
-            delegation.ledger.record({ runId: admitted.runId, workflow: "reviewer", launchedAt: new Date().toISOString() });
             return admitted;
           },
           command: {
             appSlug: reviewerProvisioned.appSlug,
-            permission: async (input) =>
-              (await reviewerProvisioned.github.repos.getCollaboratorPermissionLevel(input)).data.permission,
+            permission: async (input) => {
+              const gh = (await reviewerProvisioned.resolver.octokitFor(input.owner, input.repo)) as unknown as ReviewerGitHub;
+              return (await gh.repos.getCollaboratorPermissionLevel(input)).data.permission;
+            },
             pullRequest: async ({ owner, repo, pullRequest }) => {
-              const { data } = await reviewerProvisioned.github.pulls.get({ owner, repo, pull_number: pullRequest });
+              const gh = (await reviewerProvisioned.resolver.octokitFor(owner, repo)) as unknown as ReviewerGitHub;
+              const { data } = await gh.pulls.get({ owner, repo, pull_number: pullRequest });
               return { state: data.state, draft: data.draft ?? false, headSha: data.head.sha };
             },
           },
         },
       } : {}),
     },
-    graph: createGraphStore(paths.applicationDatabase),
-    delegation,
+    graph,
     // The WhatsApp participation port is wired later by runWhatsAppSession, once the
     // live socket exists.
     health: () => {
       return {
         ...subscription,
-        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus(), deployment),
+        ...bridgeHealth(runtimeId, getWhatsAppRuntimeStatus()),
       };
     },
     routes: (routes) => {
@@ -195,18 +261,30 @@ export const createAmbientAgentApp = async ({
       storeDirectory: paths.whatsapp,
       applicationDatabase: paths.applicationDatabase,
       managedChats: configuration.managedChats,
-      // The ADR 0001 boot sweep, deferred to here: once per boot, after the participation
-      // port is wired (so the Speaker can voice each `interrupted` notification), detached,
-      // errors caught. Any launch a crash left unsettled self-heals into a chat message.
-      afterParticipationReady: () => {
-        void sweepUnsettledLaunches(delegation).catch((cause) => {
-          console.error("[delegation] boot sweep failed", cause);
-        });
-      },
       ...(configuration.smoke === undefined ? {} : { canaryChat: configuration.smoke.canaryChat }),
     });
     whatsappControl = whatsapp;
     stopRuntimeOnSignal(whatsapp);
+  });
+
+  // S8 (#179): reload the authorization knobs in place on SIGHUP — the operator's trigger after the
+  // real `ambient-agent config` command commits to config.json (its durable source of truth). We re-read
+  // config.json, refresh the DB-backed store from it, and apply the re-validated snapshot: the gate Set
+  // (+ each authorized chat's Surface), the two repo allowlists, and the repository Graph facts all
+  // catch up with no restart. The WhatsApp session, model provider, port and sandbox stay restart-only.
+  reloadAuthorizationOnSignal(async () => {
+    const next = await readManagedConfig(paths.config);
+    managedConfigStore.replace(next);
+    applyManagedAuthorization(managedConfigStore.current(), {
+      reloadManagedChats: (chatIds) => whatsappControl?.reloadManagedChats(chatIds),
+      policy,
+      reviewRepositories,
+      reseedRepositoryGraph: (config) =>
+        seedRepositoryFacts(graph, {
+          allowedRepositories: config.github.allowedRepositories,
+          surfaceRepositories: config.github.surfaceRepositories,
+        }),
+    });
   });
 
   return app;

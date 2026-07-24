@@ -52,7 +52,7 @@ export const isCatalogModel = (provider: ModelProvider, modelId: string): boolea
   catalogModelIds(provider).includes(modelId);
 
 export const LUNA_MODEL_ID = "gpt-5.6-luna";
-export const AGENT_MODEL_ROLES = ["speaker", "scribe", "planner", "coder", "verifier"] as const;
+export const AGENT_MODEL_ROLES = ["brain", "speaker", "scribe", "planner", "coder", "verifier"] as const;
 export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 export type AgentModelRole = (typeof AGENT_MODEL_ROLES)[number];
@@ -66,6 +66,7 @@ export interface AgentModelProfile {
 export type AgentModelProfiles = Readonly<Record<AgentModelRole, AgentModelProfile>>;
 
 export const DEFAULT_AGENT_MODEL_PROFILES: AgentModelProfiles = {
+  brain: { id: LUNA_MODEL_ID, thinkingLevel: "high" },
   speaker: { id: LUNA_MODEL_ID, thinkingLevel: "low" },
   scribe: { id: LUNA_MODEL_ID, thinkingLevel: "medium" },
   planner: { id: "gpt-5.6-sol", thinkingLevel: "xhigh" },
@@ -85,7 +86,7 @@ export const configureAgentModelProfiles = (profiles: AgentModelProfiles, provid
 };
 
 /**
- * The single seam every agent resolves its model through. All five roles read their own
+ * The single seam every agent resolves its model through. Every role reads its own
  * profile here, so a per-role model — a cheap Speaker beside a capable Coder — is config,
  * and no agent ever names a provider.
  */

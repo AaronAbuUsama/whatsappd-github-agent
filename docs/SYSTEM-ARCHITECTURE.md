@@ -2,7 +2,7 @@
 
 This is the canonical description of how the coworker agentic system works, written
 from first principles as the definitive pattern — not as a change, a migration, or a
-diff against any prior shape. It describes the architecture *as designed*.
+diff against any prior shape. It describes the architecture _as designed_.
 
 Read it as the single source of truth for the **conceptual** system: what the agents
 are, what the graph and the digest are, how state is owned, how work flows, and where
@@ -13,7 +13,7 @@ explicitly so the language stays cohesive.
 
 > One reading rule: most of this architecture is already realized in code, some of it is
 > designed and not yet built. The body describes the definitive system in the present
-> tense because that is what it *is* meant to be. **§13 is the honest map of where the
+> tense because that is what it _is_ meant to be. **§13 is the honest map of where the
 > implementation stands today and the distance left to close.** Nothing in the body is
 > hidden behind "future"; the gap lives in one place.
 
@@ -24,13 +24,13 @@ explicitly so the language stays cohesive.
 Everything below follows from eight principles. If a design question isn't answered by
 the sections that follow, answer it by returning to these.
 
-1. **One coworker, many surfaces.** To the people using it, the system is *one* colleague
+1. **One coworker, many surfaces.** To the people using it, the system is _one_ colleague
    you talk to — with one identity, one memory, one point of view — no matter which chat,
    DM, or channel you reach it through. It is multi-agent under the hood; it is one agent
-   in the felt experience. "The coworker" always means the *whole* system, never any one
+   in the felt experience. "The coworker" always means the _whole_ system, never any one
    part of it.
 
-2. **Separate deciding from speaking.** The part that *thinks* and the part that *talks*
+2. **Separate deciding from speaking.** The part that _thinks_ and the part that _talks_
    are different things. Thinking is global, deliberate, and slow. Talking is local,
    reactive, and fast. Fusing them produces either a bottleneck or a scatterbrain; keeping
    them apart is the central move of this architecture.
@@ -45,12 +45,12 @@ the sections that follow, answer it by returning to these.
    reconciled later. There is one ontology and one authority over its interpretation.
 
 5. **Everything flows up; decisions flow down.** The Brain has a single conceptual inbox.
-   External events and internal intents both flow *up* into it. It decides, then pushes
-   context, directives, and speech *down* into surfaces. This one loop is the routing
+   External events and internal intents both flow _up_ into it. It decides, then pushes
+   context, directives, and speech _down_ into surfaces. This one loop is the routing
    story, the delegation story, and the control story at once.
 
 6. **Non-blocking everywhere.** No part of the system waits on another part to make
-   progress. A busy chat is fully *processed* but not replied-to per message. Starting
+   progress. A busy chat is fully _processed_ but not replied-to per message. Starting
    work never freezes a conversation. Slow reasoning never stalls fast reaction.
 
 7. **Nothing real is ever dropped.** Every event, intent, result, and open loop has a
@@ -115,7 +115,7 @@ The rest of this document defines every box and every arrow.
 
 ## 3. The core abstractions
 
-Each abstraction has exactly one job. The power of the system is in the *composition*,
+Each abstraction has exactly one job. The power of the system is in the _composition_,
 so read these as a set, not a list.
 
 ### 3.1 The Coworker
@@ -129,7 +129,7 @@ not the coworker — it is the coworker's mind.
 
 The single global mind. There is exactly one, process-wide. It is **silent** in that it is
 not bound to any surface and never has "its own chat" — but it is not passive: it speaks
-*through* surfaces it chooses, decides *what to do*, and owns all durable work and meaning.
+_through_ surfaces it chooses, decides _what to do_, and owns all durable work and meaning.
 Application stores hold the inbox, Graph, clocks, and work ledgers; the Brain is their domain
 authority rather than their persistence mechanism. Its
 responsibilities, each detailed later:
@@ -147,7 +147,7 @@ responsibilities, each detailed later:
 - **Chooses the surface and the voice** (§8): whether to say something in a group room, as
   a DM, or across rooms — and which Speaker carries it.
 
-The Brain is deliberately kept *out of every hot path*. It reasons and decides; it does
+The Brain is deliberately kept _out of every hot path_. It reasons and decides; it does
 not sit between a person and a reply, nor between the ingestion clock and a graph write.
 
 ### 3.3 Speakers (surface mouths)
@@ -155,8 +155,8 @@ not sit between a person and a reply, nor between the ingestion clock and a grap
 A Speaker is a **local, fast, reactive conversational agent bound to exactly one
 surface.** Its entire job is to converse well in its own room. It is autonomous within
 that room — it reacts to its own messages, on its own fast cadence, holding that
-conversation's working context across turns — but it is deliberately *dumb about the
-wider world*:
+conversation's working context across turns — but it is deliberately _dumb about the
+wider world_:
 
 - It does **not** create issues, launch jobs, or write the ontology.
 - It does **not** know or decide anything cross-surface.
@@ -165,7 +165,7 @@ wider world*:
 
 A Speaker holds only transient conversational state; all durable meaning it observes flows
 up (to the Brain as intent, and to the Scribe as a fact stream). Speakers have autonomy of
-*expression*; the Brain has authority over *substance*.
+_expression_; the Brain has authority over _substance_.
 
 ### 3.4 Surfaces
 
@@ -187,11 +187,11 @@ silently moving them.
 ### 3.5 The Scribe (global ingestion clock)
 
 The Scribe is the coworker's **ingestion arm**: one application-owned global clock that
-turns raw conversation into proposed Attestations. It reads the fact-stream from *all*
+turns raw conversation into proposed Attestations. It reads the fact-stream from _all_
 surfaces, forms bounded cross-surface Scribe Batches, and runs bounded concurrent stateless
 extraction attempts. Each attempt receives all required context and appends low-confidence
 claims with trusted Evidence Sets. It never speaks, holds no external identity or private
-memory, and writes *proposals*, not verdicts — the Brain owns integration and rulings.
+memory, and writes _proposals_, not verdicts — the Brain owns integration and rulings.
 
 The Scribe is the busiest, most expensive worker in the system (it runs on the raw
 message firehose and must derive meaning), which is exactly why its clock is **global**:
@@ -223,18 +223,18 @@ not a cached second payload.
 Durable work runs in **Bounded Workflows** — finite, autonomous units of work with
 validated input, their own run record, and a terminal result. A **Specialist** is the
 narrowly-instructed agent inside one such workflow (the Coder, the Reviewer, the Planner).
-Specialists are the coworker's **team**: they show up on GitHub as *distinct identities on
-purpose* — the coworker gets work done through a visible team — while the coworker as a
+Specialists are the coworker's **team**: they show up on GitHub as _distinct identities on
+purpose_ — the coworker gets work done through a visible team — while the coworker as a
 whole remains one felt identity to the people it talks to. A workflow does not pause for
-conversation; its result, failures, and rare Milestones return *up to the Brain*.
+conversation; its result, failures, and rare Milestones return _up to the Brain_.
 
 ### 3.9 The Coalescer (the timing layer, no model)
 
-The Coalescer is pure timing with no intelligence. It answers one question — *when has
-enough happened to act?* — and it answers it in two places: for each Speaker (batch a
+The Coalescer is pure timing with no intelligence. It answers one question — _when has
+enough happened to act?_ — and it answers it in two places: for each Speaker (batch a
 burst of chat into one Window; an @-mention fires immediately) and for the global Scribe
-(batch the fact-stream on a laggy cadence with no immediate-fire). It never decides *what*
-to do, only *when* a batch is ready. Keeping timing modelless is what makes the system
+(batch the fact-stream on a laggy cadence with no immediate-fire). It never decides _what_
+to do, only _when_ a batch is ready. Keeping timing modelless is what makes the system
 non-blocking and cheap.
 
 ---
@@ -265,7 +265,7 @@ flowchart TB
 ```
 
 **Why one inbox.** External events (a webhook, a monitor alert) and internal intents (a
-Speaker saying "the user wants a bug filed") are the *same kind of thing* from the Brain's
+Speaker saying "the user wants a bug filed") are the _same kind of thing_ from the Brain's
 point of view: something happened that may require a decision. Collapsing them into one
 inbox is what makes routing, delegation, and control one mechanism instead of three.
 
@@ -351,7 +351,7 @@ The projection contains:
   raw source already serves fresh are not duplicated as Graph truth.
 - **Cross-platform identity** — one real actor is one node, however many platform handles
   it has. Claims and Brain merge rulings cause a WhatsApp sender and a GitHub login to
-  converge on one projected entity. *That convergence is the cross-thread memory.*
+  converge on one projected entity. _That convergence is the cross-thread memory._
 
 ### 5.2 Confidence — knowledge is tentative by design
 
@@ -360,7 +360,7 @@ Projection derives current confidence from independent supporting Evidence Sets;
 re-reading the same evidence does not amplify belief. Brain rulings are authoritative inputs
 to the fold without erasing the observations they confirm or overrule.
 
-Low confidence is not a defect — it is a *question the coworker may raise*. A later answer
+Low confidence is not a defect — it is a _question the coworker may raise_. A later answer
 adds new evidence and another Attestation. This keeps ingestion honest and fast: the Scribe
 never blocks on ambiguity, and the full reasoning trail remains inspectable.
 
@@ -371,7 +371,7 @@ surface and message, which external delivery, or which provider record. Trusted 
 code resolves those references; the model does not invent them. Because the log is
 append-only, provenance is permanent rather than overwritten by a later observation.
 
-Provenance is first-class because the Brain reasons *across sources*. It must know whether a
+Provenance is first-class because the Brain reasons _across sources_. It must know whether a
 belief came from a group, a DM, a webhook, or another provider both to weigh it and to decide
 where a consequence belongs. As the system gains sources (§11), Evidence Sets keep one Graph
 coherent across all of them.
@@ -381,8 +381,8 @@ coherent across all of them.
 The Digest is a **read-projection of the Graph, filtered to what a turn needs**. It exists
 at two intensities that share one pipe:
 
-- **Mechanical pull (the default).** On every Speaker turn, deterministic code — *no model,
-  no cache* — seeds from the identities already in view, walks one hop out of the Graph,
+- **Mechanical pull (the default).** On every Speaker turn, deterministic code — _no model,
+  no cache_ — seeds from the identities already in view, walks one hop out of the Graph,
   and staples the result onto the Speaker's input. Recomputed live every turn, so a fact
   another surface's ingestion wrote seconds ago is visible now. This is the cheap,
   automatic "relevant memory, for free" that keeps Speakers dumb but not ignorant. Nobody
@@ -403,10 +403,10 @@ ephemeral and is recomputed after restart, so it cannot become a stale cache.
 Understanding this collapses the earlier confusion: "the digest" and "the Brain pushing
 context" are not two systems. They are one context-injection mechanism, one seeded by a fixed
 rule and one extended by a decision. The Directive's Brief remains separate: it preserves the
-causal source evidence for *this decision*, while Digest is current ambient ontology and may
+causal source evidence for _this decision_, while Digest is current ambient ontology and may
 legitimately change before delivery.
 
-### 5.5 Who appends vs who rules — single *authority*, multiple authors
+### 5.5 Who appends vs who rules — single _authority_, multiple authors
 
 The Scribe, deterministic ingesters, and Brain are all Attestation authors, but only the Brain
 authors rulings:
@@ -428,7 +428,7 @@ state would destroy provenance. Append-only authorship plus one ruling authority
 ## 6. The two clocks — reactive and proactive
 
 A Speaker has one clock: it reacts to its room. The Brain has two, and the second is what
-makes the coworker *self-driving* rather than merely responsive.
+makes the coworker _self-driving_ rather than merely responsive.
 
 ```mermaid
 flowchart TB
@@ -455,7 +455,7 @@ flowchart TB
   this loop in two hours"). A process timer is only a liveness hint; the application database
   is the source of truth, and boot reconciliation preserves the wake across a crash.
 
-The proactive clock is where the coworker's *initiative* lives: chasing an overdue
+The proactive clock is where the coworker's _initiative_ lives: chasing an overdue
 commitment, following up on an open loop, noticing that two surfaces need to be connected.
 It runs at a deliberately slower cadence than any Speaker — reasoning is not conversation.
 
@@ -463,7 +463,7 @@ It runs at a deliberately slower cadence than any Speaker — reasoning is not c
 
 ## 7. Work — everything routes through the Brain
 
-The coworker's *doing* (as opposed to its *talking*) is centralized in the Brain. A Speaker
+The coworker's _doing_ (as opposed to its _talking_) is centralized in the Brain. A Speaker
 never launches work; it escalates intent. The Brain owns every work item end to end.
 
 ```mermaid
@@ -495,13 +495,13 @@ third is the decisive one:
 2. **The Brain owns the context that goes into work.** It assembles a job's context from
    the Graph it owns — the mouth never had the whole picture anyway.
 3. **The Brain owns every loop.** A PR that comes back needing refinement must be re-kicked
-   *somehow*. Because the result returns up to the same inbox that launched it, the Brain —
+   _somehow_. Because the result returns up to the same inbox that launched it, the Brain —
    the one place with provenance, return routing, and the full ontology — owns the entire
    PR/issue/job lifecycle, including re-dispatch. Control of a loop lives where the whole
    picture lives.
 
-**Cost of centralizing** (paid honestly): the Speaker needs one seam — *escalate an intent
-without acting* — inverting a direct tool call into an upward signal. The latency of the
+**Cost of centralizing** (paid honestly): the Speaker needs one seam — _escalate an intent
+without acting_ — inverting a direct tool call into an upward signal. The latency of the
 extra hop is irrelevant: launching work is off the conversational hot path and the work
 itself takes minutes. Everything else (the Brain being the owner, tracking return
 addresses) is already inherent to the Brain's role.
@@ -534,7 +534,7 @@ resolves to the same ordinary Surface registry during prompt admission. Configur
 operator-authorized. Discovery alone never grants participation, and a source Surface is
 provenance rather than a forced return address.
 
-Note that no infrastructural role *is* the identity. Owning a webhook secret, or filing
+Note that no infrastructural role _is_ the identity. Owning a webhook secret, or filing
 issues under a particular app, are jobs done by parts of the team; they are not the
 coworker's face. The felt identity is the whole coworker, spoken through whichever surface
 the Brain chose — never any single backstage app.
@@ -563,31 +563,31 @@ independent mechanisms, each modelless where it can be:
 These are the properties any change must preserve. They are the first principles restated
 as testable guarantees.
 
-| Invariant | What it means | How the architecture secures it |
-|---|---|---|
-| **One identity** | The coworker feels like one colleague across all surfaces | Single Brain + single Graph behind all Speakers (§8) |
-| **Single authority** | Exactly one owner of durable meaning | Brain alone authors rulings; other authors append evidence-backed claims (§5.5) |
-| **Non-blocking** | No part waits on another to progress | Coalescing + off-hot-path Brain + async work (§9) |
-| **No silent drop** | Every event, intent, result, loop has a home | Brain is the home of last resort; jobs reconcile on boot (§4, §7) |
-| **Provenance-complete** | Every derived fact knows its origin | Every Attestation has a permanent non-empty Evidence Set (§5.3) |
-| **Self-healing knowledge** | Ambiguity never blocks; the graph corrects itself | Append-only claims + derived confidence + Brain rulings (§5.2, §5.5) |
-| **Dumb mouths** | Speakers converse only; they never act or own state | Work + ontology authority live in the Brain (§3.3, §7) |
-| **Fail-closed surfaces** | Observation never silently grants participation | Active account-scoped binding is revalidated at intake and Say (§3.4, §8) |
-| **Honest delivery** | Provider acknowledgment, known failure, and ambiguity remain distinct | Surface Delivery + Conversation Archive evidence + Uncertain (§4) |
+| Invariant                  | What it means                                                         | How the architecture secures it                                                 |
+| -------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **One identity**           | The coworker feels like one colleague across all surfaces             | Single Brain + single Graph behind all Speakers (§8)                            |
+| **Single authority**       | Exactly one owner of durable meaning                                  | Brain alone authors rulings; other authors append evidence-backed claims (§5.5) |
+| **Non-blocking**           | No part waits on another to progress                                  | Coalescing + off-hot-path Brain + async work (§9)                               |
+| **No silent drop**         | Every event, intent, result, loop has a home                          | Brain is the home of last resort; jobs reconcile on boot (§4, §7)               |
+| **Provenance-complete**    | Every derived fact knows its origin                                   | Every Attestation has a permanent non-empty Evidence Set (§5.3)                 |
+| **Self-healing knowledge** | Ambiguity never blocks; the graph corrects itself                     | Append-only claims + derived confidence + Brain rulings (§5.2, §5.5)            |
+| **Dumb mouths**            | Speakers converse only; they never act or own state                   | Work + ontology authority live in the Brain (§3.3, §7)                          |
+| **Fail-closed surfaces**   | Observation never silently grants participation                       | Active account-scoped binding is revalidated at intake and Say (§3.4, §8)       |
+| **Honest delivery**        | Provider acknowledgment, known failure, and ambiguity remain distinct | Surface Delivery + Conversation Archive evidence + Uncertain (§4)               |
 
 ---
 
 ## 11. Extension points — how the system grows without changing shape
 
-The architecture is designed so that growth is *additive*. New capability slots into an
+The architecture is designed so that growth is _additive_. New capability slots into an
 existing seam; it does not reshape the core. The canonical growth axes:
 
 - **New surface types** (email, Slack, SMS, a web dashboard). A surface is "a place with a
   Speaker." A new channel is a new Speaker type bound to a new surface kind, registered in
   the surface registry. The Brain, Graph, and control loop are untouched — the Brain gains
-  a new place it *can* choose to speak.
+  a new place it _can_ choose to speak.
 - **New event sources** (monitors, calendars, CI, external webhooks). Everything already
-  flows *up* into one inbox. A new source is a new arrow into that inbox (§4). Provenance
+  flows _up_ into one inbox. A new source is a new arrow into that inbox (§4). Provenance
   (§5.3) keeps the resulting facts coherent with the rest of the Graph. No new routing
   concept is needed — routing is "the Brain decides," and it already does.
 - **New backstage agents / capabilities** (a Designer, a Researcher, a Deployer). A new
@@ -618,17 +618,17 @@ Admission, Operation Identity, Durably Terminal, Milestone). It introduces or sh
 few terms, which should be ratified back into `CONTEXT.md`:
 
 - **The Coworker** — the whole system as one felt identity. Supersedes any usage that
-  treated a single per-chat instance as "the agent." The coworker is the *whole*, never a
+  treated a single per-chat instance as "the agent." The coworker is the _whole_, never a
   part.
 - **The Brain (Master Agent)** — the single global mind, owner, and decider. New;
   the anchor of this architecture.
 - **Speaker** — the surface-bound conversational mouth. Sharpens the older per–Managed-Chat
-  instance ("Ambience"): it is now explicitly *a mouth, not the whole*, and explicitly
-  *dumb* (converses only; escalates intent; never acts or owns state).
+  instance ("Ambience"): it is now explicitly _a mouth, not the whole_, and explicitly
+  _dumb_ (converses only; escalates intent; never acts or owns state).
 - **Surface / Surface Binding / Surface Delivery** — stable application identity for one
   authorized place with a Speaker; its account-scoped provider address; and durable evidence
   for one logical Say. Discovery is observation, never authorization.
-- **Scribe** — sharpened from "silent *per-thread* agent" to one global ingestion clock
+- **Scribe** — sharpened from "silent _per-thread_ agent" to one global ingestion clock
   driving bounded concurrent stateless attempts. Its role is to append evidence-backed
   proposals, never own memory or authority.
 - **Attestation / Evidence Set / Belief Projection** — the Graph's persistence and read
@@ -650,24 +650,25 @@ The architecture above is definitive. This section is the honest map of the curr
 implementation against it — kept in one place so the body can describe the system as it is
 meant to be. "Distance" is descriptive, not a plan.
 
-| Abstraction | Definitive architecture | Where the code is today | Distance |
-|---|---|---|---|
-| **Graph** | Append-only Attestation log + derived Belief Projection | Current `packages/engine/src/graph/store.ts` is a **mutable current-state store**: entity/relation upserts overwrite provenance and fold confidence in place | **Replace mutable writes with Attestation inserts; derive the existing read shape as the Belief Projection** |
-| **Digest** | Versioned live projection; local pull + bounded Brain-selected seeds, one channel | Pull side built: `graph/digest.ts` (live one-hop, no cache) attached at the funnel by `capabilities/graph/digest.ts`; current shape lacks Projection version/evidence/caps and the funnel replaces rather than composes context | **Extend the existing projector/shape and compose at the funnel; persist only Directive seed selection** |
-| **Scribe** | One global clock; bounded concurrent stateless attempts; per-Attestation Evidence Sets | Built but **per-chat**: `scribe/coalescer.ts` forks one loop per chatId. Provenance is implicit per batch and writes target the mutable Graph | **Build global live/replay batching; push full context into each attempt; append evidence-set-idempotent proposals** |
-| **Speaker** | Dumb mouth: converses only, escalates intent | Built but **overloaded**: mounts issue-management + delegation and holds ontology-write authority (`speaker/agent.ts` skills/tools; `record_entity`/`merge_entities`) | **Remove issue/delegation/ontology-write from the Speaker; add intent escalation** |
-| **Brain** | Single global mind: up-inbox, two clocks, owns state + work | **Does not exist as an actor.** Its would-be jobs are scattered: routing lives in webhook broadcast (`github/ingress.ts`), work-launch lives on the Speaker, ontology-write on Speaker/Scribe | **Introduce the Brain**; move routing, work-dispatch, and ontology curation onto it |
-| **Control loop** | One up-inbox; events + intents up; push down | Partial and split: inbound GitHub events **broadcast to every surface**, each Speaker self-judging relevance (`ingress.ts`); uncorrelated events are **dropped** (`ingress.ts`); intents aren't a concept | **Replace broadcast + drop with the single up-inbox**; add intent as an input |
-| **Two clocks** | Reactive + proactive (cron floor + event wakes + self-schedule) | Only the reactive clock exists. Overdue commitments are *flagged* in the digest but nothing acts on them | **Add the proactive clock**; reuse the durable-ledger + boot-sweep pattern for self-scheduled wakes |
-| **Surfaces** | Stable registry + account-scoped bindings + one Speaker + durable delivery evidence | Config already accepts group/DM JIDs, but authorization is an in-memory `managedChats` set, Speaker id is the chat JID, and specialist return is hard-coded to the first chat; outbound archive evidence exists but no Surface/Directive ledger correlates it | **Seed configured Surfaces; resolve known-Person prompt targets through that same registry; route by Surface UUID; fail closed; record Surface Delivery** |
-| **Work / delegation** | All work dispatched by the Brain; Brain owns each lifecycle incl. refinement | Async delegation + durable return + boot reconciliation are built and solid (`capabilities/delegation/*`), but launched **by the Speaker**, returning to the launching **chat** | **Move the launcher to the Brain**; return address becomes the Brain, which owns the loop |
-| **Specialists / Bounded Workflows** | Backstage team, distinct GitHub identities, results up | Built and matches (Coder/Reviewer/Planner as Specialists; distinct app identities) | **None** conceptually — rewire the launcher/return only |
-| **Coalescer** | Modelless timing for Speakers and Scribe | Built and matches: `engine/src/coalescer/*` (Speaker Windows + Scribe batch) | **None** — the Scribe instance goes global (see Scribe row) |
+| Abstraction                         | Definitive architecture                                                                | Where the code is today                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Distance                                                                                                                       |
+| ----------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Graph**                           | Append-only Attestation log + derived Belief Projection                                | Built in `packages/engine/src/graph/store.ts`: the only public write appends immutable, author-attributed Attestations with non-empty Evidence Sets; SQLite rejects update/delete; exact retries dedupe; overlapping evidence cannot amplify Confidence; contradictory properties resolve by author authority then Confidence; and the entity/relation/identity read surface is rebuilt deterministically as the Belief Projection. Provenance-bearing legacy rows migrate once with convergence aliases; rows without verifiable raw evidence are dropped for Historical Replay. Scribe tooling cannot rule/merge; Speaker/Specialist Graph tools are read-only; the Brain mounts lookup plus evidence-bounded ruling/merge authority derived from its claimed Batch | **None for the accepted Projection/ruling floor**                                                                              |
+| **Digest**                          | Versioned live projection; local pull + bounded Brain-selected seeds, one channel      | `graph/digest.ts` computes one live no-cache Projection carrying schema/Projection versions, up to 64 Entities, 128 Relations, 32 Commitments, eight supporting Attestations per item, and 64 KiB total. Speaker/Specialist pull and every fresh Scribe retry use the same projector. The funnel still replaces rather than composes Brain-selected extra seeds                                                                                                                                                                                                                                                                                                                                                                                | **Compose and persist only bounded Brain-selected Directive seeds over the existing `graphContext` channel**                   |
+| **Scribe**                          | One global clock; bounded concurrent stateless attempts; per-Attestation Evidence Sets | Built: live and Historical Replay observations admit idempotently by immutable evidence to `scribe/inbox.ts`; one chronological claimant forms stable cross-Surface Batches; unfinished attempts reopen as interrupted and retry with fresh identities; one process-wide drain and four-attempt gate serve both paths. Every retry recomputes the current bounded Projection. Successful evidence-bearing proposal deltas admit to the Brain up-inbox before a Scribe Batch completes, and Replay does not advance its cursor until the owning Brain Batch settles                                                                                                                                                                                     | **None conceptually; cumulative live two-chat and replay-equivalence proof remains**                                           |
+| **Speaker**                         | Dumb mouth: converses only, escalates intent                                           | Built: the Speaker mounts local conversation/participation, Intent escalation, Directive-only Saying, and read-only Graph tools. Direct issue-management, delegation launch/status, and Specialist-return inputs are absent from `speaker/agent.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | **None for the accepted dumb-mouth floor**                                                                                     |
+| **Brain**                           | Single global mind: up-inbox, two clocks, owns state + work                            | The reactive global actor claims immutable mixed Intents, Knowledge Deltas, Specialist Results, GitHub events, and Scheduled Wakes in one Batch frontier; owns Graph rulings; records prompt/silence; and owns Coder launch through a stable `brain-work:*` identity. Pending admission reconciles against Flue's snapshotted work id before retry; terminal and interrupted outcomes return durably to the Brain, whose later `prompt_speaker` independently chooses a Surface. GitHub webhook routing and the proactive clock are now owned here too (`packages/engine/src/github/ingress.ts`, `packages/engine/src/brain/inbox.ts`)                                                                                                                                                                                                                           | **None conceptually — concentration of authority is complete**                                                                        |
+| **Control loop**                    | One up-inbox; events + intents up; push down                                           | The conversation path is built: Speaker Intent → durable Brain inbox/Batch → Directive or deliberate silence → selected Speaker, with durable delivery Outcome. GitHub events now admit to the same single Brain up-inbox — the ingress no longer broadcasts to every surface or drops uncorrelated events; the Brain decides which Surface, if any, hears each event (`ingress.ts`)                                                                                                                                                                                                                                                                                                                                                      | **None conceptually**                                                                                                          |
+| **Two clocks**                      | Reactive + proactive (cron floor + event wakes + self-schedule)                        | Both clocks exist: the reactive Batch frontier above, plus a durable Scheduled Wake (self-scheduled reconsideration, ADR 0006) and a coalesced Proactive Sweep (the boot/cron due-scan floor) admitted through the same up-inbox                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | **None conceptually**                            |
+| **Surfaces**                        | Stable registry + account-scoped bindings + one Speaker + durable delivery evidence    | Configured group/DM JIDs seed stable account-scoped Surfaces; Brain prompts select a Surface UUID and trusted code resolves its active binding, including a known Person's Graph entity id resolving to their DM Surface (`surfaces/registry.ts`). Each Directive Say records before transport and settles as delivered/failed/Uncertain from provider + Archive evidence (`surfaces/registry.ts`, `surfaces/delivery.ts`). Work retains the originating Surface as provenance only; there is no first-chat Specialist return                                                                                                                                                     | **None conceptually**                    |
+| **Work / delegation**               | All work dispatched by the Brain; Brain owns each lifecycle incl. refinement           | Built for the Coder floor: `brain_specialist_launches` records deterministic Brain work before Flue; retry/restart reconciles the generated run by the snapshotted work id; terminal/interrupted results enter `brain_specialist_results` and the next Brain Batch; reporting is a separate Brain-selected Directive. Direct Speaker launch, chat-bound return, first-chat resolver, and old run-ledger code are deleted                                                                                                                                                                                                                                                        | **Live-prove one controlled GitHub artifact and WhatsApp report; later Specialists reuse this same concrete seam**             |
+| **Specialists / Bounded Workflows** | Backstage team, distinct GitHub identities, results up                                 | Built and matches (Coder/Reviewer/Planner as Specialists; distinct app identities)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | **None** conceptually — rewire the launcher/return only                                                                        |
+| **Coalescer**                       | Modelless timing for Speakers and Scribe                                               | Per-chat Speaker Windows remain in `engine/src/coalescer/*`. The Scribe's quiet-period/cap timing only wakes one durable global inbox; live and Replay share its chronological Batch claimant, retry ledger, drain, and bounded model gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | **None conceptually**                                                                                                          |
 
-**Reading the distance.** The load-bearing implementation primitives already exist: the
-typed Graph read surface, live Digest pull, asynchronous delegation with durable return, and
-modelless coalescing. Two corrections remain. First, introduce the Brain and re-point routing,
-work, and ontology authority onto it. Second, stop mutating Graph beliefs in place: preserve
-the current query surface as a derived Belief Projection over append-only Attestations. The
-distance is still mostly concentration of authority and honest persistence boundaries, not a
-parallel replacement platform.
+**Reading the distance.** The load-bearing implementation primitives all exist and authority is
+concentrated in the Brain: the append-only Graph and typed Belief Projection, bounded live Digest,
+definitive global Scribe clock, reactive Brain conversation/knowledge/work loop, GitHub ingress
+and the proactive clock routed through the same single up-inbox, known-Person Surface resolution,
+asynchronous Brain-owned delegation with durable return, and modelless coalescing. The remaining
+distance is live-proof and refinement work already named row-by-row above (the cumulative live
+two-chat/replay-equivalence proof, composing bounded Brain-selected Digest seeds, and reusing the
+Coder seam for later Specialists) — not a further architectural correction.

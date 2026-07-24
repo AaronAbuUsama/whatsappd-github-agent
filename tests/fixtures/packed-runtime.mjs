@@ -90,7 +90,12 @@ const octokitSource = String.raw`
 const ok = async () => ({ data: {} });
 const issues = new Proxy({}, { get: () => ok });
 // App-installation auth: the bot login is derived from apps.getAuthenticated() -> <slug>[bot].
-const apps = { getAuthenticated: async () => ({ data: { slug: "packed" } }) };
+const apps = {
+  getAuthenticated: async () => ({ data: { slug: "packed" } }),
+  // Multi-org verification proves installation via the App-JWT route, not the fixed repos.get.
+  getRepoInstallation: async () => ({ data: { id: 424242 } }),
+  getOrgInstallation: async () => ({ data: { id: 424242 } }),
+};
 export class Octokit {
   constructor() {
     this.apps = apps;

@@ -22,6 +22,7 @@ const request = async (app: Hono, body: unknown, authorization?: string): Promis
 const control = (smokeCanary: WhatsAppRuntimeControl["smokeCanary"]): WhatsAppRuntimeControl => ({
   smokeCanary,
   synchronizedChats: async () => [],
+  reloadManagedChats: () => undefined,
   stop: async () => undefined,
 });
 

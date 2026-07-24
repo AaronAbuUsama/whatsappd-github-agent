@@ -2,17 +2,26 @@ import type { ToolDefinition } from "@flue/runtime";
 import { describe, expect, it } from "vite-plus/test";
 import * as v from "valibot";
 
-import { createGraphStore } from "../../packages/engine/src/graph/store.ts";
+import { createGraphStore, type GraphAttestationContext } from "../../packages/engine/src/graph/store.ts";
 import { createGraphTools } from "../../packages/agents/src/capabilities/graph/tools.ts";
 import { entitySchema, relationSchema } from "../../packages/agents/src/capabilities/graph/schemas.ts";
 
 const harness = () => {
   const store = createGraphStore(":memory:");
-  const tools = createGraphTools(store);
+  const context: GraphAttestationContext = {
+    author: { kind: "brain", id: "brain" },
+    evidenceIds: ["test:graph-tools"],
+  };
+  const tools = createGraphTools(store, context);
   const tool = (name: string): ToolDefinition => tools.find((candidate) => candidate.name === name)!;
   // Normalize sync-or-async handlers to a promise so both results and thrown constraints are awaitable.
-  const call = <T>(name: string, input: unknown): Promise<T> =>
-    Promise.resolve().then(() => tool(name).run({ input } as never) as T);
+  const call = <T>(name: string, input: unknown): Promise<T> => {
+    const withEvidence =
+      name === "record_entity" || name === "record_relation" || name === "merge_entities" || name === "rule_attestation"
+        ? { ...(input as Record<string, unknown>), evidenceIds: ["test:graph-tools"] }
+        : input;
+    return Promise.resolve().then(() => tool(name).run({ input: withEvidence } as never) as T);
+  };
   return { store, call };
 };
 
@@ -21,13 +30,22 @@ const person = (externalId: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe("keyless entity convergence", () => {
-  it("reuses exact phrases and accumulates confidence", () => {
+  it("reuses exact phrases without amplifying an exact Evidence Set retry", () => {
     const store = createGraphStore(":memory:");
-    for (const [type, key] of [["topic", "label"], ["commitment", "description"], ["goal", "description"]] as const) {
-      const first = store.upsertEntity({ type, properties: { [key]: "Ship it" }, confidence: 0.5 });
-      const replay = store.upsertEntity({ type, properties: { [key]: "Ship it" }, confidence: 0.5 });
-      expect(replay.entityId).toBe(first.entityId);
-      expect(replay.confidence).toBe(0.75);
+    for (const [type, key] of [
+      ["topic", "label"],
+      ["commitment", "description"],
+      ["goal", "description"],
+    ] as const) {
+      const draft = {
+        context: { author: { kind: "scribe" as const, id: "scribe" }, evidenceIds: [`test:${type}`] },
+        claim: { kind: "entity" as const, input: { type, properties: { [key]: "Ship it" }, confidence: 0.5 } },
+      };
+      const first = store.attest(draft);
+      const replay = store.attest(draft);
+      if (first.kind !== "entity" || replay.kind !== "entity") throw new Error("Expected Entity Attestations.");
+      expect(replay.entity.entityId).toBe(first.entity.entityId);
+      expect(replay.entity.confidence).toBe(0.5);
     }
     expect(store.findEntities({}).length).toBe(3);
     store.close();
@@ -76,24 +94,24 @@ describe("graph tool boundary schemas", () => {
 });
 
 describe("record_entity — keyed convergence", () => {
-  it("converges a re-seen identity onto one node across provenance and raises confidence", async () => {
+  it("converges a retried identity onto one node without confidence amplification", async () => {
     const { call } = harness();
     const first = await call<{ entityId: string; confidence: number }>(
       "record_entity",
-      person("AaronAbuUsama", { confidence: 0.5, provenance: { chatId: "thread-A" } }),
+      person("AaronAbuUsama", { confidence: 0.5 }),
     );
     const second = await call<{ entityId: string; confidence: number }>(
       "record_entity",
-      person("AaronAbuUsama", { confidence: 0.5, provenance: { chatId: "thread-B" } }),
+      person("AaronAbuUsama", { confidence: 0.5 }),
     );
     expect(second.entityId).toBe(first.entityId);
-    expect(second.confidence).toBeCloseTo(0.75);
+    expect(second.confidence).toBe(0.5);
   });
 
   it("generates type-prefixed ids", async () => {
     const { call } = harness();
     const entity = await call<{ entityId: string }>("record_entity", person("octocat"));
-    expect(entity.entityId).toMatch(/^person_[0-9a-f]{6}$/u);
+    expect(entity.entityId).toMatch(/^actor_[0-9a-f]{12}$/u);
   });
 });
 
@@ -104,7 +122,7 @@ describe("record_relation — upsert and constraints", () => {
     return { person: p.entityId, thread: thread.entityId };
   };
 
-  it("upserts an edge on the unique key and raises its confidence", async () => {
+  it("deduplicates an edge retry on the same Evidence Set", async () => {
     const { call } = harness();
     const { person: from, thread: to } = await seed(call);
     const first = await call<{ relationId: string; confidence: number }>("record_relation", {
@@ -114,8 +132,8 @@ describe("record_relation — upsert and constraints", () => {
       edge: { relation: "participates_in", fromId: from, toId: to, confidence: 0.5 },
     });
     expect(second.relationId).toBe(first.relationId);
-    expect(second.confidence).toBeGreaterThan(first.confidence);
-    expect(second.confidence).toBeCloseTo(0.75);
+    expect(second.confidence).toBe(first.confidence);
+    expect(second.confidence).toBe(0.5);
   });
 
   it("rejects a foreign-key-less edge before commit", async () => {
@@ -143,6 +161,35 @@ describe("record_relation — upsert and constraints", () => {
     ).rejects.toThrow(/exactly one|already made_by/u);
   });
 
+  it("returns the immutable receipt before validating an overruled relation retry against newer state", async () => {
+    const { store, call } = harness();
+    const commitment = await call<{ entityId: string }>("record_entity", {
+      entity: { type: "commitment", description: "ship retry proof", status: "open" },
+    });
+    const alice = await call<{ entityId: string }>("record_entity", person("alice-retry"));
+    const bob = await call<{ entityId: string }>("record_entity", person("bob-retry"));
+    const originalInput = {
+      edge: { relation: "made_by" as const, fromId: commitment.entityId, toId: alice.entityId },
+    };
+    const original = await call<{ relationId: string }>("record_relation", originalInput);
+    const originalAttestation = store
+      .attestations()
+      .find(
+        ({ claim }) =>
+          claim.kind === "relation" && claim.fromId === commitment.entityId && claim.toId === alice.entityId,
+      );
+    if (originalAttestation === undefined) throw new Error("Expected the original Relation Attestation.");
+    store.attest({
+      context: { author: { kind: "brain", id: "brain" }, evidenceIds: ["test:overrule-original-owner"] },
+      claim: { kind: "ruling", action: "overrule", targetAttestationId: originalAttestation.id },
+    });
+    await call("record_relation", {
+      edge: { relation: "made_by", fromId: commitment.entityId, toId: bob.entityId },
+    });
+
+    await expect(call<{ relationId: string }>("record_relation", originalInput)).resolves.toEqual(original);
+  });
+
   it("rejects a blocks edge that would close a cycle", async () => {
     const { call } = harness();
     const issue = async (number: number) =>
@@ -156,9 +203,9 @@ describe("record_relation — upsert and constraints", () => {
     const c = await issue(3);
     await call("record_relation", { edge: { relation: "blocks", fromId: a, toId: b } });
     await call("record_relation", { edge: { relation: "blocks", fromId: b, toId: c } });
-    await expect(
-      call("record_relation", { edge: { relation: "blocks", fromId: c, toId: a } }),
-    ).rejects.toThrow(/cycle/u);
+    await expect(call("record_relation", { edge: { relation: "blocks", fromId: c, toId: a } })).rejects.toThrow(
+      /cycle/u,
+    );
     await expect(call("record_relation", { edge: { relation: "blocks", fromId: a, toId: a } })).rejects.toThrow(
       /itself/u,
     );
@@ -191,8 +238,12 @@ describe("merge_entities", () => {
     const loser = await call<{ entityId: string }>("record_entity", person("aaron-alt"));
     const thread = await call<{ entityId: string }>("record_entity", { entity: { type: "thread", chatId: "t@g.us" } });
     // Both point at the same thread via the same relation — after merge that is one fact.
-    await call("record_relation", { edge: { relation: "participates_in", fromId: survivor.entityId, toId: thread.entityId } });
-    await call("record_relation", { edge: { relation: "participates_in", fromId: loser.entityId, toId: thread.entityId } });
+    await call("record_relation", {
+      edge: { relation: "participates_in", fromId: survivor.entityId, toId: thread.entityId },
+    });
+    await call("record_relation", {
+      edge: { relation: "participates_in", fromId: loser.entityId, toId: thread.entityId },
+    });
 
     await call("merge_entities", { survivorId: survivor.entityId, loserId: loser.entityId });
 

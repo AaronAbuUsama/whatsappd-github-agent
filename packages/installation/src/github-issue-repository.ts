@@ -136,21 +136,31 @@ export const createSuccessfulPromiseCache = <T>(load: () => Promise<T>): (() => 
 
 /**
  * Receives an already-authenticated Octokit (App-installation auth via
- * {@link githubAppClient}, a PAT, or a fake in tests). The provider author is the App's
- * `<slug>[bot]` login, derived at runtime from `apps.getAuthenticated()`; comment-ownership
- * checks compare against it, so the same identity that wrote a comment is the only one that
- * edits or trusts it.
+ * {@link githubAppClient}, a PAT, or a fake in tests) — or a resolver that yields the right
+ * installation-scoped Octokit for an issue's repository, so one Speaker identity can file across
+ * orgs (multi-org installation resolution). The provider author is the App's `<slug>[bot]`
+ * login, derived at runtime from `apps.getAuthenticated()` — App-identity, the same across
+ * every installation, so it is cached once against whichever client resolves first.
  */
-export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository => {
-  const providerAuthor = createSuccessfulPromiseCache(async () =>
-    octokit.rest.apps.getAuthenticated().then((response) => {
-      const slug = response.data?.slug;
-      if (slug === undefined) throw new Error("GitHub did not return the authenticated App slug.");
-      return `${slug}[bot]`;
-    }),
-  );
+export const createOctokitIssueRepository = (
+  source: Octokit | ((repository: RepositoryRef) => Promise<Octokit>),
+): IssueRepository => {
+  const resolveOctokit =
+    typeof source === "function" ? source : (_repository: RepositoryRef) => Promise.resolve(source);
+  let providerAuthorCache: (() => Promise<string>) | undefined;
+  const providerAuthor = (octokit: Octokit): Promise<string> => {
+    providerAuthorCache ??= createSuccessfulPromiseCache(async () =>
+      octokit.rest.apps.getAuthenticated().then((response) => {
+        const slug = response.data?.slug;
+        if (slug === undefined) throw new Error("GitHub did not return the authenticated App slug.");
+        return `${slug}[bot]`;
+      }),
+    );
+    return providerAuthorCache();
+  };
 
   const readIssue = async (repository: RepositoryRef, number: number, signal?: AbortSignal): Promise<Issue> => {
+    const octokit = await resolveOctokit(repository);
     const response = await octokit.rest.issues.get({
       owner: repository.owner,
       repo: repository.repo,
@@ -165,6 +175,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
     number: number,
     signal?: AbortSignal,
   ): Promise<IssueComment[]> => {
+    const octokit = await resolveOctokit(repository);
     const [comments, author] = await Promise.all([
       octokit.paginate(octokit.rest.issues.listComments, {
         owner: repository.owner,
@@ -173,13 +184,14 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
         per_page: 100,
         request: { signal },
       }),
-      providerAuthor(),
+      providerAuthor(octokit),
     ]);
     return comments.map((comment) => githubIssueCommentRecord(repository, number, author, comment));
   };
   
   return {
     search: async ({ repository, query, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const repositoryUrl = `https://api.github.com/repos/${repository.owner}/${repository.repo}`.toLowerCase();
       const response = await octokit.rest.search.issuesAndPullRequests({
         q: githubIssueSearchQuery(repository, query),
@@ -194,6 +206,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return await readIssue(repository, number, signal);
     },
     options: async ({ repository, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const [labels, assignees, milestones] = await Promise.all([
         octokit.paginate(octokit.rest.issues.listLabelsForRepo, {
           owner: repository.owner,
@@ -226,6 +239,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       };
     },
     create: async ({ repository, title, body, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const response = await octokit.rest.issues.create({
         owner: repository.owner,
         repo: repository.repo,
@@ -236,6 +250,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return githubIssueRecord(repository, response.data);
     },
     update: async ({ repository, number, changes, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const current = await octokit.rest.issues.get({
         owner: repository.owner,
         repo: repository.repo,
@@ -264,6 +279,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return { issue, comments };
     },
     createComment: async ({ repository, number, body, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       await readIssue(repository, number, signal);
       const response = await octokit.rest.issues.createComment({
         owner: repository.owner,
@@ -272,9 +288,10 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
         body: commentProviderBody(body, [issueOperationMarker(operation)]),
         request: { signal },
       });
-      return githubIssueCommentRecord(repository, number, await providerAuthor(), response.data);
+      return githubIssueCommentRecord(repository, number, await providerAuthor(octokit), response.data);
     },
     updateComment: async ({ repository, number, commentId, body, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const discussion = await Promise.all([
         readIssue(repository, number, signal),
         readComments(repository, number, signal),
@@ -289,7 +306,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
         comment_id: commentId,
         request: { signal },
       });
-      const author = await providerAuthor();
+      const author = await providerAuthor(octokit);
       if (current.data.user?.login !== author) {
         throw new Error(`GitHub comment ${commentId} is not owned by the configured provider account.`);
       }
@@ -305,6 +322,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return githubIssueCommentRecord(repository, number, author, response.data);
     },
     deleteComment: async ({ repository, number, commentId, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const discussion = await Promise.all([
         readIssue(repository, number, signal),
         readComments(repository, number, signal),
@@ -320,6 +338,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       });
     },
     setState: async ({ repository, number, state, reason, signal }) => {
+      const octokit = await resolveOctokit(repository);
       await readIssue(repository, number, signal);
       if ((state === "open") !== (reason === "reopened")) {
         throw new Error("Opening an issue requires reason reopened; closing requires a closed-state reason.");
@@ -335,8 +354,9 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return githubIssueRecord(repository, response.data);
     },
     findCommentByOperation: async ({ repository, number, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const marker = issueOperationMarker(operation);
-      const author = await providerAuthor();
+      const author = await providerAuthor(octokit);
       for (const waitMillis of [0, 100, 250, 500, 1_000, 2_000]) {
         if (waitMillis > 0) await delay(waitMillis, undefined, { signal });
         const rawComments = await octokit.paginate(octokit.rest.issues.listComments, {
@@ -357,6 +377,7 @@ export const createOctokitIssueRepository = (octokit: Octokit): IssueRepository 
       return [];
     },
     findCreated: async ({ repository, operation, signal }) => {
+      const octokit = await resolveOctokit(repository);
       const marker = issueOperationMarker(operation);
       for (const waitMillis of [0, 100, 250, 500, 1_000, 2_000]) {
         if (waitMillis > 0) await delay(waitMillis, undefined, { signal });

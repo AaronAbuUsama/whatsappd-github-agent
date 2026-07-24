@@ -35,11 +35,23 @@ describe("Coder new-issue admission", () => {
     });
   });
 
-  it("fails closed on the unshipped review-continuation mode and invalid budgets", () => {
+  it("fails closed on a mode missing its key and on invalid budgets", () => {
+    // #211: review_continuation is keyed by pullRequest, not issue — a request without one is rejected.
     expect(() => v.parse(coderJobInputSchema, { mode: "review_continuation", repository: "acme/widgets", issue: 210 })).toThrow();
+    expect(() => v.parse(coderJobInputSchema, { mode: "new_issue", repository: "acme/widgets", pullRequest: 42 })).toThrow();
     expect(() => v.parse(coderJobInputSchema, { repository: "acme/widgets", issue: 210, maxVerificationRounds: 0 })).toThrow();
     expect(() => v.parse(coderJobInputSchema, { repository: "acme/widgets", issue: 210, maxVerificationRounds: 6 })).toThrow();
     expect(() => v.parse(coderJobInputSchema, { repository: "acme/widgets", issue: 210, maxReviewCycles: 6 })).toThrow();
+  });
+
+  it("admits a review_continuation job keyed by the live pull request (#211)", () => {
+    expect(v.parse(coderJobInputSchema, { mode: "review_continuation", repository: "acme/widgets", pullRequest: 42 })).toEqual({
+      mode: "review_continuation",
+      repository: "acme/widgets",
+      pullRequest: 42,
+      maxVerificationRounds: 3,
+      maxReviewCycles: 2,
+    });
   });
 });
 

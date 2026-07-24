@@ -132,16 +132,53 @@ describe("gitignoreMatcher — snapshot honors .gitignore", () => {
 describe("renderGraphContext — the pushed digest into the prompt", () => {
   it("is empty for an undefined or empty digest (a clean prompt when no graph is wired)", () => {
     expect(renderGraphContext(undefined)).toBe("");
-    expect(renderGraphContext({ seeds: [], entities: [], relations: [], commitments: [] })).toBe("");
+    expect(
+      renderGraphContext({
+        schemaVersion: "graph-digest.v1",
+        projectionVersion: "projection:empty",
+        seeds: [],
+        entities: [],
+        relations: [],
+        commitments: [],
+      }),
+    ).toBe("");
   });
 
   it("renders entities, relations and commitments as a compact block", () => {
     const digest: GraphDigest = {
+      schemaVersion: "graph-digest.v1",
+      projectionVersion: "projection:test",
       seeds: ["e1"],
-      entities: [{ entityId: "e1", type: "issue", properties: { number: 158 }, confidence: 1, lowConfidence: false }],
-      relations: [{ fromId: "e1", relation: "part_of", toId: "e2", confidence: 1, lowConfidence: false }],
+      entities: [
+        {
+          entityId: "e1",
+          type: "issue",
+          properties: { number: 158 },
+          confidence: 1,
+          lowConfidence: false,
+          supportingAttestationIds: ["a1"],
+        },
+      ],
+      relations: [
+        {
+          fromId: "e1",
+          relation: "part_of",
+          toId: "e2",
+          confidence: 1,
+          lowConfidence: false,
+          supportingAttestationIds: ["a2"],
+        },
+      ],
       commitments: [
-        { entityId: "c1", type: "commitment", properties: { text: "ship it" }, confidence: 1, lowConfidence: false, overdue: true },
+        {
+          entityId: "c1",
+          type: "commitment",
+          properties: { text: "ship it" },
+          confidence: 1,
+          lowConfidence: false,
+          overdue: true,
+          supportingAttestationIds: ["a3"],
+        },
       ],
     };
     const rendered = renderGraphContext(digest);

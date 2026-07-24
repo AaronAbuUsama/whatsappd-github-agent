@@ -40,8 +40,8 @@ const makeGitHub = (opts: { branchExists: boolean; branchHead?: string; openPr?:
 
 const buildTool = (
   gh: CoderGitHub,
-  record: { pr?: OpenPrRecord },
-  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean } = {},
+  record: { pr?: OpenPrRecord; blocked?: string },
+  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean; reverifyContinuation?: () => Promise<string | undefined> } = {},
 ) =>
   createOpenPullRequestTool({
     github: gh,
@@ -56,6 +56,7 @@ const buildTool = (
     requiredDraft: options.requiredDraft ?? false,
     snapshotAfter: options.snapshotAfter ?? (async () => after),
     readFile: async () => new TextEncoder().encode("changed bytes"),
+    ...(options.reverifyContinuation === undefined ? {} : { reverifyContinuation: options.reverifyContinuation }),
     record,
   });
 
@@ -184,6 +185,44 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
     await expect(buildTool(gh, record, { seedBranchHead: "seed-head" }).run({
       input: { title: "t", body: "b", draft: false },
     })).rejects.toThrow("Coder branch moved after this run was seeded");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("#211: live re-verify blocks BEFORE any mutation — no branch push, no PR, when it fails", async () => {
+    // The continuation re-verify reports the PR/branch is gone: block before ensureBranch, commit, upsert.
+    const record: { pr?: OpenPrRecord; blocked?: string } = {};
+    const { gh, getRef, createRef, create } = makeGitHub({ branchExists: true, branchHead: "seed-head" });
+    const result = (await buildTool(gh, record, {
+      seedBranchHead: "seed-head",
+      seedBranchExisted: true,
+      reverifyContinuation: async () => "the Coder branch agent/coder/issue-42 no longer exists",
+    }).run({ input: { title: "t", body: "b", draft: false } })) as { opened: boolean; message?: string };
+
+    expect(result.opened).toBe(false);
+    expect(result.message).toContain("no longer exists");
+    expect(record.blocked).toContain("no longer exists");
+    expect(record.pr).toBeUndefined();
+    // NOTHING was mutated — not even the branch (getRef/createRef/commit) or the PR.
+    expect(getRef).not.toHaveBeenCalled();
+    expect(createRef).not.toHaveBeenCalled();
+    expect(gh.git.createCommit).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("#211: live re-verify passing (undefined) lets the continuation publish normally", async () => {
+    const record: { pr?: OpenPrRecord; blocked?: string } = {};
+    const { gh, create } = makeGitHub({
+      branchExists: true,
+      openPr: { number: 9, node_id: "PR_9", html_url: "https://x/pr/9", draft: false },
+    });
+    const result = (await buildTool(gh, record, {
+      seedBranchExisted: true,
+      reverifyContinuation: async () => undefined,
+    }).run({ input: { title: "t", body: "b", draft: false } })) as { opened: boolean; number?: number };
+
+    expect(result.opened).toBe(true);
+    expect(result.number).toBe(9);
+    expect(record.blocked).toBeUndefined();
     expect(create).not.toHaveBeenCalled();
   });
 

@@ -15,8 +15,10 @@ import { resolveAgentModelProfile } from "@ambient-agent/engine/model/pi-subscri
 import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.ts";
 import type { SpecialistSpec } from "../delegation/tools.ts";
 import { getCoderRuntime } from "./runtime.ts";
+import { tryGetDelegationRuntime } from "../delegation/runtime.ts";
 import {
   coderJobInputSchema,
+  coderJobRequestSchema,
   coderResultSchema,
   planArtifactSchema,
   verificationReceiptSchema,
@@ -28,6 +30,8 @@ import {
 } from "./schemas.ts";
 export type { CoderGitHub } from "./github.ts";
 import { coderBranch, downloadTarball, fetchDefaultBranch, fetchIssue, getBranchHead } from "./github.ts";
+import { continuationBlockReason, fetchReviewContinuation, renderReviewContinuation, verifyLiveContinuation } from "./continuation.ts";
+import type { CodingJobRecord } from "./registry.ts";
 import { createOpenPullRequestTool } from "./tool.ts";
 import {
   coderOutcome,
@@ -45,7 +49,7 @@ export interface CodingWaypoint {
   readonly event: "coding.waypoint";
   readonly schemaVersion: 1;
   readonly jobId: string;
-  readonly mode: "new_issue";
+  readonly mode: "new_issue" | "review_continuation";
   readonly stage: CodingStage;
   readonly status: CodingWaypointStatus;
   readonly reviewCycle: number;
@@ -215,11 +219,32 @@ const run = async ({ harness, input, log }: {
   input: CoderJobInput;
   log: FlueLogger;
 }): Promise<CoderResult> => {
-  const { github, workspacesRoot } = getCoderRuntime();
+  const { github: resolveGithub, workspacesRoot, registry } = getCoderRuntime();
   const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
-  const branch = coderBranch(input.issue);
+  const github = await resolveGithub(repo);
   const jobId = crypto.randomUUID();
-  const reviewCycle = 0;
+  const isContinuation = input.mode === "review_continuation";
+  // A review_continuation run is keyed by the live PR it repairs; the underlying issue, branch, and
+  // consumed budget all come from the coding-job registry (never the caller). Being registered is
+  // the safety key — a row exists only for a Coder-authored PR on its own branch, so an external or
+  // fork-headed PR is never resolvable here. Defense in depth: the ingress already gates on this.
+  let job: CodingJobRecord | undefined;
+  if (isContinuation) {
+    if (registry === undefined) throw new Error("review_continuation requires a coding-job registry");
+    job = registry.get(input.repository, input.pullRequest!);
+    if (job === undefined) {
+      return {
+        outcome: "no-op",
+        jobId,
+        summary: `Pull request #${input.pullRequest} is not registered to a coding job; no repair run.`,
+        verificationRounds: 0,
+        reviewCycle: 0,
+      };
+    }
+  }
+  const issueNumber = isContinuation ? job!.issue : input.issue!;
+  const branch = isContinuation ? job!.branch : coderBranch(issueNumber);
+  const reviewCycle = isContinuation ? job!.reviewCycle : 0;
   let activeStage: CodingStage = "workflow";
   const waypoint = (
     stage: CodingStage,
@@ -227,6 +252,18 @@ const run = async ({ harness, input, log }: {
     extra: { verificationRound?: number; verdict?: VerificationVerdict; pullRequest?: number; draft?: boolean } = {},
   ): void => {
     activeStage = status === "started" ? stage : "workflow";
+    // Stream the meaningful stage transitions up to the Brain as work Milestones (§3.8, S3).
+    // Start (accepted launch) and terminal (SpecialistResult) are streamed elsewhere; skip the
+    // workflow bookends here and emit only the rare, human-legible stage beginnings and failures.
+    if (input.brainWorkId !== undefined && stage !== "workflow" && (status === "started" || status === "failed")) {
+      const round = extra.verificationRound;
+      const note = `${stage}${round === undefined ? "" : ` (round ${round})`} ${status}`;
+      try {
+        tryGetDelegationRuntime()?.inbox.recordWorkMilestone({ workId: input.brainWorkId, note });
+      } catch (cause) {
+        log.info("work milestone write failed", { note, cause: String(cause) } as unknown as Record<string, unknown>);
+      }
+    }
     log.info(`${stage} ${status}`, codingWaypoint({
       jobId,
       mode: input.mode,
@@ -241,13 +278,48 @@ const run = async ({ harness, input, log }: {
 
   waypoint("workflow", "started");
   try {
-    const issue = await fetchIssue(github, repo, input.issue);
-    const base = await fetchDefaultBranch(github, repo);
-    const baseSha = (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
-    const existingBranchHead = await getBranchHead(github, repo, branch);
-    const seedBranchHead = existingBranchHead ?? baseSha;
+    // Review continuation refetches the live PR and repairs the EXACT live Coder branch. The
+    // fork/external guard is structural and hard: a fork-headed PR (head.repo differs), a PR whose
+    // head branch is no longer the Coder branch, or a closed PR is never mutated — return blocked.
+    let continuationFraming = "";
+    // The PR base to publish against: the repo default for a new issue; the LIVE PR's actual base for
+    // a review continuation, so a PR based off a non-default branch updates the right PR (finding 3).
+    let continuationBase: string | undefined;
+    // The exact head sha the continuation guard verified (headRef === branch, PR open). Seeding from
+    // THIS — not a second getBranchHead re-fetch — closes a delete race by construction: if the branch
+    // ref were deleted between the guard and a re-fetch, the fallback would silently seed from base and
+    // overwrite the reviewed content instead of repairing it (round-4 finding).
+    let continuationHeadSha: string | undefined;
+    if (isContinuation) {
+      const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
+      // Same shared fail-closed guard the pre-mutation re-verify uses (§10) — one rule, checked here at
+      // the start and again immediately before every mutation, never a scattered ad-hoc check.
+      const reason = continuationBlockReason(live, repo, branch);
+      if (reason !== undefined) {
+        waypoint("workflow", "completed");
+        return {
+          outcome: "blocked",
+          branch,
+          jobId,
+          summary: `Pull request #${input.pullRequest} cannot be repaired: ${reason}.`,
+          verificationRounds: 0,
+          reviewCycle,
+        };
+      }
+      continuationBase = live.baseRef;
+      continuationHeadSha = live.headSha;
+      continuationFraming = renderReviewContinuation(live);
+    }
+    const issue = await fetchIssue(github, repo, issueNumber);
+    const base = continuationBase ?? (await fetchDefaultBranch(github, repo));
+    // Continuation seeds from the verified live head; a fresh issue checks the branch, seeding from it
+    // if it exists, else from the base ref (fetched only when actually needed).
+    const existingBranchHead = continuationHeadSha ?? (await getBranchHead(github, repo, branch));
+    const seedBranchHead =
+      existingBranchHead ??
+      (await github.git.getRef({ owner: repo.owner, repo: repo.repo, ref: `heads/${base}` })).data.object.sha;
     const tarball = await downloadTarball(github, repo, seedBranchHead);
-    const repoDir = `${workspacesRoot}/issue-${input.issue}`;
+    const repoDir = `${workspacesRoot}/issue-${issueNumber}`;
     const shellIn = async (command: string) => await harness.shell(command, { cwd: repoDir, timeoutMs: SHELL_TIMEOUT_MS });
 
     try {
@@ -262,12 +334,13 @@ const run = async ({ harness, input, log }: {
       const snapshot = async () => await snapshotWorkspace(async (command) => await harness.shell(command, { cwd: repoDir }), isIgnored);
       const before = await snapshot();
       const session = await harness.session("coordinator");
-      const framing = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+      const requesterFraming = input.instructions === undefined ? "" : `\n\nExtra framing from the requester:\n${input.instructions}`;
+      const framing = `${requesterFraming}${continuationFraming}`;
       const graphContext = renderGraphContext(input.graphContext);
       const coordinated = await runInternalCodingLoop({
         session,
         plannerPrompt: plannerTaskPrompt({
-          issue: input.issue,
+          issue: issueNumber,
           title: issue.title,
           body: issue.body,
           repository: input.repository,
@@ -275,15 +348,15 @@ const run = async ({ harness, input, log }: {
           framing,
           graphContext,
         }),
-        coderPrompt: (round, plan, prior) => coderTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan, priorVerification: prior }),
-        verifierPrompt: (round, plan) => verifierTaskPrompt({ issue: input.issue, title: issue.title, repoDir, round, plan }),
+        coderPrompt: (round, plan, prior) => coderTaskPrompt({ issue: issueNumber, title: issue.title, repoDir, round, plan, priorVerification: prior }),
+        verifierPrompt: (round, plan) => verifierTaskPrompt({ issue: issueNumber, title: issue.title, repoDir, round, plan }),
         cwd: repoDir,
         maxVerificationRounds: input.maxVerificationRounds,
         waypoint,
       });
 
       const requiredDraft = coordinated.verification.verdict === "FAIL" || coordinated.verification.verdict === "BLOCKED";
-      const record: { pr?: OpenPrRecord } = {};
+      const record: { pr?: OpenPrRecord; blocked?: string } = {};
       const openPullRequest = createOpenPullRequestTool({
         github,
         repo,
@@ -291,18 +364,21 @@ const run = async ({ harness, input, log }: {
         base,
         seedBranchHead,
         seedBranchExisted: existingBranchHead !== undefined,
-        issue: input.issue,
+        issue: issueNumber,
         issueTitle: issue.title,
         before,
         requiredDraft,
         snapshotAfter: snapshot,
         readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
+        // A review continuation re-verifies live GitHub state (PR open, same-repo, head still on this
+        // branch, branch ref exists) immediately before EACH mutation — one primitive, no stale trust.
+        ...(isContinuation ? { reverifyContinuation: () => verifyLiveContinuation(github, repo, branch, input.pullRequest!) } : {}),
         record,
       });
 
       waypoint("publication", "started", { draft: requiredDraft });
       await session.task(publicationTaskPrompt({
-        issue: input.issue,
+        issue: issueNumber,
         title: issue.title,
         plan: coordinated.plan,
         verification: coordinated.verification,
@@ -314,8 +390,38 @@ const run = async ({ harness, input, log }: {
       });
       waypoint("publication", "completed", { pullRequest: record.pr?.number, draft: record.pr?.draft ?? requiredDraft });
 
+      // Live re-verification failed before a mutation (PR closed/moved, branch deleted mid-run): report
+      // blocked, mutate nothing, never register a substitute PR (§10 fail-closed, re-checked at publish).
+      if (record.blocked !== undefined) {
+        waypoint("workflow", "completed");
+        return {
+          outcome: "blocked",
+          branch,
+          jobId,
+          finalVerdict: coordinated.verification.verdict,
+          verificationRounds: coordinated.rounds,
+          reviewCycle,
+          summary: `Pull request #${input.pullRequest} could not be repaired: ${record.blocked}.`,
+        };
+      }
+
+      // Register (or refresh) the PR→job journey so a later Reviewer REQUEST_CHANGES can find the
+      // issue, branch, and budgets to repair against. Idempotent and cycle-preserving: a
+      // review_continuation republish refreshes the same row without resetting the consumed budget.
+      if (record.pr !== undefined) {
+        registry?.upsert({
+          repository: input.repository,
+          prNumber: record.pr.number,
+          issue: issueNumber,
+          branch,
+          base,
+          maxVerificationRounds: input.maxVerificationRounds,
+          maxReviewCycles: input.maxReviewCycles,
+        });
+      }
+
       const result = coderOutcome(record.pr, {
-        issue: input.issue,
+        issue: issueNumber,
         branch,
         jobId,
         finalVerdict: coordinated.verification.verdict,
@@ -345,12 +451,12 @@ export const coder = defineWorkflow({
 export const START_CODER_JOB_DESCRIPTION =
   "Start a background coding workflow for one GitHub issue: Planner produces an ordered plan, Coder implements it, " +
   "Verifier drives the result within a bounded budget, and Coder opens one rich ready or draft pull request. Returns " +
-  "immediately with a run id; the finished result reports back to this chat on its own.";
+  "immediately with a stable Brain work id and Flue run id; the finished result returns to the global Brain.";
 
-export const coderSpecialistSpec: SpecialistSpec<typeof coderJobInputSchema> = {
+export const coderSpecialistSpec: SpecialistSpec<typeof coderJobRequestSchema> = {
   name: "coder",
   toolName: "start_coder_job",
   description: START_CODER_JOB_DESCRIPTION,
-  input: coderJobInputSchema,
+  input: coderJobRequestSchema,
   workflow: coder,
 };

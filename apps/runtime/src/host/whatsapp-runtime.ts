@@ -1,9 +1,33 @@
 import { Cause, Effect, Exit, Fiber, Layer, type Scope } from "effect";
 import type { MessageRef, WhatsAppSession } from "whatsappd";
 
-import { configureScribeBackfillGate, makeSpeakerWindowDispatcher, type DispatchSpeaker } from "@ambient-agent/agents/speaker/dispatch.ts";
-import { invoke } from "@flue/runtime";
-import scribeBackfill from "../workflows/scribe-backfill.ts";
+import {
+  configureHistoricalReplayGate,
+  dispatchSpeaker,
+  makeSpeakerWindowDispatcher,
+  type DispatchSpeaker,
+} from "@ambient-agent/agents/speaker/dispatch.ts";
+import { configureIntentEscalationRuntime } from "@ambient-agent/agents/capabilities/intent-escalation/runtime.ts";
+import { configureDirectiveDeliveryRuntime } from "@ambient-agent/agents/capabilities/directive-delivery/runtime.ts";
+import { configureDelegationRuntime } from "@ambient-agent/agents/capabilities/delegation/runtime.ts";
+import { reconcileSpecialistWorkAtBoot } from "@ambient-agent/agents/capabilities/delegation/bridge.ts";
+import { recoverPendingSpecialistLaunches } from "@ambient-agent/agents/capabilities/delegation/tools.ts";
+import { coderSpecialistSpec } from "@ambient-agent/agents/capabilities/coder/workflow.ts";
+import { reviewerSpecialistSpec } from "@ambient-agent/agents/capabilities/reviewer/workflow.ts";
+import { wakeBrain } from "@ambient-agent/agents/brain/dispatch.ts";
+import {
+  configureBrainEffectsRuntime,
+  recoverPendingIssueFilings,
+  recoverPendingIssueMutations,
+  recoverPendingPrompts,
+} from "@ambient-agent/agents/brain/effects-runtime.ts";
+import { createIssueFiler } from "@ambient-agent/agents/brain/issue-filing.ts";
+import { createIssueMutator } from "@ambient-agent/agents/brain/issue-mutation.ts";
+import { getIssueManagementRuntime } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
+import { tryGetGraphStore } from "@ambient-agent/agents/capabilities/graph/runtime.ts";
+import { configureScribeInbox } from "@ambient-agent/agents/scribe/coalescer.ts";
+import { getRun, invoke } from "@flue/runtime";
+import historicalReplayWorkflow from "../workflows/historical-replay.ts";
 import type { SpeakerDispatchEvent, SpeakerObserver } from "@ambient-agent/agents/speaker/observer.ts";
 import {
   configureWhatsAppParticipationPort,
@@ -18,7 +42,10 @@ import * as Coalescer from "@ambient-agent/engine/coalescer/coalescer.ts";
 import { configLayer, type CoalescerConfigValues } from "@ambient-agent/engine/coalescer/config.ts";
 import { botIdsOf, whatsappEventSource } from "@ambient-agent/engine/coalescer/whatsapp.ts";
 import { createConversationArchive } from "@ambient-agent/engine/intake/conversation-archive.ts";
-import { createScribeBackfillStore } from "@ambient-agent/engine/intake/scribe-backfill.ts";
+import { createBrainInbox } from "@ambient-agent/engine/brain/inbox.ts";
+import { configureGitHubUpInbox } from "@ambient-agent/engine/github/up-inbox.ts";
+import { createHistoricalReplayStore } from "@ambient-agent/engine/intake/historical-replay.ts";
+import { createScribeInbox } from "@ambient-agent/engine/scribe/inbox.ts";
 import {
   createManagedChatInbox,
   managedChatWindowStore,
@@ -30,6 +57,9 @@ import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import { isGroupJid } from "@ambient-agent/engine/shared/whatsapp-jid.ts";
+import { createSurfaceRegistry, type SurfaceRegistry } from "@ambient-agent/engine/surfaces/registry.ts";
+import type { GraphStore } from "@ambient-agent/engine/graph/store.ts";
+import { createSurfaceDeliveryStore } from "@ambient-agent/engine/surfaces/delivery.ts";
 import {
   createWhatsAppAccount,
   WhatsAppAccountError,
@@ -44,6 +74,61 @@ const deliveryFailure = (
   return { delivery: isKnownTransportRejection(deliveryError) ? "failed" : "unknown", deliveryError };
 };
 const TYPING_LEAD_MS = 750;
+
+/**
+ * Resolve a Brain-chosen target entity to its Surface id (§8: "DM someone" and "reply in the group"
+ * share one prompt operation, resolved through the ordinary Surface registry during prompt admission).
+ *
+ * A `thread` is an operator-authorized group: it resolves only to an already-active Surface, so a merely
+ * discovered/observed group never gains participation. A known `person` is a deliberate Brain reach: their
+ * DM Surface is opened on demand (find-or-create). Any other entity type — or an entity with no WhatsApp
+ * identity, or an unknown id — is not an addressable Surface and returns undefined, and the Brain stays
+ * silent. This is the fail-closed boundary: only a Person the coworker already knows (a Graph entity met in
+ * an authorized surface) is DM-addressable; an unknown DMer has no entity here and so grants no participation.
+ *
+ * Materialization is atomic with admission (§8): opening a person's DM Surface is a side effect that must
+ * NOT outlive a failed prompt admission, or the intake gate would then admit that chat with no accepted
+ * Prompt Effect behind it. So `release` undoes a DM binding this call newly opened (retiring it), while
+ * leaving an already-active DM (a live channel from a prior turn) untouched. The caller invokes `release`
+ * only if recordPrompt rejects.
+ */
+export interface ResolvedTargetSurface {
+  readonly surfaceId: string;
+  readonly release: () => void;
+}
+
+const NO_RELEASE = () => undefined;
+
+export const resolveEntitySurface = (
+  deps: {
+    readonly graph: Pick<GraphStore, "getEntity" | "whatsappExternalId">;
+    readonly surfaces: Pick<SurfaceRegistry, "activeSurface" | "activateDirect" | "retireDirect">;
+    readonly accountJid: string;
+  },
+  entityId: string,
+): ResolvedTargetSurface | undefined => {
+  const entity = deps.graph.getEntity(entityId);
+  if (entity === undefined) return undefined;
+  const chatId = deps.graph.whatsappExternalId(entityId);
+  if (chatId === undefined) return undefined;
+  if (entity.type === "thread") {
+    const surface = deps.surfaces.activeSurface(deps.accountJid, chatId);
+    return surface === undefined ? undefined : { surfaceId: surface.id, release: NO_RELEASE };
+  }
+  if (entity.type === "person") {
+    // A person's WhatsApp identity must be a direct chat. If a data-quality edge case links a person to a
+    // group JID, refuse to open it as a DM — otherwise activateDirect would let an unconfigured group
+    // participate through the person path (the admit gate honors any active binding). Fail closed instead.
+    if (isGroupJid(chatId)) return undefined;
+    const alreadyLive = deps.surfaces.activeSurface(deps.accountJid, chatId) !== undefined;
+    const surface = deps.surfaces.activateDirect(deps.accountJid, chatId);
+    return {
+      surfaceId: surface.id,
+      release: alreadyLive ? NO_RELEASE : () => deps.surfaces.retireDirect(deps.accountJid, chatId),
+    };
+  }
+  return undefined;
+};
 
 /** The sole real implementation behind Speaker's outbound participation tools. */
 export const createWhatsAppHost = (
@@ -134,47 +219,52 @@ export interface WhatsAppSessionRuntimeOptions {
    * the seam the delegation boot sweep hangs on, so its `interrupted` notifications can
    * actually be voiced (the Speaker's `say` needs the port). Errors are the callback's own.
    */
-  readonly afterParticipationReady?: () => void;
+  readonly afterParticipationReady?: () => void | Promise<void>;
 }
 
 /** Shared production/test seam: one full-fidelity whatsappd session -> retained Coalescer -> Speaker dispatch. */
 export const runWhatsAppSession = (
   session: WhatsAppSession,
   options: WhatsAppSessionRuntimeOptions,
-): Effect.Effect<void, never, Scope.Scope> => {
-  const outbound = createWhatsAppHost(session, (chatId, messageId) => {
-    const message = options.history.messageState(chatId, messageId);
-    return message === undefined
-      ? undefined
-      : {
-          id: message.id,
-          chatId: message.chatId,
-          fromMe: message.direction === "outbound",
-          ...(isGroupJid(message.chatId) && message.senderId !== undefined ? { participant: message.senderId } : {}),
-        };
-  });
-  configureWhatsAppParticipationPort({
-    say: outbound.say,
-    react: outbound.react,
-    readThread: (chatId, limit) => options.history.readThread(chatId, limit),
-    search: (chatId, query, limit) => options.history.search(chatId, query, limit),
-  });
-  options.afterParticipationReady?.();
-  const botIds = botIdsOf(session, options.botLid);
-  return Coalescer.run.pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        whatsappEventSource(session, options.gate.allowed, {
-          replay: () => options.inbox.unwindowed(),
-          accepted: (event) => options.inbox.pending(event),
-        }),
-        makeSpeakerWindowDispatcher(options.inbox, options.dispatch),
-        managedChatWindowStore(options.inbox),
-        configLayer({ ...options.coalescer, botIds }),
+): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const outbound = createWhatsAppHost(session, (chatId, messageId) => {
+      const message = options.history.messageState(chatId, messageId);
+      return message === undefined
+        ? undefined
+        : {
+            id: message.id,
+            chatId: message.chatId,
+            fromMe: message.direction === "outbound",
+            ...(isGroupJid(message.chatId) && message.senderId !== undefined ? { participant: message.senderId } : {}),
+          };
+    });
+    yield* Effect.sync(() =>
+      configureWhatsAppParticipationPort({
+        say: outbound.say,
+        react: outbound.react,
+        readThread: (chatId, limit) => options.history.readThread(chatId, limit),
+        search: (chatId, query, limit) => options.history.search(chatId, query, limit),
+      }),
+    );
+    if (options.afterParticipationReady !== undefined) {
+      yield* Effect.promise(() => Promise.resolve(options.afterParticipationReady!()));
+    }
+    const botIds = botIdsOf(session, options.botLid);
+    yield* Coalescer.run.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          whatsappEventSource(session, options.gate.allowed, {
+            replay: () => options.inbox.unwindowed(),
+            accepted: (event) => options.inbox.pending(event),
+          }),
+          makeSpeakerWindowDispatcher(options.inbox, options.dispatch),
+          managedChatWindowStore(options.inbox),
+          configLayer({ ...options.coalescer, botIds }),
+        ),
       ),
-    ),
-  );
-};
+    );
+  });
 
 const WHATSAPP_RUNTIME_STATUS = Symbol.for("ambient-agent.whatsapp-runtime-status");
 const runtimeGlobal = globalThis as typeof globalThis & { [WHATSAPP_RUNTIME_STATUS]?: WhatsAppRuntimeStatus };
@@ -186,6 +276,12 @@ export const getWhatsAppRuntimeStatus = (): WhatsAppRuntimeStatus => structuredC
 
 export interface WhatsAppRuntimeControl {
   readonly stop: () => Promise<void>;
+  /**
+   * Live-reload the managed-chat authorization gate in place (#179): the newly added chats engage the
+   * gate with no restart and the WhatsApp stream is untouched. Only the authorization Set changes —
+   * the session, model, and port are restart-only and are never reached from here.
+   */
+  readonly reloadManagedChats: (chatIds: readonly string[]) => void;
   readonly synchronizedChats: () => Promise<readonly ChatCandidate[]>;
   readonly smokeCanary: (
     nonce: string,
@@ -224,22 +320,103 @@ export interface WhatsAppRuntimeOptions {
   readonly observeActivity?: (observer: SpeakerObserver) => () => void;
   /** Run once after the participation port is wired — e.g. the delegation boot sweep. */
   readonly afterParticipationReady?: () => void;
+  /** The proactive clock's cron-floor cadence (§6). Default 5 min; 0 disables the interval (boot sweep only). */
+  readonly proactiveClockIntervalMs?: number;
 }
+
+// ponytail: a single fixed process interval is the whole cron floor — the DB is the source of truth and
+// boot reconciles, so a missed tick only delays, never drops. Per-wake precise timers only if latency bites.
+const DEFAULT_PROACTIVE_CLOCK_INTERVAL_MS = 5 * 60 * 1_000;
 
 export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppRuntimeControl => {
   const storeDir = options.storeDirectory;
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
-  const scribeBackfills = createScribeBackfillStore(options.applicationDatabase);
-  configureScribeBackfillGate(scribeBackfills);
-  const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+  const surfaces = createSurfaceRegistry(options.applicationDatabase);
+  // Intake admission: a chat reaches the loop if it is operator-configured (the static gate) OR the Brain
+  // deliberately opened its Surface — a known-Person DM via activateDirect (S5) — so a DM the coworker
+  // started is genuinely two-way, not send-only. Everything else stays fail-closed: an unconfigured group
+  // and an unknown person's unsolicited DM have no active binding, so admit is false for them.
+  // ponytail: authenticatedJid is unknown until authenticate resolves, so a reply to an already-open DM
+  // that arrives in the brief pre-auth sync/replay window is archived but not proactively dispatched (admit
+  // sees no account yet). Narrow and non-lossy — the next live message re-triggers it. Seed the jid from
+  // prior bindings only if this gap ever bites; that path must not defeat the account-change retirement.
+  //
+  // `authenticatedJid` is the single account var (set once online); a live gate reload also needs it to
+  // activate a new chat's Surface (#179). Undefined until online, so a reload before pairing only opens the
+  // gate — as intended.
+  let authenticatedJid: string | undefined;
+  const admit = (chatId: string, isGroup: boolean): boolean =>
+    gate.allowed(chatId, isGroup) ||
+    (authenticatedJid !== undefined && chatId.trim() !== "" && surfaces.activeSurface(authenticatedJid, chatId) !== undefined);
+  const brainInbox = createBrainInbox(options.applicationDatabase, {
+    providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+  });
+  // GitHub events flow UP into the single Brain up-inbox (§4). Admission is the durable step and is
+  // always safe. Waking the Brain is gated on `brainReady`: dispatching a Batch before the Brain's
+  // Effects/participation runtime exists would mark the Batch dispatched, then fail its tools, and the
+  // wake-guard would never re-dispatch it — a wedge. Until ready, admitted events wait for the boot
+  // sweep in afterParticipationReady (which wakes once everything is configured); after ready, each
+  // admission wakes directly.
+  let brainReady = false;
+  let proactiveClockTimer: ReturnType<typeof setInterval> | undefined;
+  // The cron/boot due scan (§6): admit a coalesced Proactive Sweep + every due Scheduled Wake, then wake.
+  // Idempotent and durable — safe on boot and on every tick. Always wake, even when the scan admitted
+  // nothing new: wakeBrain re-claims and re-dispatches an already-open Batch (its claimBatch returns the
+  // open Batch first), so a Batch left claimed-but-undispatched by a prior transient wake failure is
+  // retried here instead of wedging the clock. Non-fatal by design: a wake we cannot dispatch now (like a
+  // boot issue-filing) must never kill the runtime fiber — the durable rows persist and retry next tick.
+  const runProactiveClock = async (): Promise<void> => {
+    try {
+      brainInbox.runProactiveClock();
+      await wakeBrain(brainInbox);
+    } catch (cause) {
+      getLogger("brain").warn(
+        { event: "brain.proactive-clock.failed", error: errorMessage(cause) },
+        "Proactive clock tick could not dispatch; left durable to retry next tick",
+      );
+    }
+  };
+  // Flipped false when this runtime tears down (fiber failure, reconnect, logged_out) while the HTTP app
+  // may keep serving. Without it the port's captured brainInbox is a finalized SQLite handle: admit would
+  // throw, the ingress would settle 'failed' → 200, and the delivery would be lost with no retry. Deferring
+  // (undefined → 503) lets GitHub redeliver to the next live runtime instead.
+  let brainAlive = true;
+  configureGitHubUpInbox(async (event) => {
+    if (!brainAlive) return undefined;
+    const admitted = brainInbox.admitGitHubEvent(event);
+    if (brainReady) {
+      void wakeBrain(brainInbox).catch((cause) =>
+        getLogger("github").error({ event: "github.up-inbox.wake-failed", error: errorMessage(cause) }, "wake"),
+      );
+    }
+    return { id: admitted.id, admittedAt: admitted.admittedAt };
+  });
+  const deliveries = createSurfaceDeliveryStore(options.applicationDatabase, {
+    providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+  });
+  configureDirectiveDeliveryRuntime({ deliveries });
+  const historicalReplay = createHistoricalReplayStore(options.applicationDatabase);
+  configureHistoricalReplayGate(historicalReplay);
+  const scribeInbox = createScribeInbox(options.applicationDatabase, { recoverInterruptedAttempts: true });
+  const restoreScribeInbox = configureScribeInbox(scribeInbox, async (draft) => {
+    brainInbox.admitKnowledgeDelta(draft);
+    await wakeBrain(brainInbox);
+  });
+  const inbox = createManagedChatInbox(archive, { allowed: admit });
   speakerActivity.recoverWith((dispatchId) => {
     const window = inbox.windowForDispatch(dispatchId);
     return window === undefined
       ? undefined
       : { windowId: window.id, chatId: window.chatId, messageCount: window.messages.length };
   });
+  speakerActivity.recoverDirectivesWith((dispatchId) => deliveries.directiveForDispatch(dispatchId));
   let activeCanary: { readonly chatId: string; readonly text: string } | undefined;
+  // The single source of truth for the managed-chat set, seeded from the static boot config and
+  // advanced by every reload (#179). The post-auth boot path reads THIS, not the original
+  // `options.managedChats` closure — so a reload that arrives while still pairing is not reverted
+  // when authentication completes and applies the (then-stale) startup set.
+  let currentManagedChats: readonly string[] = options.managedChats;
   const account = createWhatsAppAccount({
     storeDirectory: storeDir,
     archive: inbox.recorder,
@@ -247,12 +424,51 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     ...(options.sessionFactory === undefined ? {} : { sessionFactory: options.sessionFactory }),
   });
   const log = getLogger("whatsapp");
+  const unsubscribeDirectiveOutcomes = speakerActivity.subscribeDirectives({
+    dispatched: () => undefined,
+    settledWithoutSay: ({ directiveId }) => {
+      try {
+        deliveries.settleWithoutSay(directiveId, "Speaker completed without calling say_directive.");
+      } catch (cause) {
+        log.error({ directiveId, error: errorMessage(cause) }, "Failed to persist settled-without-Saying Outcome");
+      }
+    },
+    settledFailed: ({ directiveId, error }) => {
+      try {
+        deliveries.failWithoutSay(directiveId, error);
+      } catch (cause) {
+        log.error({ directiveId, error: errorMessage(cause) }, "Failed to persist failed Directive Outcome");
+      }
+    },
+  });
   setRuntimeStatus({ phase: "starting", chatTarget: gate.describe() });
   let stopping = false;
 
   const program = Effect.gen(function* () {
     yield* Effect.addFinalizer(() => Effect.sync(() => archive.close()));
-    yield* Effect.addFinalizer(() => Effect.sync(() => scribeBackfills.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(() => surfaces.close()));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        // Stop the up-inbox port before the handle is finalized, so a webhook in flight during teardown
+        // defers (503) rather than throwing on a closed SQLite handle and being lost.
+        brainAlive = false;
+        brainInbox.close();
+      }),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (proactiveClockTimer !== undefined) clearInterval(proactiveClockTimer);
+      }),
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(() => deliveries.close()));
+    yield* Effect.addFinalizer(() => Effect.sync(unsubscribeDirectiveOutcomes));
+    yield* Effect.addFinalizer(() => Effect.sync(() => historicalReplay.close()));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        restoreScribeInbox();
+        scribeInbox.close();
+      }),
+    );
     yield* Effect.addFinalizer(() => Effect.promise(() => account.stop()));
     if (!gate.hasTarget) {
       yield* Effect.logWarning("No managed WhatsApp chat is configured; ingress remains fail-closed.");
@@ -270,32 +486,77 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
+    // One account var for both: `admit` consults active direct bindings for it, and a live reload activates
+    // a new chat's Surface against it (#179).
+    authenticatedJid = authenticatedAccount.jid;
+    yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, currentManagedChats));
+    yield* Effect.sync(() =>
+      configureIntentEscalationRuntime({
+        inbox: brainInbox,
+        surfaceIdForSpeaker: (speakerId) => surfaces.activeSurface(authenticatedAccount.jid, speakerId)?.id,
+        wake: () => wakeBrain(brainInbox),
+      }),
+    );
+    yield* Effect.sync(() =>
+      configureBrainEffectsRuntime({
+        inbox: brainInbox,
+        wake: () => wakeBrain(brainInbox),
+        // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
+        // process-global at app boot, well before any Batch files an issue.
+        fileIssue: (request, effectId) => createIssueFiler(getIssueManagementRuntime())(request, effectId),
+        // The full issue-mutation set (comment create/update/delete, issue update, state change) shares
+        // the same lazily-resolved issue-management runtime and the same Operation-Identity crash-dedup.
+        mutateIssue: (mutation, effectId) => createIssueMutator(getIssueManagementRuntime())(mutation, effectId),
+        // Resolve a Brain-chosen target entity to its Surface during prompt admission (§8) — see
+        // resolveEntitySurface. No graph wired (boot/tests) means nothing resolves: fail-closed.
+        resolveSurfaceForEntity: (entityId) => {
+          const graph = tryGetGraphStore();
+          return graph === undefined
+            ? undefined
+            : resolveEntitySurface({ graph, surfaces, accountJid: authenticatedAccount.jid }, entityId);
+        },
+        deliverPrompt: (effect) => {
+          const binding = surfaces.activeBinding(effect.directive.surfaceId);
+          if (binding === undefined) {
+            throw new Error(`Surface ${effect.directive.surfaceId} has no active provider binding.`);
+          }
+          return (options.dispatch ?? dispatchSpeaker)({
+            id: binding.providerChatId,
+            input: {
+              type: "brain.directive",
+              directive: {
+                ...effect.directive,
+                brief: { ...effect.directive.brief, evidenceIds: [...effect.directive.brief.evidenceIds] },
+              },
+            },
+          });
+        },
+      }),
+    );
+    yield* Effect.sync(() =>
+      configureDelegationRuntime({
+        inbox: brainInbox,
+        wake: () => wakeBrain(brainInbox),
+        providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+      }),
+    );
     if (account.initialArchiveReady !== undefined && options.sessionFactory === undefined) {
       yield* Effect.promise(() => account.initialArchiveReady!());
-      for (const state of scribeBackfills.states()) {
-        if (!options.managedChats.includes(state.chatId)) scribeBackfills.disable(state.chatId);
+      for (const state of historicalReplay.states()) {
+        if (!currentManagedChats.includes(state.chatId)) historicalReplay.disable(state.chatId);
       }
-      for (const chatId of options.managedChats) {
-        const state = scribeBackfills.get(chatId);
-        const admission = state === undefined
-          ? scribeBackfills.admit(chatId)
-          : state.mode === "catching_up"
-            ? { admitted: true as const }
-            : state.mode === "disabled"
-              ? scribeBackfills.retry(chatId)
-              : { admitted: false as const };
-        if (admission.admitted) {
-          // Empty archives need no detached Flue run. Capture the same durable
-          // snapshot and cross the snapshot/tail boundary synchronously; the
-          // second handoff still refuses to go live if a row arrived meanwhile.
-          scribeBackfills.captureSnapshot(chatId);
-          if (scribeBackfills.nextPage(chatId) === undefined) {
-            scribeBackfills.handoff(chatId);
-            if (scribeBackfills.handoff(chatId)) continue;
-          }
-          const { runId } = yield* Effect.promise(() => invoke(scribeBackfill, { input: { chatId } }));
-          scribeBackfills.setRunId(chatId, runId);
-        }
+      for (const chatId of currentManagedChats) {
+        const state = historicalReplay.get(chatId);
+        if (state === undefined) historicalReplay.admit(chatId);
+        else if (state.mode === "disabled") historicalReplay.retry(chatId);
+      }
+      historicalReplay.captureSnapshots();
+      while (historicalReplay.nextBatch() === undefined && historicalReplay.advance() > 0) {
+        // Empty Surface snapshots cross snapshot -> tail -> live without a Flue run.
+      }
+      if (historicalReplay.states().some(({ mode }) => mode === "catching_up")) {
+        const { runId } = yield* Effect.promise(() => invoke(historicalReplayWorkflow, { input: {} }));
+        historicalReplay.setRunId(runId);
       }
     }
     const session = account.session();
@@ -318,15 +579,38 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       ),
     );
     yield* runWhatsAppSession(session, {
-      gate,
+      // The event source admits via the same composite predicate, so a known-Person DM is two-way.
+      gate: { ...gate, allowed: admit },
       history: archive,
       inbox,
       botLid: options.botLid,
       ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
       ...(options.coalescer === undefined ? {} : { coalescer: options.coalescer }),
-      ...(options.afterParticipationReady === undefined
-        ? {}
-        : { afterParticipationReady: options.afterParticipationReady }),
+      afterParticipationReady: async () => {
+        await recoverPendingPrompts();
+        await recoverPendingIssueFilings();
+        await recoverPendingIssueMutations();
+        // Reconcile prior-process accepted work FIRST: those runs cannot still be executing, so an
+        // active/missing record is a genuine interrupt. Only then re-invoke launches that were
+        // pending (reserved but never Flue-admitted) at crash time — re-invoking them makes their
+        // runs active in THIS process, and reconciling after would wrongly interrupt live work whose
+        // real result the admit guard (bridge.ts) would then silently drop.
+        await reconcileSpecialistWorkAtBoot({ inbox: brainInbox, wake: () => wakeBrain(brainInbox), getRun });
+        await recoverPendingSpecialistLaunches([coderSpecialistSpec, reviewerSpecialistSpec]);
+        // Everything the Brain's tools need is now configured. Open the GitHub up-inbox wake gate, then
+        // sweep — this dispatches any event admitted during boot, and future admissions wake directly.
+        brainReady = true;
+        await wakeBrain(brainInbox);
+        // Proactive clock cron floor (§6): run the due scan once at boot, then on a slow interval. Boot
+        // reconciliation admits any wake that came due while down; each fires exactly once (durable ledger).
+        await runProactiveClock();
+        const intervalMs = options.proactiveClockIntervalMs ?? DEFAULT_PROACTIVE_CLOCK_INTERVAL_MS;
+        if (intervalMs > 0) {
+          proactiveClockTimer = setInterval(() => void runProactiveClock(), intervalMs);
+          proactiveClockTimer.unref?.();
+        }
+        await options.afterParticipationReady?.();
+      },
     });
   });
 
@@ -352,13 +636,25 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     }
   });
   return {
+    reloadManagedChats: (chatIds) => {
+      currentManagedChats = chatIds;
+      gate.reload(chatIds);
+      // Re-run the SAME boot operation against the new set (#179): activateConfigured retires every
+      // active Surface not in the set and (re)activates the ones in it, preserving surface_ids for
+      // chats that remain. So a newly-authorized chat gains a Surface it can escalate through, AND a
+      // de-authorized chat's outbound Surface is retired — closing outbound Brain delivery in lockstep
+      // with the gate closing inbound. A no-op until the account is authenticated.
+      // A Brain-opened DM (S5, kind='direct') is deliberately preserved: activateConfigured retires only
+      // 'configured' (or other-account) bindings, so a live reload never sweeps an active known-Person DM.
+      if (authenticatedJid !== undefined) surfaces.activateConfigured(authenticatedJid, chatIds);
+    },
     synchronizedChats: async () => await account.synchronizedChats(),
     smokeCanary: async (nonce, timeoutMillis) => {
       const chatId = options.canaryChat;
       if (chatId === undefined) {
         throw new WhatsAppSmokeCanaryError(409, "No dedicated smoke canary group is configured.");
       }
-      if (!options.managedChats.some((managed) => managed.toLowerCase() === chatId.toLowerCase())) {
+      if (!currentManagedChats.some((managed) => managed.toLowerCase() === chatId.toLowerCase())) {
         throw new WhatsAppSmokeCanaryError(400, "The configured smoke canary group is not a Managed Chat.");
       }
       if (activeCanary !== undefined) {

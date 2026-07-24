@@ -1,4 +1,3 @@
-import type { DispatchReceipt } from "@flue/runtime";
 import { flue } from "@flue/runtime/routing";
 import { Hono } from "hono";
 
@@ -12,17 +11,15 @@ import { configureGraphStore } from "../capabilities/graph/runtime.ts";
 import type { GraphStore } from "@ambient-agent/engine/graph/store.ts";
 import { configureWhatsAppParticipationPort } from "../capabilities/whatsapp-participation/whatsapp-port.ts";
 import type { WhatsAppParticipationPort } from "../capabilities/whatsapp-participation/whatsapp-port.ts";
-import { configureDelegationRuntime, type DispatchSpecialist } from "../capabilities/delegation/runtime.ts";
-import type { RunLedger } from "../capabilities/delegation/ledger.ts";
-import { installDelegationBridge } from "../capabilities/delegation/bridge.ts";
 import { installGitHubIngressRuntime } from "@ambient-agent/engine/github/ingress-runtime.ts";
 import type { GitHubIngressStore } from "@ambient-agent/engine/github/ingress-store.ts";
 import type { GitHubIngressSettings } from "@ambient-agent/engine/github/ingress.ts";
-import type { GitHubIngressInput } from "@ambient-agent/engine/inputs.ts";
+import type { GitHubIngressAdmit } from "@ambient-agent/engine/github/up-inbox.ts";
 
 export interface SpeakerIngressAdapters {
   readonly settings: GitHubIngressSettings;
-  readonly dispatch: (chatId: string, input: GitHubIngressInput) => Promise<DispatchReceipt>;
+  /** Admit a GitHub event to the single Brain up-inbox (§4); the Brain decides which Surface(s) hear it. */
+  readonly admit: GitHubIngressAdmit;
   readonly review?: Parameters<typeof installGitHubIngressRuntime>[3];
 }
 
@@ -45,15 +42,6 @@ export interface SpeakerAdapters {
   /** The shared graph store, wired so later graph consumers reach it via `getGraphStore()`. */
   readonly graph?: GraphStore;
   readonly participation?: WhatsAppParticipationPort;
-  /**
-   * Delegation transport (#157): the run ledger + the funnel that delivers a Specialist
-   * result to a chat's Speaker. When present, the ADR 0001 bridge is installed here. The
-   * boot sweep (crash-unsettled launches → `interrupted` results) is NOT run here: it
-   * dispatches to the Speaker, whose `say` needs the WhatsApp participation port, which
-   * production wires only later inside `runWhatsAppSession`. The host runs the sweep after
-   * that wiring (see `sweepUnsettledLaunches` on `afterParticipationReady` in app.ts).
-   */
-  readonly delegation?: { readonly ledger: RunLedger; readonly dispatch: DispatchSpecialist };
   /** Payload for GET /health; defaults to a static `{ ok: true }`. */
   readonly health?: () => Record<string, unknown>;
   /** Caller-owned routes (smoke route, /test seams), mounted before the Flue routes. */
@@ -68,19 +56,12 @@ export const composeSpeaker = (adapters: SpeakerAdapters): Hono => {
   });
   const githubIngress = installGitHubIngressRuntime(
     adapters.ingress.settings,
-    adapters.ingress.dispatch,
+    adapters.ingress.admit,
     adapters.operations,
     adapters.ingress.review,
   );
   if (adapters.graph !== undefined) configureGraphStore(adapters.graph);
   if (adapters.participation !== undefined) configureWhatsAppParticipationPort(adapters.participation);
-  if (adapters.delegation !== undefined) {
-    configureDelegationRuntime(adapters.delegation);
-    installDelegationBridge();
-    // The boot sweep is deferred to the host, after the participation port is wired — see
-    // the delegation adapter's doc above. It settles crash-unsettled launches into
-    // `interrupted` results the Speaker can voice, and voicing needs the port.
-  }
   const app = new Hono();
   const health = adapters.health ?? (() => ({ ok: true }));
   app.get("/health", (context) => context.json(health()));

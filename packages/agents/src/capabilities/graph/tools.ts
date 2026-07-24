@@ -1,29 +1,35 @@
 import { defineTool, type ToolDefinition } from "@flue/runtime";
 import * as v from "valibot";
 
-import type { GraphEntity, GraphRelation, GraphStore } from "@ambient-agent/engine/graph/store.ts";
+import type {
+  GraphAttestationContext,
+  GraphEntity,
+  GraphRelation,
+  GraphStore,
+} from "@ambient-agent/engine/graph/store.ts";
 import { getGraphStore } from "./runtime.ts";
-import {
-  entitySchema,
-  GraphConstraintError,
-  relationSchema,
-  toEntityUpsert,
-  toRelationUpsert,
-} from "./schemas.ts";
+import { entitySchema, relationSchema, toEntityUpsert, toRelationUpsert } from "./schemas.ts";
 
 const nonEmpty = v.pipe(v.string(), v.trim(), v.minLength(1));
+const evidenceSelection = v.pipe(v.array(nonEmpty), v.minLength(1));
 
 const provenanceOutput = v.object({
   chatId: v.optional(v.string()),
   messageId: v.optional(v.string()),
   deliveryId: v.optional(v.string()),
 });
+// The durable Evidence ids backing an entity/relation — its Attestations' Evidence Sets, which are
+// conversation_events.event_id / github-event:* ids. These are the ONLY ids the Brain can cite as
+// evidence in prompt_speaker/file_issue (recordPrompt validates them); provenance.messageId is a raw
+// provider message id and is NOT a citable evidence id.
 const entityOutput = v.object({
   entityId: v.string(),
   type: v.string(),
   properties: v.record(v.string(), v.unknown()),
   confidence: v.number(),
   provenance: provenanceOutput,
+  attestationIds: v.array(v.string()),
+  evidenceIds: v.array(v.string()),
   createdAt: v.string(),
   updatedAt: v.string(),
 });
@@ -34,12 +40,27 @@ const relationOutput = v.object({
   toId: v.string(),
   confidence: v.number(),
   provenance: provenanceOutput,
+  attestationIds: v.array(v.string()),
+  evidenceIds: v.array(v.string()),
   createdAt: v.string(),
   updatedAt: v.string(),
 });
 
-const publicEntity = (entity: GraphEntity): v.InferOutput<typeof entityOutput> => ({ ...entity });
-const publicRelation = (relation: GraphRelation): v.InferOutput<typeof relationOutput> => ({ ...relation });
+const MAX_TOOL_ATTESTATION_IDS = 20;
+
+const publicEntity = (entity: GraphEntity, evidenceIds: readonly string[]): v.InferOutput<typeof entityOutput> => ({
+  ...entity,
+  attestationIds: entity.attestationIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+  evidenceIds: evidenceIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+});
+const publicRelation = (
+  relation: GraphRelation,
+  evidenceIds: readonly string[],
+): v.InferOutput<typeof relationOutput> => ({
+  ...relation,
+  attestationIds: relation.attestationIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+  evidenceIds: evidenceIds.slice(-MAX_TOOL_ATTESTATION_IDS),
+});
 
 /**
  * The default store, resolved lazily so mounting these tools on an agent never forces
@@ -52,70 +73,110 @@ const lazyGraphStore: GraphStore = new Proxy({} as GraphStore, {
   get: (_target, property) => Reflect.get(getGraphStore(), property) as unknown,
 });
 
+const claimContext = (
+  context: GraphAttestationContext,
+  selectedEvidenceIds: readonly string[],
+): GraphAttestationContext => {
+  const allowed = new Set(context.evidenceIds);
+  const evidenceIds = [...new Set(selectedEvidenceIds)];
+  if (evidenceIds.length === 0 || evidenceIds.some((evidenceId) => !allowed.has(evidenceId))) {
+    throw new Error("Every selected Evidence id must belong to this trusted Scribe Batch.");
+  }
+  return { ...context, evidenceIds };
+};
+
 /**
- * The four ontology tools, keyed by name so each of the three graph consumers mounts
- * exactly its slice (§5 D5/D6) without re-declaring a tool: the Scribe writes and
- * reads everything; the Speaker gets read + the confirmed-resolution subset
- * (`lookup_graph` + `record_entity` + `merge_entities`, never `record_relation`); the
- * Specialists are read-only (`lookup_graph`).
+ * The ontology tools share one implementation, but every write receives its author and
+ * Evidence Set from the trusted runtime context. The model cannot supply provenance.
  */
-const graphToolsByName = (store: GraphStore) => ({
+type GraphContextSource = GraphAttestationContext | (() => GraphAttestationContext);
+const contextFrom = (source: GraphContextSource): GraphAttestationContext =>
+  typeof source === "function" ? source() : source;
+
+const graphToolsByName = (store: GraphStore, context: GraphContextSource) => ({
   record_entity: defineTool({
     name: "record_entity",
     description:
-      "Record one typed entity in the shared graph. Keyed entities (people, threads, and GitHub objects) " +
-      "converge on their natural key, so re-recording the same one updates it rather than duplicating; " +
-      "restating raises its confidence.",
-    input: v.object({ entity: entitySchema }),
+      "Propose one typed Entity as an immutable Attestation in the shared Graph. Keyed Entities converge " +
+      "on their natural key. Retrying the same claim against the same Evidence Set is idempotent and never " +
+      "amplifies confidence.",
+    input: v.object({ entity: entitySchema, evidenceIds: evidenceSelection }),
     output: v.object({ entityId: v.string(), type: v.string(), confidence: v.number() }),
     run: ({ input }) => {
-      const entity = store.upsertEntity(toEntityUpsert(input.entity));
-      return { entityId: entity.entityId, type: entity.type, confidence: entity.confidence };
+      const result = store.attest({
+        context: claimContext(contextFrom(context), input.evidenceIds),
+        claim: { kind: "entity", input: toEntityUpsert(input.entity) },
+      });
+      if (result.kind === "entity") {
+        return { entityId: result.entity.entityId, type: result.entity.type, confidence: result.entity.confidence };
+      }
+      if (result.kind === "entity-receipt") {
+        return { entityId: result.entityId, type: result.type, confidence: result.confidence };
+      }
+      throw new Error("Entity Attestation returned the wrong result.");
     },
   }),
   record_relation: defineTool({
     name: "record_relation",
     description:
-      "Record one typed edge between two existing entities in the shared graph. Re-recording the same edge " +
-      "raises its confidence rather than duplicating it.",
-    input: v.object({ edge: relationSchema }),
+      "Propose one typed Relation as an immutable Attestation between two projected Entities. Retrying the " +
+      "same claim against the same Evidence Set is idempotent and never amplifies confidence.",
+    input: v.object({ edge: relationSchema, evidenceIds: evidenceSelection }),
     output: v.object({ relationId: v.string(), confidence: v.number() }),
     run: ({ input }) => {
       const edge = input.edge;
-      if (edge.relation === "made_by") {
-        const conflicting = store.relationsFrom(edge.fromId, "made_by").find((existing) => existing.toId !== edge.toId);
-        if (conflicting !== undefined) {
-          throw new GraphConstraintError(
-            "made-by-single",
-            `${edge.fromId} is already made_by ${conflicting.toId}; a commitment has exactly one owner.`,
-          );
-        }
+      const result = store.attest({
+        context: claimContext(contextFrom(context), input.evidenceIds),
+        claim: { kind: "relation", input: toRelationUpsert(edge) },
+      });
+      if (result.kind === "relation") {
+        return { relationId: result.relation.relationId, confidence: result.relation.confidence };
       }
-      if (edge.relation === "blocks") {
-        if (edge.fromId === edge.toId) {
-          throw new GraphConstraintError("blocks-acyclic", `${edge.fromId} cannot block itself.`);
-        }
-        if (store.blocksReachable(edge.toId, edge.fromId)) {
-          throw new GraphConstraintError(
-            "blocks-acyclic",
-            `${edge.fromId} blocks ${edge.toId} would close a cycle; blocks must stay acyclic.`,
-          );
-        }
+      if (result.kind === "relation-receipt") {
+        return { relationId: result.relationId, confidence: result.confidence };
       }
-      const relation = store.upsertRelation(toRelationUpsert(edge));
-      return { relationId: relation.relationId, confidence: relation.confidence };
+      throw new Error("Relation Attestation returned the wrong result.");
     },
   }),
   merge_entities: defineTool({
     name: "merge_entities",
     description:
-      "Merge two entities that turned out to be the same one. Every edge and identity of the loser is " +
-      "repointed to the survivor and the loser is deleted.",
-    input: v.object({ survivorId: nonEmpty, loserId: nonEmpty }),
+      "Record a Brain merge ruling as an immutable Attestation. The Belief Projection resolves the loser " +
+      "onto the survivor without deleting history.",
+    input: v.object({ survivorId: nonEmpty, loserId: nonEmpty, evidenceIds: evidenceSelection }),
     output: v.object({ survivorId: v.string() }),
     run: ({ input }) => {
-      store.mergeEntities(input.survivorId, input.loserId);
-      return { survivorId: input.survivorId };
+      const result = store.attest({
+        context: claimContext(contextFrom(context), input.evidenceIds),
+        claim: { kind: "merge", survivorId: input.survivorId, loserId: input.loserId },
+      });
+      if (result.kind === "merge") return { survivorId: result.survivor.entityId };
+      if (result.kind === "merge-receipt") return { survivorId: result.survivorId };
+      throw new Error("Merge Attestation returned the wrong result.");
+    },
+  }),
+  rule_attestation: defineTool({
+    name: "rule_attestation",
+    description:
+      "Record a Brain confirmation or overruling of one Entity/Relation Attestation. The ruling is immutable; " +
+      "it changes the Belief Projection without rewriting the target Attestation.",
+    input: v.object({
+      action: v.picklist(["confirm", "overrule"]),
+      targetAttestationId: nonEmpty,
+      evidenceIds: evidenceSelection,
+    }),
+    output: v.object({ attestationId: v.string(), action: v.picklist(["confirm", "overrule"]) }),
+    run: ({ input }) => {
+      const result = store.attest({
+        context: claimContext(contextFrom(context), input.evidenceIds),
+        claim: {
+          kind: "ruling",
+          action: input.action,
+          targetAttestationId: input.targetAttestationId,
+        },
+      });
+      if (result.kind !== "ruling") throw new Error("Ruling Attestation returned the wrong result.");
+      return { attestationId: result.attestation.id, action: input.action };
     },
   }),
   lookup_graph: defineTool({
@@ -147,13 +208,26 @@ const graphToolsByName = (store: GraphStore) => ({
     }),
     output: v.object({ entities: v.array(entityOutput), relations: v.array(relationOutput) }),
     run: ({ input }) => {
+      // ponytail: one full attestations() scan per lookup to map attestationId -> its Evidence Set, so the
+      // Brain gets a citable evidence id. The Graph is small and lookup is off the hot path; index by
+      // attestation id in the store if this ever bites.
+      let evidenceByAttestation: Map<string, readonly string[]> | undefined;
+      const evidenceFor = (attestationIds: readonly string[]): readonly string[] => {
+        if (evidenceByAttestation === undefined) {
+          evidenceByAttestation = new Map(store.attestations().map((a) => [a.id, a.evidenceIds]));
+        }
+        return [...new Set(attestationIds.flatMap((id) => [...(evidenceByAttestation!.get(id) ?? [])]))];
+      };
       const neighborhood = (entity: GraphEntity | undefined) => {
         if (entity === undefined) return { entities: [], relations: [] };
         const relations = [...store.relationsFrom(entity.entityId), ...store.relationsTo(entity.entityId)];
-        return { entities: [publicEntity(entity)], relations: relations.map(publicRelation) };
+        return {
+          entities: [publicEntity(entity, evidenceFor(entity.attestationIds))],
+          relations: relations.map((r) => publicRelation(r, evidenceFor(r.attestationIds))),
+        };
       };
       if (input.platform !== undefined && input.externalId !== undefined) {
-        return neighborhood(store.resolveIdentity(input.platform, input.externalId));
+        return neighborhood(store.resolveIdentity(input.platform, input.externalId, input.type));
       }
       if (input.entityId !== undefined) {
         return neighborhood(store.getEntity(input.entityId));
@@ -163,22 +237,41 @@ const graphToolsByName = (store: GraphStore) => ({
         ...(input.query === undefined ? {} : { query: input.query }),
         ...(input.limit === undefined ? {} : { limit: input.limit }),
       });
-      return { entities: entities.map(publicEntity), relations: [] };
+      return { entities: entities.map((e) => publicEntity(e, evidenceFor(e.attestationIds))), relations: [] };
     },
   }),
 });
 
-/** All four tools — the Scribe's write + read surface (§4). */
-export const createGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] =>
-  Object.values(graphToolsByName(store));
+/** Brain-capable surface. Its trusted context is explicit at construction. */
+export const createGraphTools = (store: GraphStore, context: GraphAttestationContext): ToolDefinition[] =>
+  Object.values(graphToolsByName(store, context));
 
-/** Read + confirmed-resolution subset for the Speaker (§5 D5); no `record_relation`. */
-export const createSpeakerGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] => {
-  const tools = graphToolsByName(store);
-  return [tools.lookup_graph, tools.record_entity, tools.merge_entities];
+/** Brain write authority with trusted context resolved from its currently claimed durable Batch. */
+export const createBrainGraphTools = (
+  context: () => GraphAttestationContext,
+  store: GraphStore = lazyGraphStore,
+): ToolDefinition[] => Object.values(graphToolsByName(store, context));
+
+/** Scribe proposal surface: read plus Entity/Relation Attestations, never merge rulings. */
+export const createScribeGraphTools = (
+  context: GraphAttestationContext,
+  store: GraphStore = lazyGraphStore,
+): ToolDefinition[] => {
+  const tools = graphToolsByName(store, context);
+  return [tools.lookup_graph, tools.record_entity, tools.record_relation];
 };
+
+const readOnlyContext: GraphAttestationContext = {
+  author: { kind: "ingester", id: "read-only-tool-surface" },
+  evidenceIds: ["read-only:unused"],
+};
+
+/** Speakers can consult the Graph but cannot mutate or ratify it. */
+export const createSpeakerGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] => [
+  graphToolsByName(store, readOnlyContext).lookup_graph,
+];
 
 /** Read-only surface for the Specialists (§5 D6). */
 export const createSpecialistGraphTools = (store: GraphStore = lazyGraphStore): ToolDefinition[] => [
-  graphToolsByName(store).lookup_graph,
+  graphToolsByName(store, readOnlyContext).lookup_graph,
 ];

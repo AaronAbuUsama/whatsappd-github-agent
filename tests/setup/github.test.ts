@@ -40,19 +40,31 @@ describe("first-run GitHub discovery", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("verifies both App identity and normalized repository access without leaking the private key", async () => {
+  it("verifies App identity, repo installation, and a mintable installation token across orgs", async () => {
     const getAuthenticated = vi.fn(async () => ({ data: { slug: "ambient-planner" } }));
-    const getRepository = vi.fn(async () => ({ data: { full_name: "owner/repository" } }));
+    // The pasted installationId belongs to a different org than the repo; verification succeeds
+    // because getRepoInstallation is an App-JWT route (multi-org), not the fixed-installation repos.get.
+    const getRepoInstallation = vi.fn(async () => ({ data: { id: 424242 } }));
+    const reposGet = vi.fn(async () => ({ data: {} }));
+    const installationClient = vi.fn(() => ({ repos: { get: reposGet } }));
     await expect(
       verifyGitHubAppRepositoryAccess({
         credential: APP_TRIPLE,
-        repository: "https://github.com/owner/repository.git",
-        client: { apps: { getAuthenticated }, repos: { get: getRepository } },
+        repository: "https://github.com/other-org/repository.git",
+        client: { apps: { getAuthenticated, getRepoInstallation } },
+        installationClient,
       }),
-    ).resolves.toBe("owner/repository");
+    ).resolves.toBe("other-org/repository");
     expect(getAuthenticated).toHaveBeenCalledWith({ request: { signal: undefined } });
-    expect(getRepository).toHaveBeenCalledWith({
-      owner: "owner",
+    expect(getRepoInstallation).toHaveBeenCalledWith({
+      owner: "other-org",
+      repo: "repository",
+      request: { signal: undefined },
+    });
+    // The stored installationId is exercised — a token is minted and used, the runtime's real path.
+    expect(installationClient).toHaveBeenCalledWith(APP_TRIPLE.installationId);
+    expect(reposGet).toHaveBeenCalledWith({
+      owner: "other-org",
       repo: "repository",
       request: { signal: undefined },
     });
@@ -66,26 +78,48 @@ describe("first-run GitHub discovery", () => {
             getAuthenticated: async () => {
               throw new Error("response contains must-not-leak");
             },
+            getRepoInstallation: async () => ({ data: { id: 1 } }),
           },
-          repos: { get: async () => undefined },
         },
       }),
     ).rejects.not.toThrow("must-not-leak");
   });
 
-  it("passes cancellation through to both GitHub verification requests", async () => {
+  it("fails verification when the installation token cannot be minted or used", async () => {
+    const getAuthenticated = vi.fn(async () => ({ data: { slug: "ambient-planner" } }));
+    const getRepoInstallation = vi.fn(async () => ({ data: { id: 424242 } }));
+    // A mistyped/suspended installation authenticates as the App and shows an installation, but the
+    // installation-scoped call fails — this must fail verification, not pass and only break at runtime.
+    const reposGet = vi.fn(async () => {
+      throw new Error("Not Found");
+    });
+    await expect(
+      verifyGitHubAppRepositoryAccess({
+        credential: APP_TRIPLE,
+        repository: "other-org/repository",
+        client: { apps: { getAuthenticated, getRepoInstallation } },
+        installationClient: () => ({ repos: { get: reposGet } }),
+      }),
+    ).rejects.toThrow("could not be verified");
+    expect(reposGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes cancellation through to every GitHub verification request", async () => {
     const signal = new AbortController().signal;
     const getAuthenticated = vi.fn(async () => undefined);
-    const getRepository = vi.fn(async () => undefined);
+    const getRepoInstallation = vi.fn(async () => ({ data: { id: 424242 } }));
+    const reposGet = vi.fn(async () => ({ data: {} }));
 
     await verifyGitHubAppRepositoryAccess({
       credential: APP_TRIPLE,
       repository: "owner/repository",
       signal,
-      client: { apps: { getAuthenticated }, repos: { get: getRepository } },
+      client: { apps: { getAuthenticated, getRepoInstallation } },
+      installationClient: () => ({ repos: { get: reposGet } }),
     });
 
     expect(getAuthenticated).toHaveBeenCalledWith({ request: { signal } });
-    expect(getRepository).toHaveBeenCalledWith({ owner: "owner", repo: "repository", request: { signal } });
+    expect(getRepoInstallation).toHaveBeenCalledWith({ owner: "owner", repo: "repository", request: { signal } });
+    expect(reposGet).toHaveBeenCalledWith({ owner: "owner", repo: "repository", request: { signal } });
   });
 });

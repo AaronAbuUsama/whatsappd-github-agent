@@ -10,6 +10,7 @@ import {
 } from "../../packages/installation/src/schema.ts";
 
 const EXPECTED_DEFAULT_PROFILES = {
+  brain: { id: "gpt-5.6-luna", thinkingLevel: "high" },
   speaker: { id: "gpt-5.6-luna", thinkingLevel: "low" },
   scribe: { id: "gpt-5.6-luna", thinkingLevel: "medium" },
   planner: { id: "gpt-5.6-sol", thinkingLevel: "xhigh" },
@@ -57,6 +58,50 @@ describe("managed schemas", () => {
     ).toBe(true);
   });
 
+  it("accepts a cross-org allowlist — repo names carry no single-org constraint (multi-org)", () => {
+    const config = createManagedConfig(["120363000@g.us"], "Xelmar-tech/a");
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: {
+          ...config.github,
+          defaultRepository: "Xelmar-tech/a",
+          allowedRepositories: ["Xelmar-tech/a", "TheCallApp/b"],
+          reviewRepositories: ["TheCallApp/b"],
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("routes managed chats to allowlisted surface repositories and defaults to empty", () => {
+    const config = createManagedConfig(["120363000@g.us"], "owner/repo");
+    expect(v.parse(ManagedConfigSchema, config).github.surfaceRepositories).toEqual([]);
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: {
+          ...config.github,
+          allowedRepositories: ["owner/repo", "owner/second"],
+          surfaceRepositories: [{ chat: "120363000@g.us", repository: "owner/second" }],
+        },
+      }).success,
+    ).toBe(true);
+    // A surface repository outside the allowlist is refused.
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: { ...config.github, surfaceRepositories: [{ chat: "120363000@g.us", repository: "other/repo" }] },
+      }).success,
+    ).toBe(false);
+    // A surface repository bound to an unmanaged chat is refused.
+    expect(
+      v.safeParse(ManagedConfigSchema, {
+        ...config,
+        github: { ...config.github, surfaceRepositories: [{ chat: "120363999@g.us", repository: "owner/repo" }] },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a retired personal-token file and requires numeric App identifiers", () => {
     // A lingering PAT file fails the App schema and surfaces as reauthentication-required.
     expect(
@@ -83,6 +128,13 @@ describe("managed schemas", () => {
     const { profiles: _profiles, ...legacyModel } = config.model;
     const legacy = v.parse(ManagedConfigSchema, { ...config, model: legacyModel });
     expect(legacy.model.profiles).toEqual(EXPECTED_DEFAULT_PROFILES);
+
+    const { brain: _brain, ...preBrainProfiles } = config.model.profiles;
+    const preBrain = v.parse(ManagedConfigSchema, {
+      ...config,
+      model: { ...config.model, profiles: preBrainProfiles },
+    });
+    expect(preBrain.model.profiles.brain).toEqual(EXPECTED_DEFAULT_PROFILES.brain);
 
     expect(
       v.parse(ManagedConfigSchema, {

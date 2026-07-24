@@ -75,7 +75,7 @@ import {
 import { runFirstRunSetup, type FirstRunServices, type SetupReview } from "./setup/first-run.ts";
 import { createWhatsAppAccount } from "@ambient-agent/installation/whatsapp-account.ts";
 import { createConversationArchive, migrateConversationArchiveSchema } from "@ambient-agent/engine/intake/conversation-archive.ts";
-import { createScribeBackfillStore } from "@ambient-agent/engine/intake/scribe-backfill.ts";
+import { createHistoricalReplayStore } from "@ambient-agent/engine/intake/historical-replay.ts";
 import { createDeviceCodeCallbacks, createWhatsAppCallbacks, defaultSetupPrompts, type SetupPrompts } from "./prompts.ts";
 import {
   parseRuntimePort,
@@ -726,22 +726,21 @@ export const runCli = async (argv: readonly string[], dependencies: CliDependenc
     });
 
   program
-    .command("scribe-backfill")
-    .description("inspect or retry one managed chat's Scribe backfill")
-    .argument("[chat-id]", "managed WhatsApp chat JID")
-    .option("--retry", "move a failed or disabled backfill back to catching_up")
+    .command("historical-replay")
+    .description("inspect the global Historical Replay or retry one Surface scanner")
+    .argument("[chat-id]", "configured WhatsApp Surface provider chat JID")
+    .option("--retry", "move one failed or disabled Surface scanner back to catching_up")
     .action(async (chatId, options) => {
-      const paths = await readyManagedPaths("inspect Scribe backfill state in");
-      const store = createScribeBackfillStore(paths.applicationDatabase);
+      const paths = await readyManagedPaths("inspect Historical Replay state in");
+      const store = createHistoricalReplayStore(paths.applicationDatabase);
       try {
         if (chatId === undefined) {
           output.stdout(`${JSON.stringify(store.states(), null, 2)}\n`);
           return;
         }
         if (options.retry) {
-          const result = store.retry(chatId);
-          if (!result.admitted) throw new Error(`Scribe backfill ${chatId} is not failed or disabled.`);
-          output.stdout(`Scribe backfill ${chatId} will resume when the runtime starts.\n`);
+          if (!store.retry(chatId)) throw new Error(`Historical Replay Surface ${chatId} is not failed or disabled.`);
+          output.stdout(`Historical Replay for ${chatId} will resume on the global clock when the runtime starts.\n`);
         } else {
           output.stdout(`${JSON.stringify(store.get(chatId) ?? null, null, 2)}\n`);
         }

@@ -24,7 +24,11 @@ import {
   startWhatsAppRuntime,
 } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
+import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
+import { admitGitHubEventToBrain } from "../../packages/engine/src/github/up-inbox.ts";
 import { conversationArrival } from "../../packages/engine/src/intake/conversation-event.ts";
+import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
+import { createSurfaceDeliveryStore } from "../../packages/engine/src/surfaces/delivery.ts";
 import { createTestManagedChatInbox as createManagedChatInbox } from "../../packages/test-support/src/managed-chat-inbox.ts";
 import {
   createReactTool,
@@ -33,6 +37,7 @@ import {
   createSearchWhatsAppHistoryTool,
 } from "../../packages/agents/src/capabilities/whatsapp-participation/tools.ts";
 import { createWhatsAppAccount } from "../../packages/installation/src/whatsapp-account.ts";
+import { createSayDirectiveTool } from "../../packages/agents/src/capabilities/directive-delivery/tools.ts";
 
 const CHAT = "managed-31@g.us";
 const OTHER_CHAT = "unmanaged-31@g.us";
@@ -119,6 +124,7 @@ const inbound = (
     readonly fromMe?: boolean;
     readonly text?: string;
     readonly timestamp?: number;
+    readonly isGroup?: boolean;
   } = {},
 ): WhatsAppMessage =>
   ({
@@ -232,6 +238,95 @@ describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
     ]);
     await account.stop();
     archive.close();
+  });
+
+  it("admits a GitHub event during boot without prematurely waking the Brain (no wedge)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    // A session that stays pre-online until released, so the runtime never reaches the point that
+    // configures the Brain's Effects runtime and flips brainReady — the exact boot-race window.
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      async start() {
+        await barrier;
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      async stop() {},
+      identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
+    } as unknown as WhatsAppSession;
+
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => session,
+    });
+    try {
+      // The up-inbox port is configured synchronously in startWhatsAppRuntime, so admission works
+      // immediately — long before the async boot reaches readiness.
+      const admitted = await admitGitHubEventToBrain({
+        githubAppId: "app-planner",
+        deliveryId: "boot-race-1",
+        eventName: "issues",
+        action: "opened",
+        repository: "acme/widgets",
+        summary: "Issue #7 opened in acme/widgets",
+        detail: { issue: { number: 7 } },
+      });
+      expect(admitted?.id).toMatch(/^github-event:/u);
+
+      // Durable AND not prematurely dispatched: the event is still an unbatched pending input, so no
+      // Batch was created-and-dispatched (which would have wedged, since the Brain runtime isn't up).
+      const probe = createBrainInbox(applicationDatabase, { providerChatIdForSurface: () => undefined });
+      expect(probe.pendingGitHubEvents().map((event) => event.deliveryId)).toContain("boot-race-1");
+      // Neutralize the teardown boot-sweep: claim + mark dispatched so wakeBrain early-returns and no
+      // real Brain agent runs during shutdown (this test has no model provider).
+      const batch = probe.claimBatch();
+      if (batch !== undefined) {
+        probe.markBatchDispatched(batch.id, { dispatchId: "dispatch:test", acceptedAt: "2026-01-01T00:00:00.000Z" });
+      }
+      probe.close();
+    } finally {
+      release();
+      await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+      await runtime.stop();
+    }
+  });
+
+  it("defers a webhook that arrives after the runtime tore down (stale port never throws or loses it)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    await runtime.stop();
+
+    // The port's captured brainInbox is now finalized. Admission must resolve to undefined (→ the
+    // ingress defers → 503 → GitHub retries), never throw on the closed handle and be lost as a 200.
+    await expect(
+      admitGitHubEventToBrain({
+        githubAppId: "app-planner",
+        deliveryId: "post-teardown-1",
+        eventName: "issues",
+        action: "opened",
+        repository: "acme/widgets",
+        summary: "Issue #7 opened in acme/widgets",
+        detail: { issue: { number: 7 } },
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("runs afterParticipationReady only after the participation port is wired (the boot-sweep seam)", async () => {
@@ -456,6 +551,182 @@ describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
 
     await account.stop();
     archive.close();
+  });
+
+  it("engages a chat added by a live gate reload mid-stream, with no restart (#179 L6)", async () => {
+    const { archive, storeDirectory } = temporaryArchive();
+    const fake = fakeSession();
+    const gate = makeManagedChatGate([CHAT]);
+    const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+    const account = createWhatsAppAccount({
+      storeDirectory,
+      archive: inbox.recorder,
+      sessionFactory: () => fake.session,
+    });
+    await account.authenticate({});
+    const dispatches: SpeakerDispatchRequest[] = [];
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(
+            runWhatsAppSession(account.session(), {
+              gate,
+              history: archive,
+              inbox,
+              coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+              dispatch: async (request) => {
+                dispatches.push(request);
+                return { dispatchId: `dispatch-${dispatches.length}`, acceptedAt: "2026-07-24T00:00:00.000Z" };
+              },
+            }),
+          );
+          yield* Effect.yieldNow;
+
+          // Before the reload the added chat is gated out — its message never dispatches.
+          yield* Effect.promise(async () => {
+            for (const listener of fake.messageListeners) {
+              await listener(inbound({ id: "pre-reload-other", chatId: OTHER_CHAT, text: "still gated out" }));
+            }
+          });
+          yield* Effect.sleep(Duration.millis(40));
+          expect(dispatches).toEqual([]);
+
+          // Live reload of the gate — no restart, the same session and stream stay up.
+          gate.reload([CHAT, OTHER_CHAT]);
+
+          // The previously-managed chat still works AND the newly added chat now engages.
+          yield* Effect.promise(async () => {
+            for (const listener of fake.messageListeners) {
+              await listener(inbound({ id: "post-reload-managed", chatId: CHAT, text: "unchanged path" }));
+              await listener(inbound({ id: "post-reload-other", chatId: OTHER_CHAT, text: "now admitted" }));
+            }
+          });
+          yield* Effect.sleep(Duration.millis(60));
+
+          const chats = dispatches.map((request) => request.id).sort();
+          expect(chats).toEqual([CHAT, OTHER_CHAT]);
+        }),
+      ),
+    );
+
+    await account.stop();
+    archive.close();
+  });
+
+  it("reloadManagedChats updates the gate without re-establishing the WhatsApp connection (#179)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    let sessionsCreated = 0;
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => {
+        sessionsCreated += 1;
+        return fakeSession().session;
+      },
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    expect(sessionsCreated).toBe(1);
+
+    // A reload rebuilds the authorization Set only — it never spins up a second session or re-pairs.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+
+    expect(sessionsCreated).toBe(1);
+    expect(getWhatsAppRuntimeStatus().phase).toBe("online");
+    await runtime.stop();
+  });
+
+  it("adds a Surface for a newly-authorized chat and retires it for a de-authorized one (#179 fix 2)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    const jid = "15550000000:7@s.whatsapp.net";
+
+    // Before the reload the added chat has no Surface — an intent from it could not be routed.
+    const before = createSurfaceRegistry(applicationDatabase);
+    expect(before.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    before.close();
+
+    // ADD: both chats authorized → both have an active Surface; the pre-existing one keeps its id.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+    const added = createSurfaceRegistry(applicationDatabase);
+    const originalSurfaceId = added.activeSurface(jid, CHAT)?.id;
+    const otherSurfaceId = added.activeSurface(jid, OTHER_CHAT)?.id;
+    expect(otherSurfaceId).toBeDefined();
+    expect(originalSurfaceId).toBeDefined();
+    added.close();
+
+    // REMOVE: drop OTHER_CHAT → its Surface is retired. Brain directive delivery resolves through
+    // `activeBinding(surfaceId)` (whatsapp-runtime.ts), so a retired binding means outbound delivery
+    // can no longer resolve — enforcement closes outbound in lockstep with the gate closing inbound.
+    // CHAT is untouched and keeps its surface_id.
+    runtime.reloadManagedChats([CHAT]);
+    const removed = createSurfaceRegistry(applicationDatabase);
+    expect(removed.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    expect(removed.activeBinding(otherSurfaceId!)).toBeUndefined();
+    expect(removed.activeSurface(jid, CHAT)).toMatchObject({ id: originalSurfaceId, providerChatId: CHAT });
+    expect(removed.activeBinding(originalSurfaceId!)).toMatchObject({ providerChatId: CHAT });
+    removed.close();
+    await runtime.stop();
+  });
+
+  it("applies a reload that arrived during pairing once auth completes, not the startup set (#179)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    // A session that stays pre-online until released — the pairing/authenticating window in which a
+    // reload can arrive before the post-auth Surface activation runs.
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      async start() {
+        await barrier;
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      async stop() {},
+      identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
+    } as unknown as WhatsAppSession;
+
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => session,
+    });
+    const jid = "15550000000:7@s.whatsapp.net";
+
+    // The reload lands WHILE still pairing — auth has not completed, so no Surface exists yet.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+    const midPairing = createSurfaceRegistry(applicationDatabase);
+    expect(midPairing.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    midPairing.close();
+
+    // Let authentication finish: the post-auth activation must apply the RELOADED set, not the
+    // original [CHAT] the runtime was constructed with.
+    release();
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    const afterAuth = createSurfaceRegistry(applicationDatabase);
+    await vi.waitFor(() => expect(afterAuth.activeSurface(jid, OTHER_CHAT)).toMatchObject({ providerChatId: OTHER_CHAT }));
+    expect(afterAuth.activeSurface(jid, CHAT)).toMatchObject({ providerChatId: CHAT });
+    afterAuth.close();
+    await runtime.stop();
   });
 
   it("opens a reaction-only Window and carries it into Speaker while excluding receipts", async () => {
@@ -854,6 +1125,13 @@ describe("runtime pairing and bridge control", () => {
         accountJid: "15550000000:7@s.whatsapp.net",
       });
       expect(getWhatsAppRuntimeStatus()).not.toHaveProperty("pairing");
+      const surfaces = createSurfaceRegistry(applicationDatabase);
+      expect(surfaces.activeSurface("15550000000:7@s.whatsapp.net", CHAT)).toMatchObject({
+        id: expect.stringMatching(/^surface:[0-9a-f-]{36}$/u),
+        providerAccountId: "15550000000:7@s.whatsapp.net",
+        providerChatId: CHAT,
+      });
+      surfaces.close();
       await expect(runtime.synchronizedChats()).resolves.toEqual([
         { jid: "project-runtime@g.us", name: "Runtime Project", kind: "group", lastActivityAt: 3_000 },
       ]);
@@ -861,6 +1139,166 @@ describe("runtime pairing and bridge control", () => {
       continueStart();
       await runtime.stop();
       stdoutSpy.mockRestore();
+    }
+  });
+
+  it("recovers a pending Brain prompt only after participation is ready, then proves its Surface Delivery", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    const source = inbound({ id: "directive-source-31", text: "I need help but I did not say with what." });
+    const evidence = conversationArrival(source);
+    archive.append(evidence);
+    archive.close();
+
+    const seededSurfaces = createSurfaceRegistry(applicationDatabase);
+    const [surface] = seededSurfaces.activateConfigured("15550000000:7@s.whatsapp.net", [CHAT]);
+    const seededInbox = createBrainInbox(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => seededSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    seededInbox.admitIntent({
+      sourceSurfaceId: surface!.id,
+      interpretation: "The request needs clarification.",
+      evidenceIds: [evidence.id],
+    });
+    const batch = seededInbox.claimBatch();
+    if (batch === undefined) throw new Error("Expected a Brain Batch");
+    seededInbox.markBatchDispatched(batch.id, {
+      dispatchId: "dispatch:brain:seeded",
+      acceptedAt: "2026-07-22T12:00:00.000Z",
+    });
+    const pending = seededInbox.recordPrompt({
+      batchId: batch.id,
+      surfaceId: surface!.id,
+      objective: "Ask what help is needed.",
+      brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+    });
+    seededInbox.close();
+    seededSurfaces.close();
+
+    const directives: SpeakerDispatchRequest[] = [];
+    let resolveOutcome!: (value: unknown) => void;
+    let rejectOutcome!: (cause: unknown) => void;
+    const delivered = new Promise<unknown>((resolve, reject) => {
+      resolveOutcome = resolve;
+      rejectOutcome = reject;
+    });
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+      dispatch: async (request) => {
+        directives.push(request);
+        setTimeout(() => {
+          if (request.input.type !== "brain.directive") return;
+          void Promise.resolve(
+            createSayDirectiveTool(request.id).run({
+              input: { directiveId: request.input.directive.id, text: "What do you need help with?" },
+            }),
+          ).then(resolveOutcome, rejectOutcome);
+        }, 0);
+        return { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" };
+      },
+    });
+    await vi.waitFor(() => expect(directives).toHaveLength(1));
+    expect(directives).toEqual([
+      {
+        id: CHAT,
+        input: {
+          type: "brain.directive",
+          directive: {
+            id: pending.id,
+            surfaceId: surface!.id,
+            objective: "Ask what help is needed.",
+            brief: { summary: "The request omitted its subject.", evidenceIds: [evidence.id] },
+          },
+        },
+      },
+    ]);
+    await expect(delivered).resolves.toMatchObject({
+      directiveId: pending.id,
+      surfaceId: surface!.id,
+      status: "delivered",
+      providerMessageId: "real-host-message-1",
+      conversationEventId: `arrival:${CHAT}:real-host-message-1`,
+    });
+    await runtime.stop();
+
+    const forensicSurfaces = createSurfaceRegistry(applicationDatabase);
+    const forensicInbox = createBrainInbox(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => forensicSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    expect(forensicInbox.effects(batch.id)).toContainEqual(
+      expect.objectContaining({
+        id: pending.id,
+        status: "accepted",
+        dispatch: { dispatchId: "dispatch:speaker:recovered", acceptedAt: "2026-07-22T12:01:00.000Z" },
+      }),
+    );
+    const forensicDeliveries = createSurfaceDeliveryStore(applicationDatabase, {
+      providerChatIdForSurface: (surfaceId) => forensicSurfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    expect(forensicDeliveries.outcome(pending.id)).toMatchObject({
+      status: "delivered",
+      providerMessageId: "real-host-message-1",
+      conversationEventId: `arrival:${CHAT}:real-host-message-1`,
+    });
+    forensicDeliveries.close();
+    forensicInbox.close();
+    forensicSurfaces.close();
+  });
+
+  it("admits a reply from a Brain-opened known-person DM through intake, while an unopened chat stays closed", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const ACCOUNT = "15550000000:7@s.whatsapp.net"; // the fake session's authenticated jid.
+    const PERSON_DM = "204663831932940@lid"; // never a configured chat — opened only by the Brain's deliberate DM.
+
+    // The Brain opened this person's DM Surface in a prior turn (S5). Only the group is configured.
+    const seeded = createSurfaceRegistry(applicationDatabase);
+    seeded.activateDirect(ACCOUNT, PERSON_DM);
+    seeded.close();
+
+    const fake = fakeSession();
+    const dispatched: SpeakerDispatchRequest[] = [];
+    let dispatchSeq = 0;
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT], // note: PERSON_DM is NOT here — the static gate alone would reject it.
+      sessionFactory: () => fake.session,
+      coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+      dispatch: async (request) => {
+        dispatched.push(request);
+        return { dispatchId: `dispatch:${request.id}:${dispatchSeq++}`, acceptedAt: "2026-07-24T00:00:00.000Z" };
+      },
+    });
+    const inject = async (message: Parameters<typeof inbound>[0]): Promise<void> => {
+      for (const listener of fake.messageListeners) await listener(inbound(message));
+    };
+    let n = 0; // Unique ids: an archived arrival dedupes, so each admit needs a fresh message to re-evaluate.
+    try {
+      // Poll-inject a fresh known-person reply until one dispatches — proving the DM was admitted through
+      // intake once the runtime is fully up (auth done, event source subscribed, so `admit` sees the binding).
+      await vi.waitFor(
+        async () => {
+          await inject({ id: `dm-reply-${n++}`, chatId: PERSON_DM, isGroup: false, text: "thanks, got it" });
+          expect(dispatched.some((request) => request.id === PERSON_DM)).toBe(true);
+        },
+        { timeout: 4_000, interval: 50 },
+      );
+      // The path is live. A stranger's unsolicited DM (never opened via activateDirect) is injected, then
+      // more known-person replies until a second one dispatches — by then the stranger has had its chance.
+      await inject({ id: "stranger-31", chatId: OTHER_CHAT, isGroup: false, text: "who are you" });
+      await vi.waitFor(
+        async () => {
+          await inject({ id: `dm-reply-${n++}`, chatId: PERSON_DM, isGroup: false, text: "one more" });
+          expect(dispatched.filter((request) => request.id === PERSON_DM).length).toBeGreaterThanOrEqual(2);
+        },
+        { timeout: 4_000, interval: 50 },
+      );
+      expect(dispatched.map((request) => request.id)).not.toContain(OTHER_CHAT); // fail-closed preserved.
+    } finally {
+      await runtime.stop();
     }
   });
 });

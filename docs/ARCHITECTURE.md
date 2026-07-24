@@ -1,7 +1,7 @@
 # Architecture map
 
 > This is the **code taxonomy** — which package owns what. For the definitive
-> description of how the agentic system *works* (the Brain, Speakers, the Graph, the
+> description of how the agentic system _works_ (the Brain, Speakers, the Graph, the
 > Digest, the control loop), see [`SYSTEM-ARCHITECTURE.md`](./SYSTEM-ARCHITECTURE.md).
 
 The ratified taxonomy (#117 → #131): three packages, two apps, one arrow diagram —
@@ -40,19 +40,43 @@ from an agent folder, and no package may publish a `./*` wildcard export.
 sequenceDiagram
   participant WA as WhatsApp (whatsappd)
   participant ENG as engine (Coalescer + intake)
-  participant AG as agents (Speaker)
+  participant SP as agents (Speaker)
+  participant SC as agents (global Scribe clock)
+  participant BR as agents (global Brain)
   participant FLUE as Flue runtime
-  participant GH as GitHub
+  participant DB as engine (Brain + Surface stores)
 
   WA->>ENG: ConversationEvent → Conversation Archive (append-only)
   ENG->>ENG: Coalescer: one fiber per chatId,<br/>throttle + settle window → Window
-  ENG->>AG: WindowDispatcher port → admitWindow (admission, retry, at-least-once)
-  AG->>FLUE: dispatchSpeaker (Flue dispatch + activity correlation)
-  FLUE->>AG: runs Speaker with mounted capabilities
-  AG->>WA: Say / React (whatsapp-participation port)
-  AG->>GH: issue operations with Operation Identity (issue-management port)
-  FLUE-->>AG: lifecycle observations (dispatchId only)<br/>→ activity reporter re-attaches chat context
+  ENG->>DB: admit live or Historical Replay observations<br/>to one durable evidence-keyed Scribe inbox
+  DB-->>SC: claim one bounded chronological<br/>cross-Surface Scribe Batch wave
+  SC->>FLUE: bounded stateless attempt<br/>stable batchId + fresh attempt id + current Projection
+  SC->>DB: append immutable Evidence Set Attestations<br/>refresh derived Belief Projection
+  SC->>DB: admit the durable proposal delta<br/>to the Brain up-inbox
+  ENG->>SP: WindowDispatcher port → admitWindow (admission, retry, at-least-once)
+  SP->>DB: escalate_intent (immutable evidence-backed admission)
+  DB->>FLUE: wake one Brain Batch on instance global
+  FLUE->>BR: runs the continuing Brain
+  BR->>DB: prompt one Surface or record deliberate silence
+  BR->>DB: reserve stable Brain work identity
+  DB->>FLUE: admit existing bounded Workflow
+  FLUE-->>DB: terminal result → durable Brain input
+  DB->>FLUE: wake result Batch for Brain reconciliation
+  DB->>FLUE: dispatch Directive to the Surface's active Speaker binding
+  FLUE->>SP: runs the continuing local Speaker
+  SP->>DB: say_directive claims Surface Delivery before transport
+  SP->>WA: provider send through whatsapp-participation port
+  WA->>ENG: outbound Conversation Archive event
+  SP->>DB: durable delivered / failed / Uncertain Outcome
+  FLUE-->>SP: lifecycle observations (dispatchId only)<br/>→ Window or Directive correlation
 ```
+
+The Speaker now mounts conversation, Intent escalation, Directive Saying, a work-status pull tool
+(`lookup_work`), and read-only Graph tools only. The Brain owns Coder launch, stable work identity,
+Flue admission reconciliation, terminal-result admission, the independent choice of reporting
+Surface, GitHub events (admitted to the same up-inbox and routed by Brain decision, never
+broadcast), and the proactive clock (Scheduled Wake + coalesced Proactive Sweep). The diagram above
+is the replacement path that exists now.
 
 ## Where things live — quick answers
 

@@ -171,29 +171,6 @@ function githubIssueOpenedPayload(repository = "widgets"): string {
   });
 }
 
-function githubPullRequestOpenedPayload(issueNumbers: readonly number[], pullRequestNumber = 42): string {
-  return JSON.stringify({
-    action: "opened",
-    installation: { id: 77 },
-    repository: {
-      id: 101,
-      name: "widgets",
-      html_url: "https://github.com/acme/widgets",
-      owner: { login: "acme" },
-    },
-    pull_request: {
-      number: pullRequestNumber,
-      html_url: `https://github.com/acme/widgets/pull/${pullRequestNumber}`,
-      title: "Fix the captured issue",
-      body: issueNumbers.map((issueNumber) => `Closes: #${issueNumber}`).join("\n"),
-      state: "open",
-      draft: false,
-      head: { sha: "head-42" },
-    },
-    sender: { login: "octocat", id: 1, type: "User" },
-  });
-}
-
 async function githubDelivery(options: {
   readonly deliveryId: string;
   readonly body: string;
@@ -215,6 +192,12 @@ async function githubDelivery(options: {
 
 async function githubIngressRecords(): Promise<readonly Record<string, unknown>[]> {
   const response = await fetch(`${origin}/test/github/ingress`);
+  expect(response.status).toBe(200);
+  return (await response.json()) as readonly Record<string, unknown>[];
+}
+
+async function githubUpInbox(): Promise<readonly Record<string, unknown>[]> {
+  const response = await fetch(`${origin}/test/github/up-inbox`);
   expect(response.status).toBe(200);
   return (await response.json()) as readonly Record<string, unknown>[];
 }
@@ -290,25 +273,8 @@ async function githubEvents(): Promise<readonly FakeIssueRepositoryEvent[]> {
   return (await response.json()) as FakeIssueRepositoryEvent[];
 }
 
-async function githubOperations(): Promise<readonly Record<string, unknown>[]> {
-  const response = await fetch(`${origin}/test/github/operations`);
-  expect(response.status).toBe(200);
-  return (await response.json()) as readonly Record<string, unknown>[];
-}
-
 async function resetGitHub(): Promise<void> {
   const response = await fetch(`${origin}/test/github/events`, { method: "DELETE" });
-  expect(response.status).toBe(204);
-}
-
-async function setNextGitHubCreate(mode: "failure" | "timeout-before" | "timeout-after"): Promise<void> {
-  const path =
-    mode === "failure"
-      ? "fail-next-create"
-      : `timeout-next-create?afterMutation=${mode === "timeout-after" ? "true" : "false"}`;
-  const response = await fetch(`${origin}/test/github/${path}`, {
-    method: "POST",
-  });
   expect(response.status).toBe(204);
 }
 
@@ -345,7 +311,7 @@ afterAll(async () => {
 });
 
 describe("persisted Speaker admission", () => {
-  it("verifies, normalizes, deduplicates, and routes GitHub ingress without implying speech", async () => {
+  it("verifies, normalizes, and deduplicates a GitHub delivery into the Brain up-inbox without speaking", async () => {
     const chatId = "github-ingress-29@g.us";
     const deliveryId = "29-valid-signed-delivery";
     const body = githubIssueOpenedPayload();
@@ -358,9 +324,10 @@ describe("persisted Speaker admission", () => {
     expect(firstReceipt.status).toBe("done");
     expect(firstReceipt.dispatchId).toBeTruthy();
     expect(Number.isFinite(Date.parse(firstReceipt.acceptedAt))).toBe(true);
+    // The event lands in the single Brain up-inbox, carrying its repository as provenance.
     await waitFor(
-      async () => (await historyText(chatId)).includes("Private verified GitHub delivery processed without speaking."),
-      "verified GitHub delivery settlement",
+      async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId),
+      "GitHub event up-inbox admission",
     );
 
     const duplicate = await githubDelivery({ deliveryId, body });
@@ -368,66 +335,23 @@ describe("persisted Speaker admission", () => {
     expect(duplicate.status, duplicateBody).toBe(200);
     expect(JSON.parse(duplicateBody) as { status: string }).toMatchObject({ status: "duplicate" });
 
-    const history = await historyText(chatId);
-    expect(history.match(/github\.issue\.opened/g)).toHaveLength(1);
-    expect(history).toContain(deliveryId);
-    expect(history).toContain("acme");
-    expect(history).toContain("widgets");
+    const upInbox = await githubUpInbox();
+    expect(upInbox.filter((event) => event.deliveryId === deliveryId)).toHaveLength(1);
+    expect(upInbox).toContainEqual(
+      expect.objectContaining({ deliveryId, repository: "acme/widgets", eventName: "issues", action: "opened" }),
+    );
+    // Ingress never speaks and never broadcasts: no Speaker turn, no WhatsApp event, no chat id in the ledger.
+    expect(await historyText(chatId)).not.toContain(deliveryId);
     expect(await whatsappEvents()).toEqual([]);
-    expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({
-        deliveryId,
-        repository: "acme/widgets",
-        chatId,
-        ambience: "ambience",
-        dispatchId: firstReceipt.dispatchId,
-        acceptedAt: firstReceipt.acceptedAt,
-        status: "done",
-      }),
-    );
-    expect(serverOutput).toContain(`"deliveryId":"${deliveryId}"`);
-    expect(serverOutput).toContain(`"repository":"acme/widgets"`);
-    expect(serverOutput).toContain(`"chatId":"${chatId}"`);
-    expect(serverOutput).toContain(`"ambience":"ambience"`);
-    expect(serverOutput).toContain(`"dispatchId":"${firstReceipt.dispatchId}"`);
-    expect(serverOutput).toContain(`"runId":null`);
-  });
-
-  it("posts one PR-link message per captured issue when a verified PR closes multiple concerns", async () => {
-    const chatId = "github-ingress-29@g.us";
-    await resetWhatsApp();
-    await prompt(chatId, "CREATE_COMPLETE_ISSUE");
-    await prompt(chatId, "CREATE_COMPLETE_FEATURE");
-    const completedCreates = [...(await githubOperations())]
-      .reverse()
-      .filter((operation) => operation.kind === "create-issue" && operation.status === "completed")
-      .slice(0, 2);
-    expect(completedCreates).toHaveLength(2);
-    expect(completedCreates).toEqual([
-      expect.objectContaining({ repository: "acme/widgets", issueNumber: expect.any(Number) }),
-      expect.objectContaining({ repository: "acme/widgets", issueNumber: expect.any(Number) }),
-    ]);
-    const issueNumbers = completedCreates.map((operation) => operation.issueNumber as number);
-
-    const deliveryId = "42-captured-pr";
-    const body = githubPullRequestOpenedPayload(issueNumbers);
-    const response = await githubDelivery({ deliveryId, body, event: "pull_request" });
-    expect(response.status, await response.text()).toBe(200);
-    await waitFor(
-      async () =>
-        (await whatsappEvents()).filter(
-          (event) => event.kind === "send" && event.text === "https://github.com/acme/widgets/pull/42",
-        ).length === 2,
-      "captured issues pull-request link delivery",
-    );
-    expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({
-        deliveryId,
-        repository: "acme/widgets",
-        chatId,
-        status: "done",
-      }),
-    );
+    const record = (await githubIngressRecords()).find((entry) => entry.deliveryId === deliveryId);
+    expect(record).toMatchObject({
+      deliveryId,
+      repository: "acme/widgets",
+      ambience: "ambience",
+      dispatchId: firstReceipt.dispatchId,
+      status: "done",
+    });
+    expect(record).not.toHaveProperty("chatId");
   });
 
   it("rejects an invalid GitHub signature before application processing", async () => {
@@ -443,12 +367,11 @@ describe("persisted Speaker admission", () => {
   });
 
   it("deduplicates one admitted GitHub delivery after process replacement", async () => {
-    const chatId = "github-ingress-29@g.us";
     const deliveryId = "56-restart-deduplication";
     const body = githubIssueOpenedPayload();
     const first = await githubDelivery({ deliveryId, body });
     expect(first.status, await first.text()).toBe(200);
-    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "first GitHub admission");
+    await waitFor(async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId), "first GitHub admission");
 
     await stopServer();
     await startServer();
@@ -457,10 +380,9 @@ describe("persisted Speaker admission", () => {
     const repeatedBody = await repeated.text();
     expect(repeated.status, repeatedBody).toBe(200);
     expect(JSON.parse(repeatedBody)).toMatchObject({ status: "duplicate" });
-    const history = await historyText(chatId);
-    expect(history.match(new RegExp(deliveryId, "g"))).toHaveLength(1);
+    expect((await githubUpInbox()).filter((event) => event.deliveryId === deliveryId)).toHaveLength(1);
     expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({ deliveryId, status: "done", chatId }),
+      expect.objectContaining({ deliveryId, status: "done" }),
     );
   });
 
@@ -478,9 +400,9 @@ describe("persisted Speaker admission", () => {
     expect(await githubIngressRecords()).not.toContainEqual(expect.objectContaining({ deliveryId }));
   });
 
-  it("broadcasts an event from any repository to every managed thread (each Speaker judges)", async () => {
+  it("admits an event from any repository to the up-inbox and reaches no chat (no cross-company leak)", async () => {
     const chatId = "github-ingress-29@g.us";
-    const deliveryId = "29-broadcast-any-repository";
+    const deliveryId = "29-any-repository";
     await resetWhatsApp();
     const response = await githubDelivery({
       deliveryId,
@@ -489,23 +411,13 @@ describe("persisted Speaker admission", () => {
 
     const responseBody = await response.text();
     expect(response.status, responseBody).toBe(200);
-    // No repo→chat routing anymore: the event reaches the managed thread and the Speaker,
-    // not a routing table, decides relevance (#144).
-    expect(JSON.parse(responseBody)).toMatchObject({
-      status: "done",
-      deliveryId,
-      repository: "acme/unconfigured",
-      chatId,
-    });
-    await waitFor(async () => (await historyText(chatId)).includes(deliveryId), "broadcast delivery settlement");
-    expect(await githubIngressRecords()).toContainEqual(
-      expect.objectContaining({
-        deliveryId,
-        repository: "acme/unconfigured",
-        chatId,
-        status: "done",
-      }),
-    );
+    // The event is admitted to the Brain up-inbox but routed to NO chat — the Brain owns routing,
+    // so an event from one org can never broadcast into another org's chat.
+    expect(JSON.parse(responseBody)).toMatchObject({ status: "done", deliveryId, repository: "acme/unconfigured" });
+    expect(JSON.parse(responseBody)).not.toHaveProperty("chatId");
+    await waitFor(async () => (await githubUpInbox()).some((event) => event.deliveryId === deliveryId), "up-inbox admission");
+    expect(await historyText(chatId)).not.toContain(deliveryId);
+    expect(await whatsappEvents()).toEqual([]);
   });
 
   it("records a verified unsupported GitHub event without dispatching it", async () => {
@@ -695,31 +607,6 @@ describe("persisted Speaker admission", () => {
     expect(b).not.toContain("A_SECOND");
   });
 
-  it("creates one complete issue through the packaged Speaker route with a durable Operation Identity", async () => {
-    const chatId = "github-create-30@g.us";
-    await resetGitHub();
-
-    await coalescerMessage(chatId, "CREATE_COMPLETE_ISSUE", { mentions: ["bot@s.whatsapp.net"] });
-    await waitFor(
-      async () => (await historyText(chatId)).includes("Private Issue Management receipt retained"),
-      "direct Issue Management creation",
-    );
-
-    const events = await githubEvents();
-    expect(events.map((event) => event.kind)).toEqual(["search", "create"]);
-    expect(events.filter((event) => event.kind === "create")).toEqual([
-      expect.objectContaining({ repository: "acme/widgets", outcome: "created", number: 1 }),
-    ]);
-    expect(await githubOperations()).toContainEqual(
-      expect.objectContaining({
-        kind: "create-issue",
-        repository: "acme/widgets",
-        status: "completed",
-        issueNumber: 1,
-      }),
-    );
-  });
-
   it("asks one focused question for an incomplete report without touching GitHub", async () => {
     const chatId = "github-clarify-30@g.us";
     await resetGitHub();
@@ -738,42 +625,6 @@ describe("persisted Speaker admission", () => {
     ]);
   });
 
-  it("redirects a duplicate report after search and does not create again", async () => {
-    const chatId = "github-duplicate-30@g.us";
-    await resetGitHub();
-    await coalescerMessage(chatId, "CREATE_COMPLETE_ISSUE", { mentions: ["bot@s.whatsapp.net"] });
-    await waitFor(
-      async () => (await githubEvents()).some((event) => event.kind === "create"),
-      "initial issue creation",
-    );
-
-    await coalescerMessage(chatId, "DUPLICATE_ISSUE", { mentions: ["bot@s.whatsapp.net"] });
-    await waitFor(
-      async () => (await githubEvents()).filter((event) => event.kind === "search").length === 2,
-      "duplicate search",
-    );
-    const events = await githubEvents();
-    expect(events.filter((event) => event.kind === "create")).toHaveLength(1);
-    expect(events.filter((event) => event.kind === "search")).toHaveLength(2);
-  });
-
-  it("persists an Uncertain create after bounded observation and never repeats the mutation", async () => {
-    const chatId = "github-uncertain-30@g.us";
-    await resetGitHub();
-    await resetWhatsApp();
-    await setNextGitHubCreate("timeout-before");
-
-    await coalescerMessage(chatId, "CREATE_COMPLETE_ISSUE", { mentions: ["bot@s.whatsapp.net"] });
-    await waitFor(
-      async () => (await historyText(chatId)).includes("Private non-filed Issue Management result retained"),
-      "uncertain direct Issue Management receipt",
-    );
-    const events = await githubEvents();
-    expect(events.filter((event) => event.kind === "create")).toHaveLength(1);
-    expect(events.filter((event) => event.kind === "find-operation")).toHaveLength(1);
-    expect(await githubOperations()).toContainEqual(expect.objectContaining({ status: "uncertain" }));
-    expect((await whatsappEvents()).filter((event) => event.kind === "send")).toEqual([]);
-  });
 });
 
 describe("restart and at-least-once boundaries", () => {

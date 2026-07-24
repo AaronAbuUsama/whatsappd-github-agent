@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { Duration, Effect, Layer, Queue, Ref, Schedule } from "effect";
 import * as v from "valibot";
 
@@ -6,7 +6,12 @@ import * as Coalescer from "../../packages/engine/src/coalescer/coalescer.ts";
 import { configLayer } from "../../packages/engine/src/coalescer/config.ts";
 import type { IncomingMessage } from "../../packages/engine/src/coalescer/events.ts";
 import { inMemoryWindowStore, queueEventSource } from "../../packages/test-support/src/coalescer-mocks.ts";
-import { makeSpeakerWindowDispatcher, type SpeakerDispatchRequest } from "../../packages/agents/src/speaker/dispatch.ts";
+import {
+  configureHistoricalReplayGate,
+  dispatchSpeaker,
+  makeSpeakerWindowDispatcher,
+  type SpeakerDispatchRequest,
+} from "../../packages/agents/src/speaker/dispatch.ts";
 import { createReactTool, createSayTool } from "../../packages/agents/src/capabilities/whatsapp-participation/tools.ts";
 import {
   configureWhatsAppParticipationPort,
@@ -24,6 +29,9 @@ const sayToolFor = (host: WhatsAppOutboundPort) => {
 };
 
 let sequence = 0;
+beforeEach(() => {
+  sequence = 0;
+});
 const message = (text: string, overrides: Partial<IncomingMessage> = {}): IncomingMessage => ({
   id: `m-${++sequence}`,
   chatId: CHAT,
@@ -49,6 +57,69 @@ const awaitRef = <A>(ref: Ref.Ref<A>, predicate: (value: A) => boolean) =>
   );
 
 describe("production Coalescer-to-Speaker dispatch", () => {
+  it("admits the raw fact stream even when Speaker admission fails", async () => {
+    const offered: string[] = [];
+    const observed = message("scribe survives");
+    await expect(
+      dispatchSpeaker(
+        {
+          id: CHAT,
+          input: {
+            type: "whatsapp.window",
+            windowId: "window-failed-speaker",
+            chatId: CHAT,
+            reason: "capacity",
+            messages: [{ ...observed, mentions: [...observed.mentions] }],
+            updates: [],
+          },
+        },
+        {
+          offerScribe: ({ input }) => {
+            if (input.type === "whatsapp.window") offered.push(input.messages[0]!.id);
+          },
+          dispatch: async () => {
+            throw new Error("Speaker unavailable");
+          },
+        },
+      ),
+    ).rejects.toThrow("Speaker unavailable");
+    expect(offered).toHaveLength(1);
+  });
+
+  it("still dispatches the Speaker when Scribe intake throws", async () => {
+    const observed = message("speaker survives");
+    const restore = configureHistoricalReplayGate({
+      liveSlice: () => {
+        throw new Error("Scribe store unavailable");
+      },
+    });
+    try {
+      await expect(
+        dispatchSpeaker(
+          {
+            id: CHAT,
+            input: {
+              type: "whatsapp.window",
+              windowId: "window-failed-scribe",
+              chatId: CHAT,
+              reason: "capacity",
+              messages: [{ ...observed, mentions: [...observed.mentions] }],
+              updates: [],
+            },
+          },
+          {
+            dispatch: async () => ({
+              dispatchId: "speaker-dispatch-survived",
+              acceptedAt: "2026-07-22T00:00:00.000Z",
+            }),
+          },
+        ),
+      ).resolves.toMatchObject({ dispatchId: "speaker-dispatch-survived" });
+    } finally {
+      restore();
+    }
+  });
+
   it("dispatches one complete coalesced window to the continuing instance identified by chatId", async () => {
     const admissions = new Map<string, WindowAdmission>();
     const inbox = {
@@ -95,8 +166,8 @@ describe("production Coalescer-to-Speaker dispatch", () => {
                 chatId: CHAT,
                 reason: "debounce",
                 messages: [
-                  expect.objectContaining({ text: "first", pushName: "Alice" }),
-                  expect.objectContaining({ text: "second", pushName: "Alice" }),
+                  expect.objectContaining({ text: "first", pushName: "Alice", evidenceId: `arrival:${CHAT}:m-1` }),
+                  expect.objectContaining({ text: "second", pushName: "Alice", evidenceId: `arrival:${CHAT}:m-2` }),
                 ],
                 updates: [],
               },

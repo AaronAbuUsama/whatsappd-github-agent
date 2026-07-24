@@ -10,21 +10,53 @@ const maxReviewCycles = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValu
 export const DEFAULT_MAX_VERIFICATION_ROUNDS = 3;
 export const DEFAULT_MAX_REVIEW_CYCLES = 2;
 
-/**
- * #210 owns only new-issue admission. `mode` defaults at the schema boundary so the
- * shipped issue-only `start_coder_job` request is normalized before workflow code sees
- * it. `review_continuation` is deliberately reserved for #211.
- */
-export const coderJobInputSchema = v.object({
-  mode: v.optional(v.literal("new_issue"), "new_issue"),
-  repository: nonEmpty,
-  issue: v.pipe(v.number(), v.integer(), v.minValue(1)),
-  instructions: v.optional(nonEmpty),
+const positiveInteger = v.pipe(v.number(), v.integer(), v.minValue(1));
+const budgetEntries = {
   maxVerificationRounds: v.optional(maxVerificationRounds, DEFAULT_MAX_VERIFICATION_ROUNDS),
   maxReviewCycles: v.optional(maxReviewCycles, DEFAULT_MAX_REVIEW_CYCLES),
-  chatId: v.optional(nonEmpty),
-  graphContext: v.optional(graphDigestSchema),
+};
+
+/**
+ * The model-facing `start_coder_job` request (#210): new-issue only. The Speaker/Brain never
+ * launches a repair — only a Reviewer-App REQUEST_CHANGES routed through the ingress can — so the
+ * tool schema stays issue-keyed and `new_issue` is the only mode a model can express.
+ */
+export const coderJobRequestSchema = v.object({
+  mode: v.optional(v.literal("new_issue"), "new_issue"),
+  repository: nonEmpty,
+  issue: positiveInteger,
+  instructions: v.optional(nonEmpty),
+  ...budgetEntries,
 });
+
+/**
+ * The workflow input (#211): a `new_issue` run keyed by `issue`, OR a `review_continuation` run
+ * keyed by the live `pullRequest` it repairs (the underlying issue, branch, and consumed budget
+ * come from the coding-job registry, never the caller). `mode` defaults to `new_issue` so the
+ * shipped issue request normalizes unchanged. The cross-field check fails closed: the key the mode
+ * needs must be present, so a review_continuation without a pullRequest — or a new_issue without an
+ * issue — is rejected at the boundary.
+ */
+export const coderJobInputSchema = v.pipe(
+  v.object({
+    mode: v.optional(v.picklist(["new_issue", "review_continuation"]), "new_issue"),
+    repository: nonEmpty,
+    issue: v.optional(positiveInteger),
+    pullRequest: v.optional(positiveInteger),
+    // Launch-identity only (#211): a review_continuation carries the triggering review id so two distinct
+    // reviews of the same PR in one Batch produce distinct delegation work ids. The workflow never reads it.
+    reviewId: v.optional(positiveInteger),
+    instructions: v.optional(nonEmpty),
+    ...budgetEntries,
+    brainWorkId: v.optional(nonEmpty),
+    sourceSurfaceId: v.optional(nonEmpty),
+    graphContext: v.optional(graphDigestSchema),
+  }),
+  v.check(
+    (input) => (input.mode === "review_continuation" ? input.pullRequest !== undefined : input.issue !== undefined),
+    "A new_issue job requires an issue number; a review_continuation job requires a pullRequest number.",
+  ),
+);
 
 export type CoderJobInput = v.InferOutput<typeof coderJobInputSchema>;
 

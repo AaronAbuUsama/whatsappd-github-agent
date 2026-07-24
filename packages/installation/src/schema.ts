@@ -86,6 +86,8 @@ const AgentModelProfileSchema = v.strictObject({
   thinkingLevel: v.picklist(MODEL_THINKING_LEVELS),
 });
 const AgentModelProfilesSchema = v.strictObject({
+  // Existing installations predate the Brain role; parsing stamps its default profile.
+  brain: v.optional(AgentModelProfileSchema, DEFAULT_AGENT_MODEL_PROFILES.brain),
   speaker: AgentModelProfileSchema,
   scribe: AgentModelProfileSchema,
   planner: AgentModelProfileSchema,
@@ -121,6 +123,12 @@ export const ManagedConfigSchema = v.pipe(
       defaultRepository: Repository,
       allowedRepositories: v.pipe(v.array(Repository), v.nonEmpty()),
       reviewRepositories: v.optional(v.array(Repository), []),
+      // Which repository the Brain files a managed chat's issues into (#317). Optional and empty by
+      // default, so every existing config parses and unmapped chats fall back to `defaultRepository`.
+      surfaceRepositories: v.optional(
+        v.array(v.strictObject({ chat: ManagedChat, repository: Repository })),
+        [],
+      ),
     }),
   }),
   // The mismatch gate. `writeManagedConfiguration` re-parses through this schema before it
@@ -142,6 +150,27 @@ export const ManagedConfigSchema = v.pipe(
       config.github.allowedRepositories.some((allowed) => allowed.toLowerCase() === repository.toLowerCase()),
     ),
     "Every review repository must be included in allowedRepositories",
+  ),
+  v.check(
+    (config) => config.github.surfaceRepositories.every(({ repository }) =>
+      config.github.allowedRepositories.some((allowed) => allowed.toLowerCase() === repository.toLowerCase()),
+    ),
+    "Every surface repository must be included in allowedRepositories",
+  ),
+  v.check(
+    (config) => config.github.surfaceRepositories.every(({ chat }) =>
+      config.managedChats.some((managed) => managed.toLowerCase() === chat.toLowerCase()),
+    ),
+    "Every surface repository chat must be included in managedChats",
+  ),
+  v.check(
+    (config) => {
+      const chats = config.github.surfaceRepositories.map(({ chat }) => chat.toLowerCase());
+      return new Set(chats).size === chats.length;
+    },
+    // app.ts resolves surfaceRepositories through a `new Map(...)`, so a duplicated chat with different
+    // repositories would silently route by last-wins. Refuse the contradiction loudly, like the siblings.
+    "Each surface repository chat must be mapped at most once",
   ),
   v.check(
     (config) =>
@@ -274,5 +303,7 @@ export const createManagedConfig = (
     // Safe packaged default: automatic review stays off until a deployment binds an
     // isolated Reviewer sandbox and explicitly opts repositories in.
     reviewRepositories: [],
+    // No per-surface routing by default; unmapped chats file into defaultRepository (#317).
+    surfaceRepositories: [],
   },
 });
