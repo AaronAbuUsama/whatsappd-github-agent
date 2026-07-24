@@ -19,12 +19,20 @@ export interface BrainEffectsRuntime {
    * `effectId` scopes the filing's Operation Identity so a recovered attempt reconciles, not re-creates. */
   readonly fileIssue?: (request: FileIssueRequest, effectId: string) => Promise<FileIssueOutcome>;
   /**
-   * Resolve a provider chat id (as it appears on a Graph `thread` entity) to its active Surface id.
-   * The bridge the Brain needs to notify the Surface that works_on a GitHub event's repository:
-   * `lookup_graph(repository) → works_on → thread.chatId → resolveSurfaceForChat → prompt_speaker`.
-   * Returns undefined for an unknown/unbound chat (fail-closed — no participation is granted).
+   * Resolve a Brain-chosen target entity — a `thread` (group) or a `person` (DM) — to its Surface id,
+   * so `prompt_speaker` targets EITHER a stable Surface OR a known Person through one operation (§8).
+   * Trusted code maps the entity to its provider chat and the ordinary Surface registry: a thread resolves
+   * only to an already-active operator-authorized Surface (discovery never grants participation), while a
+   * known person's DM Surface is opened on demand. Returns undefined for an unknown/unaddressable entity
+   * (fail-closed — the Brain then stays silent).
+   *
+   * `release` undoes a DM Surface this call newly opened, keeping materialization atomic with admission:
+   * the tool calls it iff the subsequent recordPrompt rejects, so no active binding is left behind a
+   * never-accepted prompt. It is a no-op for a stable Surface or an already-live DM.
    */
-  readonly resolveSurfaceForChat?: (providerChatId: string) => string | undefined;
+  readonly resolveSurfaceForEntity?: (
+    entityId: string,
+  ) => { readonly surfaceId: string; readonly release: () => void } | undefined;
 }
 
 const runtimeSlot = createFlueGlobal<BrainEffectsRuntime>(

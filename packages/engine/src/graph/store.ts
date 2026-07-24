@@ -190,6 +190,12 @@ export interface GraphStore {
   projectionVersion(): string;
   getEntity(entityId: string): GraphEntity | undefined;
   resolveIdentity(platform: GraphPlatform, externalId: string, type?: GraphEntityType): GraphEntity | undefined;
+  /**
+   * The WhatsApp external id bound to this entity, if any — the DM chat JID for a person, the group
+   * chat JID for a thread. Trusted Surface resolution maps a Brain-chosen target entity to its
+   * provider chat without the Brain ever handling a raw JID (§8: the target is an entity, not an address).
+   */
+  whatsappExternalId(entityId: string): string | undefined;
   relationsFrom(fromId: string, relation?: GraphRelationType): readonly GraphRelation[];
   relationsTo(toId: string, relation?: GraphRelationType): readonly GraphRelation[];
   findEntities(query: EntityQuery): readonly GraphEntity[];
@@ -596,6 +602,9 @@ export const createGraphStore = (databasePath: string, options: GraphStoreOption
   );
   const selectScopedIdentity = database.prepare(
     "SELECT entity_id FROM graph_identities WHERE platform = ? AND external_id = ? AND scope = ?",
+  );
+  const selectEntityExternalId = database.prepare(
+    "SELECT external_id FROM graph_identities WHERE entity_id = ? AND platform = ? ORDER BY CASE scope WHEN 'actor' THEN 0 ELSE 1 END, scope LIMIT 1",
   );
   const selectRelation = database.prepare(
     "SELECT * FROM graph_relations WHERE from_id = ? AND relation = ? AND to_id = ?",
@@ -1423,6 +1432,8 @@ export const createGraphStore = (databasePath: string, options: GraphStoreOption
       const id = resolveIdentityId(platform, externalId, type);
       return id === undefined ? undefined : getEntity(id);
     },
+    whatsappExternalId: (entityId) =>
+      (selectEntityExternalId.get(entityId, "whatsapp") as { external_id: string } | undefined)?.external_id,
     relationsFrom: (fromId, relation) => {
       const rows = (relation === undefined
         ? database.prepare("SELECT * FROM graph_relations WHERE from_id = ?").all(fromId)

@@ -22,6 +22,7 @@ import {
 } from "@ambient-agent/agents/brain/effects-runtime.ts";
 import { createIssueFiler } from "@ambient-agent/agents/brain/issue-filing.ts";
 import { getIssueManagementRuntime } from "@ambient-agent/agents/capabilities/issue-management/runtime.ts";
+import { tryGetGraphStore } from "@ambient-agent/agents/capabilities/graph/runtime.ts";
 import { configureScribeInbox } from "@ambient-agent/agents/scribe/coalescer.ts";
 import { getRun, invoke } from "@flue/runtime";
 import historicalReplayWorkflow from "../workflows/historical-replay.ts";
@@ -54,7 +55,8 @@ import type { WhatsAppRuntimeStatus } from "@ambient-agent/installation/runtime-
 import { errorMessage } from "@ambient-agent/engine/shared/errors.ts";
 import { renderQr } from "@ambient-agent/installation/qr.ts";
 import { isGroupJid } from "@ambient-agent/engine/shared/whatsapp-jid.ts";
-import { createSurfaceRegistry } from "@ambient-agent/engine/surfaces/registry.ts";
+import { createSurfaceRegistry, type SurfaceRegistry } from "@ambient-agent/engine/surfaces/registry.ts";
+import type { GraphStore } from "@ambient-agent/engine/graph/store.ts";
 import { createSurfaceDeliveryStore } from "@ambient-agent/engine/surfaces/delivery.ts";
 import {
   createWhatsAppAccount,
@@ -70,6 +72,61 @@ const deliveryFailure = (
   return { delivery: isKnownTransportRejection(deliveryError) ? "failed" : "unknown", deliveryError };
 };
 const TYPING_LEAD_MS = 750;
+
+/**
+ * Resolve a Brain-chosen target entity to its Surface id (§8: "DM someone" and "reply in the group"
+ * share one prompt operation, resolved through the ordinary Surface registry during prompt admission).
+ *
+ * A `thread` is an operator-authorized group: it resolves only to an already-active Surface, so a merely
+ * discovered/observed group never gains participation. A known `person` is a deliberate Brain reach: their
+ * DM Surface is opened on demand (find-or-create). Any other entity type — or an entity with no WhatsApp
+ * identity, or an unknown id — is not an addressable Surface and returns undefined, and the Brain stays
+ * silent. This is the fail-closed boundary: only a Person the coworker already knows (a Graph entity met in
+ * an authorized surface) is DM-addressable; an unknown DMer has no entity here and so grants no participation.
+ *
+ * Materialization is atomic with admission (§8): opening a person's DM Surface is a side effect that must
+ * NOT outlive a failed prompt admission, or the intake gate would then admit that chat with no accepted
+ * Prompt Effect behind it. So `release` undoes a DM binding this call newly opened (retiring it), while
+ * leaving an already-active DM (a live channel from a prior turn) untouched. The caller invokes `release`
+ * only if recordPrompt rejects.
+ */
+export interface ResolvedTargetSurface {
+  readonly surfaceId: string;
+  readonly release: () => void;
+}
+
+const NO_RELEASE = () => undefined;
+
+export const resolveEntitySurface = (
+  deps: {
+    readonly graph: Pick<GraphStore, "getEntity" | "whatsappExternalId">;
+    readonly surfaces: Pick<SurfaceRegistry, "activeSurface" | "activateDirect" | "retireDirect">;
+    readonly accountJid: string;
+  },
+  entityId: string,
+): ResolvedTargetSurface | undefined => {
+  const entity = deps.graph.getEntity(entityId);
+  if (entity === undefined) return undefined;
+  const chatId = deps.graph.whatsappExternalId(entityId);
+  if (chatId === undefined) return undefined;
+  if (entity.type === "thread") {
+    const surface = deps.surfaces.activeSurface(deps.accountJid, chatId);
+    return surface === undefined ? undefined : { surfaceId: surface.id, release: NO_RELEASE };
+  }
+  if (entity.type === "person") {
+    // A person's WhatsApp identity must be a direct chat. If a data-quality edge case links a person to a
+    // group JID, refuse to open it as a DM — otherwise activateDirect would let an unconfigured group
+    // participate through the person path (the admit gate honors any active binding). Fail closed instead.
+    if (isGroupJid(chatId)) return undefined;
+    const alreadyLive = deps.surfaces.activeSurface(deps.accountJid, chatId) !== undefined;
+    const surface = deps.surfaces.activateDirect(deps.accountJid, chatId);
+    return {
+      surfaceId: surface.id,
+      release: alreadyLive ? NO_RELEASE : () => deps.surfaces.retireDirect(deps.accountJid, chatId),
+    };
+  }
+  return undefined;
+};
 
 /** The sole real implementation behind Speaker's outbound participation tools. */
 export const createWhatsAppHost = (
@@ -274,6 +331,22 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   const gate = makeManagedChatGate(options.managedChats);
   const archive = createConversationArchive(options.applicationDatabase);
   const surfaces = createSurfaceRegistry(options.applicationDatabase);
+  // Intake admission: a chat reaches the loop if it is operator-configured (the static gate) OR the Brain
+  // deliberately opened its Surface — a known-Person DM via activateDirect (S5) — so a DM the coworker
+  // started is genuinely two-way, not send-only. Everything else stays fail-closed: an unconfigured group
+  // and an unknown person's unsolicited DM have no active binding, so admit is false for them.
+  // ponytail: authenticatedJid is unknown until authenticate resolves, so a reply to an already-open DM
+  // that arrives in the brief pre-auth sync/replay window is archived but not proactively dispatched (admit
+  // sees no account yet). Narrow and non-lossy — the next live message re-triggers it. Seed the jid from
+  // prior bindings only if this gap ever bites; that path must not defeat the account-change retirement.
+  //
+  // `authenticatedJid` is the single account var (set once online); a live gate reload also needs it to
+  // activate a new chat's Surface (#179). Undefined until online, so a reload before pairing only opens the
+  // gate — as intended.
+  let authenticatedJid: string | undefined;
+  const admit = (chatId: string, isGroup: boolean): boolean =>
+    gate.allowed(chatId, isGroup) ||
+    (authenticatedJid !== undefined && chatId.trim() !== "" && surfaces.activeSurface(authenticatedJid, chatId) !== undefined);
   const brainInbox = createBrainInbox(options.applicationDatabase, {
     providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
   });
@@ -328,7 +401,7 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
     brainInbox.admitKnowledgeDelta(draft);
     await wakeBrain(brainInbox);
   });
-  const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+  const inbox = createManagedChatInbox(archive, { allowed: admit });
   speakerActivity.recoverWith((dispatchId) => {
     const window = inbox.windowForDispatch(dispatchId);
     return window === undefined
@@ -337,9 +410,6 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   });
   speakerActivity.recoverDirectivesWith((dispatchId) => deliveries.directiveForDispatch(dispatchId));
   let activeCanary: { readonly chatId: string; readonly text: string } | undefined;
-  // Set once the account authenticates; a live gate reload needs it to activate a new chat's Surface
-  // (#179). Undefined until online, so a reload before pairing only opens the gate — as intended.
-  let authenticatedJid: string | undefined;
   // The single source of truth for the managed-chat set, seeded from the static boot config and
   // advanced by every reload (#179). The post-auth boot path reads THIS, not the original
   // `options.managedChats` closure — so a reload that arrives while still pairing is not reverted
@@ -414,6 +484,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         },
       }),
     );
+    // One account var for both: `admit` consults active direct bindings for it, and a live reload activates
+    // a new chat's Surface against it (#179).
     authenticatedJid = authenticatedAccount.jid;
     yield* Effect.sync(() => surfaces.activateConfigured(authenticatedAccount.jid, currentManagedChats));
     yield* Effect.sync(() =>
@@ -430,10 +502,14 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
         // Resolved lazily at file time: composeSpeaker configures the issue-management runtime
         // process-global at app boot, well before any Batch files an issue.
         fileIssue: (request, effectId) => createIssueFiler(getIssueManagementRuntime())(request, effectId),
-        // Bridge a Graph thread's chatId → its active Surface id, so the Brain can notify the Surface
-        // that works_on a GitHub event's repository (§4 affirmative routing).
-        resolveSurfaceForChat: (providerChatId) =>
-          surfaces.activeSurface(authenticatedAccount.jid, providerChatId)?.id,
+        // Resolve a Brain-chosen target entity to its Surface during prompt admission (§8) — see
+        // resolveEntitySurface. No graph wired (boot/tests) means nothing resolves: fail-closed.
+        resolveSurfaceForEntity: (entityId) => {
+          const graph = tryGetGraphStore();
+          return graph === undefined
+            ? undefined
+            : resolveEntitySurface({ graph, surfaces, accountJid: authenticatedAccount.jid }, entityId);
+        },
         deliverPrompt: (effect) => {
           const binding = surfaces.activeBinding(effect.directive.surfaceId);
           if (binding === undefined) {
@@ -498,7 +574,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       ),
     );
     yield* runWhatsAppSession(session, {
-      gate,
+      // The event source admits via the same composite predicate, so a known-Person DM is two-way.
+      gate: { ...gate, allowed: admit },
       history: archive,
       inbox,
       botLid: options.botLid,
@@ -561,9 +638,8 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
       // chats that remain. So a newly-authorized chat gains a Surface it can escalate through, AND a
       // de-authorized chat's outbound Surface is retired — closing outbound Brain delivery in lockstep
       // with the gate closing inbound. A no-op until the account is authenticated.
-      // ponytail: correct because every Surface binding originates from managedChats (boot + this
-      // reload are the only writers). If a Brain-opened DM binding outside managedChats is ever added,
-      // switch this to a configured-only retirement so it isn't swept.
+      // A Brain-opened DM (S5, kind='direct') is deliberately preserved: activateConfigured retires only
+      // 'configured' (or other-account) bindings, so a live reload never sweeps an active known-Person DM.
       if (authenticatedJid !== undefined) surfaces.activateConfigured(authenticatedJid, chatIds);
     },
     synchronizedChats: async () => await account.synchronizedChats(),

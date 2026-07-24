@@ -13,10 +13,15 @@ export const createPromptSpeakerTool = () =>
   defineTool({
     name: "prompt_speaker",
     description:
-      "Durably direct one selected existing Surface's Speaker to communicate an objective. The Surface is an application UUID from the Batch, never a WhatsApp address. The Speaker owns wording.",
+      "Durably direct one Surface's Speaker to communicate an objective. Target EITHER a stable Surface " +
+      "(`surfaceId`, an application UUID from the Batch) OR a known Person or thread from the Graph " +
+      "(`entityId`) — trusted code resolves the entity to the same Surface registry, so 'DM someone' and " +
+      "'reply in the group' are one operation. Never a WhatsApp address. The Speaker owns wording.",
     input: v.object({
       batchId: nonEmptyString,
-      surfaceId: nonEmptyString,
+      // Exactly one target: a resolved Surface id, or a Graph entity (person/thread) resolved here. Strict
+      // arms reject an input carrying BOTH fields — an ambiguous target is invalid, not silently resolved.
+      target: v.union([v.strictObject({ surfaceId: nonEmptyString }), v.strictObject({ entityId: nonEmptyString })]),
       objective: v.pipe(v.string(), v.minLength(1), v.maxLength(4_096)),
       brief: v.object({
         summary: v.pipe(v.string(), v.minLength(1), v.maxLength(8_192)),
@@ -31,7 +36,42 @@ export const createPromptSpeakerTool = () =>
     }),
     run: async ({ input }) => {
       const runtime = getBrainEffectsRuntime();
-      const effect = await deliverPromptEffect(runtime.inbox.recordPrompt(input));
+      // Resolve a known-Person / thread target to its Surface during prompt admission (§8). Fail closed:
+      // an entity that resolves to no active/openable Surface never speaks — the Brain must stay_silent.
+      let surfaceId: string;
+      let release = (): void => undefined;
+      if ("surfaceId" in input.target) {
+        surfaceId = input.target.surfaceId;
+      } else {
+        if (runtime.resolveSurfaceForEntity === undefined) {
+          throw new Error("Surface resolution is not configured for this Brain runtime.");
+        }
+        const resolved = runtime.resolveSurfaceForEntity(input.target.entityId);
+        if (resolved === undefined) {
+          throw new Error(
+            `Entity ${input.target.entityId} resolves to no Surface — it is unknown or not addressable. ` +
+              "Stay silent rather than participate; observation never grants participation.",
+          );
+        }
+        surfaceId = resolved.surfaceId;
+        release = resolved.release;
+      }
+      // Materialization is atomic with admission: if recordPrompt rejects (stale Batch, bad evidence), undo
+      // a DM Surface this call just opened so no active binding survives without an accepted Prompt Effect.
+      // deliverPromptEffect failures happen AFTER the Effect is durable → recovery re-delivers, keep the binding.
+      let pending;
+      try {
+        pending = runtime.inbox.recordPrompt({
+          batchId: input.batchId,
+          surfaceId,
+          objective: input.objective,
+          brief: input.brief,
+        });
+      } catch (cause) {
+        release();
+        throw cause;
+      }
+      const effect = await deliverPromptEffect(pending);
       if (effect.dispatch === undefined) throw new Error(`Prompt Effect ${effect.id} was not accepted.`);
       return {
         kind: "prompt_speaker" as const,
@@ -39,30 +79,6 @@ export const createPromptSpeakerTool = () =>
         status: "accepted" as const,
         dispatchId: effect.dispatch.dispatchId,
       };
-    },
-  });
-
-export const createResolveSurfaceTool = () =>
-  defineTool({
-    name: "resolve_surface",
-    description:
-      "Resolve a provider chat id — as it appears on a Graph `thread` entity's chatId — to the stable " +
-      "application Surface id you pass to prompt_speaker. Use it to bridge a repository's works_on thread " +
-      "to a Surface. Returns no surface for an unknown or unbound chat; then that chat hears nothing.",
-    // ponytail: the Brain touches a provider chatId here only because #19 keys the Graph `thread`
-    // entity by chatId; S5 (#329) subsumes this into prompt admission and removes the intermediate.
-    input: v.object({ providerChatId: nonEmptyString }),
-    output: v.union([
-      v.object({ resolved: v.literal(true), surfaceId: nonEmptyString }),
-      v.object({ resolved: v.literal(false) }),
-    ]),
-    run: ({ input }) => {
-      const runtime = getBrainEffectsRuntime();
-      if (runtime.resolveSurfaceForChat === undefined) {
-        throw new Error("Surface resolution is not configured for this Brain runtime.");
-      }
-      const surfaceId = runtime.resolveSurfaceForChat(input.providerChatId);
-      return surfaceId === undefined ? { resolved: false as const } : { resolved: true as const, surfaceId };
     },
   });
 

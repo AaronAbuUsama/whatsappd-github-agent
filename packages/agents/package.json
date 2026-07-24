@@ -21,6 +21,7 @@
     "./scribe/durable-clock.ts": "./src/scribe/durable-clock.ts",
     "./scribe/direct-access.ts": "./src/scribe/direct-access.ts",
     "./scribe/input.ts": "./src/scribe/input.ts",
+    "./capabilities/graph/runtime.ts": "./src/capabilities/graph/runtime.ts",
     "./capabilities/graph/seed-repositories.ts": "./src/capabilities/graph/seed-repositories.ts",
     "./capabilities/issue-management/issue-repository.ts": "./src/capabilities/issue-management/issue-repository.ts",
     "./capabilities/issue-management/runtime.ts": "./src/capabilities/issue-management/runtime.ts",

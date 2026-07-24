@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import * as v from "valibot";
 
 import {
   configureBrainEffectsRuntime,
@@ -13,7 +14,6 @@ import {
 import {
   createFileIssueTool,
   createPromptSpeakerTool,
-  createResolveSurfaceTool,
   createSettleBrainBatchTool,
   createStaySilentTool,
 } from "../../packages/agents/src/brain/tools.ts";
@@ -21,6 +21,8 @@ import { createIssueFiler } from "../../packages/agents/src/brain/issue-filing.t
 import { brainGraphContext } from "../../packages/agents/src/brain/agent.ts";
 import { createGraphTools } from "../../packages/agents/src/capabilities/graph/tools.ts";
 import { createGraphStore } from "../../packages/engine/src/graph/store.ts";
+import { createSurfaceRegistry } from "../../packages/engine/src/surfaces/registry.ts";
+import { resolveEntitySurface } from "../../apps/runtime/src/host/whatsapp-runtime.ts";
 import { createIssueManagementPolicy } from "../../packages/agents/src/capabilities/issue-management/runtime.ts";
 import { createIssueOperationStore } from "../../packages/engine/src/github/operation-store.ts";
 import { createFakeIssueRepository } from "../../packages/test-support/src/fake-issue-repository.ts";
@@ -85,7 +87,7 @@ describe("Brain Effects and settlement", () => {
 
     const prompt = await createPromptSpeakerTool().run({ input: {
       batchId,
-      surfaceId: SURFACE,
+      target: { surfaceId: SURFACE },
       objective: "Ask which deployment failed.",
       brief: { summary: "Alice requested help but did not identify a deployment.", evidenceIds: [EVIDENCE] },
     } });
@@ -158,7 +160,7 @@ describe("Brain Effects and settlement", () => {
     inbox.close();
   });
 
-  it("bridges a repo-correlated thread's chatId to a Surface the Brain can prompt about a GitHub event", async () => {
+  it("resolves a Brain-chosen target entity (thread/person) to a Surface, and stays fail-closed for an unknown one", async () => {
     const root = mkdtempSync(join(tmpdir(), "ambient-brain-github-notify-"));
     roots.push(root);
     const databasePath = join(root, "application.sqlite");
@@ -181,6 +183,7 @@ describe("Brain Effects and settlement", () => {
     if (claimed === undefined) throw new Error("Expected a GitHub-only Brain Batch");
     inbox.markBatchDispatched(claimed.id, { dispatchId: "dispatch:brain", acceptedAt: "2026-07-22T12:00:01.000Z" });
 
+    const THREAD_ENTITY = "thread:acme-widgets";
     const delivered: unknown[] = [];
     configureBrainEffectsRuntime({
       inbox,
@@ -189,25 +192,89 @@ describe("Brain Effects and settlement", () => {
         delivered.push(effect.directive);
         return { dispatchId: "dispatch:speaker:gh", acceptedAt: "2026-07-22T12:00:02.000Z" };
       },
-      // The bridge under test: the Graph thread's chatId (CHAT) resolves to its Surface UUID.
-      resolveSurfaceForChat: (providerChatId) => (providerChatId === CHAT ? SURFACE : undefined),
+      // The seam under test: a known target entity resolves to its Surface UUID; anything else does not.
+      resolveSurfaceForEntity: (entityId) =>
+        entityId === THREAD_ENTITY ? { surfaceId: SURFACE, release: () => undefined } : undefined,
     });
 
-    // 1) resolve_surface turns the thread's chatId into a Surface id (not a chatId).
-    const resolution = createResolveSurfaceTool().run({ input: { providerChatId: CHAT } });
-    expect(resolution).toEqual({ resolved: true, surfaceId: SURFACE });
-    // 2) prompt_speaker accepts that Surface id and the GitHub event's own id as evidence.
+    // prompt_speaker takes the thread's entity id directly (no chatId hop) and resolves it in admission.
     const prompt = await createPromptSpeakerTool().run({ input: {
       batchId: claimed.id,
-      surfaceId: (resolution as { surfaceId: string }).surfaceId,
+      target: { entityId: THREAD_ENTITY },
       objective: "Tell the team a new issue was opened.",
       brief: { summary: "acme/widgets#7 was opened.", evidenceIds: [event.id] },
     } });
     expect(prompt).toMatchObject({ kind: "prompt_speaker", status: "accepted" });
     expect(delivered).toHaveLength(1);
-    // An unknown chat resolves to no Surface — observation never grants participation.
-    expect(createResolveSurfaceTool().run({ input: { providerChatId: "stranger@g.us" } })).toEqual({ resolved: false });
+    // An unknown/unaddressable entity resolves to no Surface — observation never grants participation,
+    // so prompt_speaker fails closed rather than dispatching anything.
+    await expect(
+      createPromptSpeakerTool().run({ input: {
+        batchId: claimed.id,
+        target: { entityId: "person:stranger" },
+        objective: "Should never send.",
+        brief: { summary: "unknown person.", evidenceIds: [event.id] },
+      } }),
+    ).rejects.toThrow(/resolves to no Surface/);
+    expect(delivered).toHaveLength(1);
     inbox.close();
+  });
+
+  it("rolls back a DM Surface opened during a prompt whose admission then fails — no orphaned binding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ambient-brain-dm-rollback-"));
+    roots.push(root);
+    const databasePath = join(root, "application.sqlite");
+    createConversationArchive(databasePath).close();
+    const surfaces = createSurfaceRegistry(databasePath);
+    const graph = createGraphStore(databasePath);
+    const ACCOUNT = "15550000000@s.whatsapp.net";
+    const PERSON_DM = "person-dm-77@lid";
+    const attested = graph.attest({
+      context: { author: { kind: "brain", id: "brain" }, evidenceIds: ["test:dm"] },
+      claim: { kind: "entity", input: { type: "person", properties: {}, identity: { platform: "whatsapp", externalId: PERSON_DM } } },
+    });
+    if (attested.kind !== "entity") throw new Error("Expected a person Entity Attestation.");
+    const inbox = createBrainInbox(databasePath, {
+      providerChatIdForSurface: (surfaceId) => surfaces.activeBinding(surfaceId)?.providerChatId,
+    });
+    configureBrainEffectsRuntime({
+      inbox,
+      wake: async () => undefined,
+      deliverPrompt: async () => {
+        throw new Error("Delivery must never run: admission rejects first.");
+      },
+      resolveSurfaceForEntity: (entityId) => resolveEntitySurface({ graph, surfaces, accountJid: ACCOUNT }, entityId),
+    });
+
+    // The chat has no Surface yet. prompt_speaker targets the known person against a Batch that is not open
+    // and dispatched, so recordPrompt rejects — AFTER resolution opened the DM Surface.
+    expect(surfaces.activeSurface(ACCOUNT, PERSON_DM)).toBeUndefined();
+    await expect(
+      createPromptSpeakerTool().run({ input: {
+        batchId: "brain-batch:never-dispatched",
+        target: { entityId: attested.entity.entityId },
+        objective: "Should never be admitted.",
+        brief: { summary: "stale batch.", evidenceIds: [EVIDENCE] },
+      } }),
+    ).rejects.toThrow(/not open and dispatched/);
+    // Materialization stayed atomic with admission: the opened DM binding was rolled back, so the intake
+    // gate will NOT admit this chat behind a prompt that was never accepted.
+    expect(surfaces.activeSurface(ACCOUNT, PERSON_DM)).toBeUndefined();
+
+    inbox.close();
+    surfaces.close();
+    graph.close();
+  });
+
+  it("rejects a prompt_speaker target carrying both surfaceId and entityId as invalid input", () => {
+    const schema = createPromptSpeakerTool().input;
+    const base = { batchId: "b", objective: "o", brief: { summary: "s", evidenceIds: ["e"] } };
+    // Ambiguous: a target must be exactly one of surfaceId / entityId — both is invalid, not first-wins.
+    expect(v.safeParse(schema, { ...base, target: { surfaceId: "s1", entityId: "e1" } }).success).toBe(false);
+    expect(v.safeParse(schema, { ...base, target: {} }).success).toBe(false);
+    // Each single-field target is still accepted.
+    expect(v.safeParse(schema, { ...base, target: { surfaceId: "s1" } }).success).toBe(true);
+    expect(v.safeParse(schema, { ...base, target: { entityId: "e1" } }).success).toBe(true);
   });
 
   it("allow-lists a GitHub event's own id as Graph-write evidence for a GitHub-only Batch", () => {
@@ -288,7 +355,7 @@ describe("Brain Effects and settlement", () => {
     const prompt = await createPromptSpeakerTool().run({
       input: {
         batchId,
-        surfaceId: SURFACE,
+        target: { surfaceId: SURFACE },
         objective: "Chase the overdue commitment.",
         brief: { summary: "The deploy commitment is overdue.", evidenceIds: [commitment.evidenceIds[0]!] },
       },
@@ -343,7 +410,7 @@ describe("Brain Effects and settlement", () => {
     await recoverPendingPrompts();
     await createPromptSpeakerTool().run({ input: {
       batchId,
-      surfaceId: SURFACE,
+      target: { surfaceId: SURFACE },
       objective: "Ask which deployment failed.",
       brief: { summary: "Missing deployment identity.", evidenceIds: [EVIDENCE] },
     } });

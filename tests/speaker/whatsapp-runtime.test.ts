@@ -124,6 +124,7 @@ const inbound = (
     readonly fromMe?: boolean;
     readonly text?: string;
     readonly timestamp?: number;
+    readonly isGroup?: boolean;
   } = {},
 ): WhatsAppMessage =>
   ({
@@ -1244,6 +1245,61 @@ describe("runtime pairing and bridge control", () => {
     forensicDeliveries.close();
     forensicInbox.close();
     forensicSurfaces.close();
+  });
+
+  it("admits a reply from a Brain-opened known-person DM through intake, while an unopened chat stays closed", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const ACCOUNT = "15550000000:7@s.whatsapp.net"; // the fake session's authenticated jid.
+    const PERSON_DM = "204663831932940@lid"; // never a configured chat — opened only by the Brain's deliberate DM.
+
+    // The Brain opened this person's DM Surface in a prior turn (S5). Only the group is configured.
+    const seeded = createSurfaceRegistry(applicationDatabase);
+    seeded.activateDirect(ACCOUNT, PERSON_DM);
+    seeded.close();
+
+    const fake = fakeSession();
+    const dispatched: SpeakerDispatchRequest[] = [];
+    let dispatchSeq = 0;
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT], // note: PERSON_DM is NOT here — the static gate alone would reject it.
+      sessionFactory: () => fake.session,
+      coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+      dispatch: async (request) => {
+        dispatched.push(request);
+        return { dispatchId: `dispatch:${request.id}:${dispatchSeq++}`, acceptedAt: "2026-07-24T00:00:00.000Z" };
+      },
+    });
+    const inject = async (message: Parameters<typeof inbound>[0]): Promise<void> => {
+      for (const listener of fake.messageListeners) await listener(inbound(message));
+    };
+    let n = 0; // Unique ids: an archived arrival dedupes, so each admit needs a fresh message to re-evaluate.
+    try {
+      // Poll-inject a fresh known-person reply until one dispatches — proving the DM was admitted through
+      // intake once the runtime is fully up (auth done, event source subscribed, so `admit` sees the binding).
+      await vi.waitFor(
+        async () => {
+          await inject({ id: `dm-reply-${n++}`, chatId: PERSON_DM, isGroup: false, text: "thanks, got it" });
+          expect(dispatched.some((request) => request.id === PERSON_DM)).toBe(true);
+        },
+        { timeout: 4_000, interval: 50 },
+      );
+      // The path is live. A stranger's unsolicited DM (never opened via activateDirect) is injected, then
+      // more known-person replies until a second one dispatches — by then the stranger has had its chance.
+      await inject({ id: "stranger-31", chatId: OTHER_CHAT, isGroup: false, text: "who are you" });
+      await vi.waitFor(
+        async () => {
+          await inject({ id: `dm-reply-${n++}`, chatId: PERSON_DM, isGroup: false, text: "one more" });
+          expect(dispatched.filter((request) => request.id === PERSON_DM).length).toBeGreaterThanOrEqual(2);
+        },
+        { timeout: 4_000, interval: 50 },
+      );
+      expect(dispatched.map((request) => request.id)).not.toContain(OTHER_CHAT); // fail-closed preserved.
+    } finally {
+      await runtime.stop();
+    }
   });
 });
 
