@@ -216,17 +216,46 @@ describe("repair_pull_request Brain tool (#211)", () => {
     }
   });
 
-  it("NEGATIVE (round-1 finding 2): a failed launch releases its reservation, so the review can still be repaired", async () => {
+  it("round 10: admission failing AFTER the durable launch row exists does NOT release — reconciliation owns it", async () => {
     const registry = createCodingJobRegistry(":memory:");
     registry.upsert(job);
+    // admitWorkflow is delegation phase 2: the durable Brain launch row already committed before it runs.
     const { inbox, batchId, eventId } = fixture(registry, async () => { throw new Error("Flue unreachable"); });
     try {
-      await expect(call(batchId, eventId)).rejects.toThrow("Flue unreachable");
-      // The reservation was released: no cycle consumed, and a fresh reserve of the same review succeeds.
+      await expect(call(batchId, eventId)).rejects.toThrow(/durably reserved/u);
+      // NOT released: the cycle stays consumed and the review stays recorded, so a retry is a duplicate —
+      // never double-counted — while boot reconciliation still owns admitting the pending launch row.
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(1);
+      expect(registry.reserveRepair("acme/widgets", 42, 501)).toEqual({ status: "duplicate", previous: "launched" });
+      expect(inbox.pendingSpecialistLaunches()).toHaveLength(1);
+    } finally {
+      inbox.close();
+      registry.close();
+    }
+  });
+
+  it("round 10: a failure BEFORE the durable launch row (reservation itself throws) DOES release the cycle", async () => {
+    const registry = createCodingJobRegistry(":memory:");
+    registry.upsert(job);
+    const github = fakeGitHub();
+    configureCoderRuntime({ github: async () => github, sandbox: (() => ({})) as never, workspacesRoot: "/tmp", registry, coderAppSlug: "ambient-coder", reviewerAppSlug: SLUG });
+    // A fake inbox: the batch's event passes the evidence check, but reserveSpecialistLaunch (phase 1)
+    // throws — so nothing durable was committed and compensating state is safe to roll back.
+    const event = { id: "gh-501", eventName: "pull_request_review", repository: "acme/widgets", detail: { review: { id: 501 }, pullRequest: { number: 42 } } };
+    configureDelegationRuntime({
+      inbox: { githubEventsForBatch: () => [event], reserveSpecialistLaunch: () => { throw new Error("Brain Batch is not open and dispatched"); } } as never,
+      wake: async () => undefined,
+      providerChatIdForSurface: () => CHAT,
+    });
+    try {
+      const result = createRepairPullRequestTool().run({
+        input: { batchId: "b", surfaceId: SOURCE, repository: "acme/widgets", pullRequest: 42, reviewId: 501, evidenceIds: ["gh-501"] },
+      } as never) as Promise<Record<string, unknown>>;
+      await expect(result).rejects.toThrow(/not open and dispatched/u);
+      // Released: no durable row exists, so the cycle is given back and the review can be repaired on retry.
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
       expect(registry.reserveRepair("acme/widgets", 42, 501).status).toBe("within-budget");
     } finally {
-      inbox.close();
       registry.close();
     }
   });

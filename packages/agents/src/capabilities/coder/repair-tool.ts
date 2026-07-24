@@ -6,7 +6,7 @@ import { parseGitHubRepository } from "@ambient-agent/engine/github/repository.t
 import { demoteOverBudget } from "./continuation.ts";
 import { getCoderRuntime } from "./runtime.ts";
 import { coderSpecialistSpec } from "./workflow.ts";
-import { launchSpecialistWork } from "../delegation/tools.ts";
+import { launchSpecialistWork, SpecialistLaunchReservedError } from "../delegation/tools.ts";
 import { getDelegationRuntime } from "../delegation/runtime.ts";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
@@ -123,7 +123,7 @@ export const createRepairPullRequestTool = () =>
       }
 
       // Within budget (cycle already reserved): launch the repair through the Brain→delegation seam,
-      // citing the review event as provenance (no Intent needed). Release the cycle if the launch fails.
+      // citing the review event as provenance (no Intent needed).
       try {
         const { workId, runId } = await launchSpecialistWork(
           {
@@ -147,7 +147,12 @@ export const createRepairPullRequestTool = () =>
         );
         return { kind: "repair_pull_request" as const, status: "launched" as const, workId, runId };
       } catch (cause) {
-        registry.releaseRepair(input.repository, input.pullRequest, input.reviewId);
+        // Give the cycle back ONLY if the failure was BEFORE the durable Brain launch row committed
+        // (nothing to reconcile). A SpecialistLaunchReservedError means the row exists and boot
+        // reconciliation will run the repair — releasing then would double-count the budget.
+        if (!(cause instanceof SpecialistLaunchReservedError)) {
+          registry.releaseRepair(input.repository, input.pullRequest, input.reviewId);
+        }
         throw cause;
       }
     },

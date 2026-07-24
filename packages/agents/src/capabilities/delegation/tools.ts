@@ -55,6 +55,22 @@ const acceptSpecialistLaunch = async <TInput extends ActionInputSchema>(
   return { workId: accepted.id, runId: accepted.runId! };
 };
 
+/**
+ * Thrown when the durable Brain launch row was already reserved but admission (Flue) did not complete.
+ * The row survives, so boot reconciliation (`recoverPendingSpecialistLaunches`) OWNS retrying it — a
+ * caller that took a compensating reservation (e.g. #211's repair budget cycle) must NOT undo it on this
+ * error, or the reconciled run would double-count. Distinguishes "durable row exists, leave it" from a
+ * pre-reservation failure where nothing was committed and compensation is safe to roll back.
+ */
+export class SpecialistLaunchReservedError extends Error {
+  readonly workId: string;
+  constructor(workId: string, options?: { cause?: unknown }) {
+    super(`Specialist work ${workId} was durably reserved but admission did not complete; reconciliation will retry it.`, options);
+    this.name = "SpecialistLaunchReservedError";
+    this.workId = workId;
+  }
+}
+
 export const launchSpecialistWork = async <TInput extends ActionInputSchema>(
   input: Record<string, unknown> & { batchId: string; sourceSurfaceId: string; evidenceIds?: readonly string[] },
   spec: SpecialistSpec<TInput>,
@@ -65,6 +81,8 @@ export const launchSpecialistWork = async <TInput extends ActionInputSchema>(
   // cites the triggering event's own id (no source Intent). Held out of `specialistInput` so it never
   // reaches the Specialist's workflow. Absent → the inbox derives provenance from the Batch's Intents.
   const { batchId, sourceSurfaceId, evidenceIds, ...specialistInput } = input;
+  // Phase 1 — durable reservation. If THIS throws, nothing was committed; the raw error propagates and a
+  // caller's compensating reservation is safe to roll back.
   const launch = runtime.inbox.reserveSpecialistLaunch({
     batchId,
     sourceSurfaceId,
@@ -72,7 +90,13 @@ export const launchSpecialistWork = async <TInput extends ActionInputSchema>(
     input: specialistInput,
     ...(evidenceIds === undefined ? {} : { evidenceIds }),
   });
-  return acceptSpecialistLaunch(launch, spec);
+  // Phase 2 — admission. The durable row already exists; a failure here is owned by boot reconciliation,
+  // so we mark it as such (not a "nothing happened" error) for callers holding compensating state.
+  try {
+    return await acceptSpecialistLaunch(launch, spec);
+  } catch (cause) {
+    throw new SpecialistLaunchReservedError(launch.id, { cause });
+  }
 };
 
 export const recoverPendingSpecialistLaunches = async (
