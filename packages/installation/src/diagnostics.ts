@@ -226,7 +226,7 @@ const LEGACY_APPLICATION_OPTIONAL_SCHEMA = [
   ],
   [
     "brain_scheduled_wakes",
-    ["wake_id", "kind", "reason", "due_at", "created_at", "admitted_at", "batch_id"],
+    ["wake_id", "kind", "reason", "due_at", "created_at", "admitted_at", "cancelled_at", "batch_id"],
   ],
   [
     "brain_effects",

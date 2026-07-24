@@ -278,6 +278,7 @@ interface ScheduledWakeRow {
   due_at: string;
   created_at: string;
   admitted_at: string | null;
+  cancelled_at: string | null;
   batch_id: string | null;
 }
 
@@ -326,10 +327,17 @@ export interface BrainInbox {
   workMilestones(workId: string): readonly WorkMilestone[];
   latestWorkMilestone(workId: string): WorkMilestone | undefined;
   activeWorkItems(): readonly ActiveWorkItem[];
-  /** Self-schedule a durable Scheduled Wake (§6, ADR 0006). Local Brain Effect of the given open
-   * dispatched Batch: the effect row and wake row commit together. Idempotent by (reason, UTC dueAt):
-   * the same loop and time coalesce to one row. It enters the up-inbox once the due scan finds it due. */
-  scheduleWake(input: { readonly batchId: string; readonly reason: string; readonly dueAt: string }): ScheduledWake;
+  /** Self-schedule a durable Scheduled Wake (§6, ADR 0006, CONTEXT.md:82). Local Brain Effect of the
+   * given open dispatched Batch: the effect row and wake row commit together, and the wake is identified
+   * by that effect — a genuine retry of the same (batchId, reason, dueAt) coalesces, but a different
+   * Batch's identical request is a distinct owed reconsideration. Pass `predecessorId` to reschedule:
+   * the named predecessor is atomically cancelled (it never fires) as the replacement is created. */
+  scheduleWake(input: {
+    readonly batchId: string;
+    readonly reason: string;
+    readonly dueAt: string;
+    readonly predecessorId?: string;
+  }): ScheduledWake;
   /** The cron/boot due scan (§6). Admits one coalesced Proactive Sweep when none is outstanding and
    * admits every due Scheduled Wake exactly once. Returns what it admitted so the caller can wake. */
   runProactiveClock(): ProactiveClockTick;
@@ -487,11 +495,12 @@ const workMilestoneId = (workId: string, note: string): string =>
 const githubEventId = (githubAppId: string, deliveryId: string): string =>
   `github-event:${createHash("sha256").update(JSON.stringify([githubAppId, deliveryId])).digest("hex")}`;
 
-// A self-scheduled wake is content-addressed by loop + time, so scheduling the same reconsideration
-// twice coalesces to one row. A sweep is addressed by its admission instant, unique per due-scan tick
-// that passes the coalescing guard.
-const scheduledWakeId = (reason: string, dueAt: string): string =>
-  `scheduled-wake:${createHash("sha256").update(JSON.stringify([reason, dueAt])).digest("hex")}`;
+// A Scheduled Wake is identified by the Brain Batch effect that scheduled it (CONTEXT.md:82), so its id
+// is content-addressed by (creating batchId, reason, dueAt): a genuine retry of the SAME scheduling effect
+// coalesces (crash-safety dedup), but two independent Batches requesting the same reason+time are two
+// distinct owed reconsiderations, not one. A sweep is addressed by its admission instant.
+const scheduledWakeId = (batchId: string, reason: string, dueAt: string): string =>
+  `scheduled-wake:${createHash("sha256").update(JSON.stringify([batchId, reason, dueAt])).digest("hex")}`;
 const proactiveSweepId = (admittedAt: string): string =>
   `proactive-sweep:${createHash("sha256").update(JSON.stringify([admittedAt])).digest("hex")}`;
 
@@ -594,6 +603,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       due_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       admitted_at TEXT,
+      cancelled_at TEXT,
       batch_id TEXT REFERENCES brain_batches(batch_id)
     ) STRICT;
     CREATE TABLE IF NOT EXISTS brain_effects (
@@ -776,7 +786,12 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
   `);
   const selectScheduledWake = database.prepare("SELECT * FROM brain_scheduled_wakes WHERE wake_id = ?");
   const selectPendingScheduledWakes = database.prepare(
-    "SELECT * FROM brain_scheduled_wakes WHERE batch_id IS NULL AND admitted_at IS NOT NULL ORDER BY admitted_at, rowid",
+    "SELECT * FROM brain_scheduled_wakes WHERE batch_id IS NULL AND admitted_at IS NOT NULL AND cancelled_at IS NULL ORDER BY admitted_at, rowid",
+  );
+  // Reschedule = cancel the named predecessor + create a replacement (CONTEXT.md:82). Idempotent: a
+  // retried reschedule finds the predecessor already cancelled and no-ops.
+  const cancelScheduledWake = database.prepare(
+    "UPDATE brain_scheduled_wakes SET cancelled_at = ? WHERE wake_id = ? AND cancelled_at IS NULL",
   );
   const selectBatchScheduledWakes = database.prepare(
     "SELECT * FROM brain_scheduled_wakes WHERE batch_id = ? ORDER BY admitted_at, rowid",
@@ -794,7 +809,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
   // ponytail: ISO-8601 UTC string comparison for due_at, matching digest.ts isOverdue; upgrade to
   // epoch-ms storage if non-UTC or non-ISO dues ever appear.
   const admitDueScheduledWakes = database.prepare(
-    "UPDATE brain_scheduled_wakes SET admitted_at = ? WHERE kind = 'scheduled' AND admitted_at IS NULL AND due_at <= ?",
+    "UPDATE brain_scheduled_wakes SET admitted_at = ? WHERE kind = 'scheduled' AND admitted_at IS NULL AND cancelled_at IS NULL AND due_at <= ?",
   );
   const selectSpecialistLaunch = database.prepare("SELECT * FROM brain_specialist_launches WHERE work_id = ?");
   const selectSpecialistLaunchByRunId = database.prepare(
@@ -873,7 +888,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
         FROM brain_github_events WHERE batch_id IS NULL
       UNION ALL
       SELECT wake_id AS input_id, 'scheduled_wake' AS kind, admitted_at, rowid AS input_order
-        FROM brain_scheduled_wakes WHERE batch_id IS NULL AND admitted_at IS NOT NULL
+        FROM brain_scheduled_wakes WHERE batch_id IS NULL AND admitted_at IS NOT NULL AND cancelled_at IS NULL
     ) ORDER BY admitted_at, kind, input_order LIMIT ?
   `);
   const insertBatch = database.prepare("INSERT INTO brain_batches (batch_id, created_at) VALUES (?, ?)");
@@ -1058,7 +1073,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     },
     pendingGitHubEvents: () =>
       (selectPendingGitHubEvents.all() as unknown as GitHubEventRow[]).map(hydrateGitHubEvent),
-    scheduleWake: ({ batchId: rawBatchId, reason: rawReason, dueAt: rawDueAt }) => {
+    scheduleWake: ({ batchId: rawBatchId, reason: rawReason, dueAt: rawDueAt, predecessorId: rawPredecessorId }) => {
       const claimedBatchId = required(rawBatchId, "Brain Batch id");
       const batch = selectOpenBatchById.get(claimedBatchId) as BatchRow | undefined;
       if (batch === undefined || batch.dispatch_id === null) throw new Error(`Brain Batch ${claimedBatchId} is not open and dispatched.`);
@@ -1069,14 +1084,18 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       // Normalize to canonical UTC so raw-string comparison against `now` (always UTC 'Z') is correct for
       // any offset input — a +02:00 dueAt is the same instant as its UTC form and must sort as such.
       const dueAt = new Date(parsed).toISOString();
-      const wakeId = scheduledWakeId(reason, dueAt);
+      const predecessorId = rawPredecessorId === undefined ? undefined : required(rawPredecessorId, "Predecessor wake id");
+      const wakeId = scheduledWakeId(claimedBatchId, reason, dueAt);
       // ADR 0006: the wake row and its owning Brain Effect commit together — a self-scheduled wake is never
-      // left unowned if the turn fails before settle. Both are content-addressed, so an exact retry no-ops.
-      const payload = { wakeId, reason, dueAt };
+      // left unowned if the turn fails before settle. Both are content-addressed by the effect, so an exact
+      // retry of this same scheduling Effect no-ops. A reschedule cancels the named predecessor in the same
+      // transaction, so the old wake never fires alongside the replacement (CONTEXT.md:82).
+      const payload = { wakeId, reason, dueAt, ...(predecessorId === undefined ? {} : { predecessorId }) };
       const effId = effectId(claimedBatchId, "schedule_wake", payload);
       const at = options.now?.() ?? new Date().toISOString();
       database.exec("BEGIN IMMEDIATE");
       try {
+        if (predecessorId !== undefined) cancelScheduledWake.run(at, predecessorId);
         insertScheduledWake.run(wakeId, "scheduled", reason, dueAt, at, null);
         insertEffect.run(effId, claimedBatchId, "schedule_wake", JSON.stringify(payload), "completed", at, at);
         database.exec("COMMIT");

@@ -158,11 +158,14 @@ export const createScheduleWakeTool = () =>
       "Durably schedule the Brain to reconsider an open loop at a future time (§6 Scheduled Wake) — e.g. " +
       "'chase this commitment if still unmet in two hours'. Supply the current Batch id (it is a local " +
       "effect of this Batch), an ISO-8601 dueAt, and a short reason naming the loop. It survives restart " +
-      "and wakes the Brain exactly once when due. Scheduling the same reason and time twice coalesces to one wake.",
+      "and wakes the Brain exactly once when due. To RESCHEDULE an existing loop (move its follow-up to a " +
+      "new time), pass the old wake's id as predecessorId: it is cancelled — never fires — as the " +
+      "replacement is created. Returns the new wake id; keep it if you may reschedule again.",
     input: v.object({
       batchId: nonEmptyString,
       reason: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
       dueAt: v.pipe(v.string(), v.isoTimestamp()),
+      predecessorId: v.optional(v.pipe(nonEmptyString, v.startsWith("scheduled-wake:"))),
     }),
     output: v.object({
       kind: v.literal("scheduled"),

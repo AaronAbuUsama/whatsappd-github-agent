@@ -119,6 +119,58 @@ describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6, A
     inbox.close();
   });
 
+  it("gives two independent Batches distinct wakes for the same reason+time, and both fire (no collapse)", () => {
+    let now = "2026-07-22T12:01:00.000Z";
+    const inbox = openInbox(fixture(), () => now);
+
+    const first = dispatchedBatch(inbox);
+    const wakeA = inbox.scheduleWake({ batchId: first.id, reason: "chase the loop", dueAt: "2026-07-22T14:00:00.000Z" });
+    inbox.recordSilence(first.id, "done a");
+    inbox.settleBatch(first.id);
+
+    now = "2026-07-22T12:02:00.000Z";
+    const second = dispatchedBatch(inbox);
+    // Same reason + same dueAt, but a genuinely separate scheduling decision → a distinct owed wake.
+    const wakeB = inbox.scheduleWake({ batchId: second.id, reason: "chase the loop", dueAt: "2026-07-22T14:00:00.000Z" });
+    inbox.recordSilence(second.id, "done b");
+    inbox.settleBatch(second.id);
+
+    expect(wakeB.id).not.toBe(wakeA.id);
+
+    // Past the due time: both distinct wakes are independently admitted (not collapsed to one).
+    now = "2026-07-22T15:00:00.000Z";
+    expect(inbox.runProactiveClock().admittedWakes).toBe(2);
+    const firedIds = (inbox.claimBatch()?.scheduledWakes ?? []).filter((w) => w.kind === "scheduled").map((w) => w.id);
+    expect(new Set(firedIds)).toEqual(new Set([wakeA.id, wakeB.id]));
+    inbox.close();
+  });
+
+  it("a reschedule cancels the named predecessor so only the replacement fires", () => {
+    const databasePath = fixture();
+    const scheduling = openInbox(databasePath, () => "2026-07-22T12:00:00.000Z");
+    const batch = dispatchedBatch(scheduling);
+    const predecessor = scheduling.scheduleWake({ batchId: batch.id, reason: "chase the review", dueAt: "2026-07-22T14:00:00.000Z" });
+    const replacement = scheduling.scheduleWake({
+      batchId: batch.id,
+      reason: "chase the review",
+      dueAt: "2026-07-22T16:00:00.000Z",
+      predecessorId: predecessor.id,
+    });
+    expect(replacement.id).not.toBe(predecessor.id);
+    scheduling.recordSilence(batch.id, "rescheduled");
+    scheduling.settleBatch(batch.id);
+    scheduling.close();
+
+    // Past BOTH due times: only the replacement fires; the cancelled predecessor never does.
+    const inbox = openInbox(databasePath, () => "2026-07-22T18:00:00.000Z");
+    expect(inbox.runProactiveClock().admittedWakes).toBe(1);
+    const fired = (inbox.claimBatch()?.scheduledWakes ?? []).filter((w) => w.kind === "scheduled");
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.id).toBe(replacement.id);
+    expect(fired[0]?.dueAt).toBe("2026-07-22T16:00:00.000Z");
+    inbox.close();
+  });
+
   it("a due wake survives restart and fires exactly once", () => {
     const databasePath = fixture();
     const scheduling = openInbox(databasePath, () => "2026-07-22T12:00:00.000Z");
