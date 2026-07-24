@@ -49,12 +49,13 @@ export interface CodingJobRegistry {
    * id (no cycle); `duplicate`/`unregistered` reserve nothing. Call `releaseRepair` iff the subsequent
    * side effect fails, to undo the reservation so a genuine retry can re-reserve (never a wasted cycle).
    *
-   * ponytail: residual crash-window tradeoff. Reserving BEFORE the launch (to close the race above)
-   * means a process crash in the gap between this commit and launchSpecialistWork's own durable write
-   * leaves the review permanently `duplicate` with no run — but that gap is two back-to-back synchronous
+   * ponytail: residual crash-window tradeoff — covers BOTH outcomes. Reserving BEFORE the side effect
+   * (to close the race above) means a process crash in the gap between this commit and the side effect
+   * finishing leaves the review permanently `duplicate` with the side effect un-run: for `launched`, no
+   * repair run; for `over-budget`, no draft-demotion/comment. That gap is two back-to-back synchronous
    * local SQLite writes with no I/O or await between them (this store and the inbox are separate DBs, so
    * a single transaction can't span both). Deliberately accepted, matching this codebase's precedent for
-   * narrow crash-window gaps; upgrade path = boot reconciliation of reserved-but-un-launched reviews.
+   * narrow crash-window gaps; upgrade path = boot reconciliation of reserved-but-unfinished reviews.
    */
   reserveRepair(repository: string, prNumber: number, reviewId: number): RepairCheck;
   /** Undo a reservation whose side effect failed: delete the review id and, for a launch, give back the cycle. */

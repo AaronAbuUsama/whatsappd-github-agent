@@ -359,7 +359,7 @@ const run = async ({ harness, input, log }: {
       });
 
       const requiredDraft = coordinated.verification.verdict === "FAIL" || coordinated.verification.verdict === "BLOCKED";
-      const record: { pr?: OpenPrRecord } = {};
+      const record: { pr?: OpenPrRecord; moved?: boolean } = {};
       const openPullRequest = createOpenPullRequestTool({
         github,
         repo,
@@ -373,6 +373,9 @@ const run = async ({ harness, input, log }: {
         requiredDraft,
         snapshotAfter: snapshot,
         readFile: (path) => harness.fs.readFileBuffer(`${repoDir}/${path}`),
+        // A review continuation must UPDATE its exact PR; if it was closed/moved mid-run, publication
+        // fails closed rather than opening a silent replacement (checked again here at publish time).
+        ...(isContinuation ? { requireExistingPr: input.pullRequest! } : {}),
         record,
       });
 
@@ -389,6 +392,21 @@ const run = async ({ harness, input, log }: {
         tools: [openPullRequest],
       });
       waypoint("publication", "completed", { pullRequest: record.pr?.number, draft: record.pr?.draft ?? requiredDraft });
+
+      // The reviewed PR was closed/moved mid-run and publication refused to open a replacement (§10
+      // fail-closed, re-checked at publish time): report blocked, never register a substitute PR.
+      if (record.moved === true) {
+        waypoint("workflow", "completed");
+        return {
+          outcome: "blocked",
+          branch,
+          jobId,
+          finalVerdict: coordinated.verification.verdict,
+          verificationRounds: coordinated.rounds,
+          reviewCycle,
+          summary: `Pull request #${input.pullRequest} was closed or moved during the repair run; the branch was repaired but no replacement pull request was opened.`,
+        };
+      }
 
       // Register (or refresh) the PR→job journey so a later Reviewer REQUEST_CHANGES can find the
       // issue, branch, and budgets to repair against. Idempotent and cycle-preserving: a

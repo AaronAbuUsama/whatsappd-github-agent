@@ -373,6 +373,8 @@ export interface BrainInbox {
   admitKnowledgeDelta(draft: KnowledgeDeltaDraft): KnowledgeDelta;
   admitGitHubEvent(draft: GitHubEventDraft): GitHubEvent;
   pendingGitHubEvents(): readonly GitHubEvent[];
+  /** The GitHub events assigned to one specific Batch — keyed by batch id, not "whatever is open". */
+  githubEventsForBatch(batchId: string): readonly GitHubEvent[];
   intent(intentId: string): Intent | undefined;
   pendingIntents(): readonly Intent[];
   pendingKnowledgeDeltas(): readonly KnowledgeDelta[];
@@ -1176,6 +1178,8 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
     },
     pendingGitHubEvents: () =>
       (selectPendingGitHubEvents.all() as unknown as GitHubEventRow[]).map(hydrateGitHubEvent),
+    githubEventsForBatch: (batchId) =>
+      (selectBatchGitHubEvents.all(required(batchId, "Brain Batch id")) as unknown as GitHubEventRow[]).map(hydrateGitHubEvent),
     scheduleWake: ({ batchId: rawBatchId, reason: rawReason, dueAt: rawDueAt, predecessorId: rawPredecessorId }) => {
       const claimedBatchId = required(rawBatchId, "Brain Batch id");
       const batch = selectOpenBatchById.get(claimedBatchId) as BatchRow | undefined;

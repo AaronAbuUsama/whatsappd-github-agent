@@ -84,8 +84,10 @@ export const createRepairPullRequestTool = () =>
       // at least one cited id in the current Batch must be the pull_request_review event for this exact
       // review id, PR number, and repository. Batch membership alone (checked at launch) is not enough:
       // an unrelated-but-batch-scoped event must not be recorded as what triggered this repair.
-      const batch = getDelegationRuntime().inbox.claimBatch();
-      const cited = (batch?.githubEvents ?? []).filter((event) => input.evidenceIds.includes(event.id));
+      // Read THIS Batch's events by id — never claimBatch()'s "whatever is globally open", which would
+      // only equal the current batch under an unstated single-open-batch assumption.
+      const batchEvents = getDelegationRuntime().inbox.githubEventsForBatch(input.batchId);
+      const cited = batchEvents.filter((event) => input.evidenceIds.includes(event.id));
       const triggering = cited.find((event) => {
         const detail = event.detail as { review?: { id?: unknown }; pullRequest?: { number?: unknown } };
         return (
@@ -130,6 +132,9 @@ export const createRepairPullRequestTool = () =>
             evidenceIds: input.evidenceIds,
             mode: "review_continuation",
             repository: reservation.job.repository,
+            // The registered issue number: the delegation seam wires Graph context only when `issue`
+            // is present, so a review_continuation without it silently loses its Graph wiring.
+            issue: reservation.job.issue,
             pullRequest: input.pullRequest,
             maxVerificationRounds: reservation.job.maxVerificationRounds,
             maxReviewCycles: reservation.job.maxReviewCycles,

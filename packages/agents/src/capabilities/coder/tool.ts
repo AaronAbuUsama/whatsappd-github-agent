@@ -29,7 +29,10 @@ export interface OpenPullRequestContext {
   readonly requiredDraft: boolean;
   readonly snapshotAfter: () => Promise<WorkspaceSnapshot>;
   readonly readFile: (path: string) => Promise<Uint8Array>;
-  readonly record: { pr?: OpenPrRecord };
+  // #211: for a review continuation, the exact PR the run must UPDATE. If publication would create a
+  // replacement instead (the PR was closed/moved mid-run), it fails closed and records `moved`.
+  readonly requireExistingPr?: number;
+  readonly record: { pr?: OpenPrRecord; moved?: boolean };
 }
 
 /**
@@ -101,7 +104,17 @@ export const createOpenPullRequestTool = (ctx: OpenPullRequestContext): ToolDefi
         title: input.title,
         body,
         draft: input.draft,
+        ...(ctx.requireExistingPr === undefined ? {} : { requireExisting: ctx.requireExistingPr }),
       });
+      if (pr.moved === true) {
+        // The reviewed PR is gone (closed/moved mid-run): repair commits rode the branch, but we opened
+        // no replacement. Fail closed — the conductor turns the recorded `moved` into a blocked outcome.
+        ctx.record.moved = true;
+        return {
+          opened: false,
+          message: `Pull request #${pr.number} is no longer open — repaired the branch but did not open a replacement pull request.`,
+        };
+      }
       // Report the PR's ACTUAL draft state (fresh → input.draft; reused → the existing PR's
       // real isDraft), never a blind stamp of input.draft — an honest state beats a lie.
       ctx.record.pr = { url: pr.url, number: pr.number, created: pr.created, draft: pr.draft };

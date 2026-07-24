@@ -40,8 +40,8 @@ const makeGitHub = (opts: { branchExists: boolean; branchHead?: string; openPr?:
 
 const buildTool = (
   gh: CoderGitHub,
-  record: { pr?: OpenPrRecord },
-  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean } = {},
+  record: { pr?: OpenPrRecord; moved?: boolean },
+  options: { snapshotAfter?: () => Promise<ReturnType<typeof parseHashListing>>; requiredDraft?: boolean; seedBranchHead?: string; seedBranchExisted?: boolean; requireExistingPr?: number } = {},
 ) =>
   createOpenPullRequestTool({
     github: gh,
@@ -56,6 +56,7 @@ const buildTool = (
     requiredDraft: options.requiredDraft ?? false,
     snapshotAfter: options.snapshotAfter ?? (async () => after),
     readFile: async () => new TextEncoder().encode("changed bytes"),
+    ...(options.requireExistingPr === undefined ? {} : { requireExistingPr: options.requireExistingPr }),
     record,
   });
 
@@ -185,6 +186,22 @@ describe("open_pull_request handler — the model's one safe write (#172)", () =
       input: { title: "t", body: "b", draft: false },
     })).rejects.toThrow("Coder branch moved after this run was seeded");
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("#211: a review continuation whose PR was closed mid-run records `moved` and opens no replacement", async () => {
+    // Branch exists (repair committed to it) but no open head→base PR remains — the human closed it.
+    const record: { pr?: OpenPrRecord; moved?: boolean } = {};
+    const { gh, create } = makeGitHub({ branchExists: true, branchHead: "seed-head" });
+    const result = (await buildTool(gh, record, { seedBranchHead: "seed-head", seedBranchExisted: true, requireExistingPr: 7 }).run({
+      input: { title: "t", body: "b", draft: false },
+    })) as { opened: boolean; message?: string };
+
+    expect(result.opened).toBe(false);
+    expect(result.message).toContain("no longer open");
+    expect(record.moved).toBe(true);
+    expect(record.pr).toBeUndefined(); // never records a substitute PR
+    expect(create).not.toHaveBeenCalled(); // never opens a replacement
+    expect(gh.git.createCommit).toHaveBeenCalledOnce(); // the repair commits still rode the branch
   });
 
   it("rejects a publication draft state that contradicts the final verdict", async () => {

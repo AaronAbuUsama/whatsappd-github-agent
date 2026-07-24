@@ -155,6 +155,25 @@ describe("upsertPullRequest — one open PR per head→base", () => {
     expect(pr).toEqual({ number: 10, url: "https://x/pr/10", created: true, draft: true });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ head: "agent/coder/issue-42", draft: true }));
   });
+
+  it("#211: a review continuation whose PR is gone fails closed — never opens a replacement", async () => {
+    // The reviewed PR was closed mid-run → no open head→base PR. requireExisting forbids a replacement.
+    const list = vi.fn(async () => ({ data: [] }));
+    const create = vi.fn();
+    const gh = { graphql: vi.fn(), pulls: { list, create } } as unknown as CoderGitHub;
+
+    const pr = await upsertPullRequest(gh, REPO, {
+      branch: "agent/coder/issue-42",
+      base: "main",
+      title: "t",
+      body: "b",
+      draft: false,
+      requireExisting: 7,
+    });
+
+    expect(pr).toEqual({ number: 7, url: "", created: false, draft: false, moved: true });
+    expect(create).not.toHaveBeenCalled();
+  });
 });
 
 describe("commitChanges — Git Data API out (blobs → tree → commit → ref)", () => {

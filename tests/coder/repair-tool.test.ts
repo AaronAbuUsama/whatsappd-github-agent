@@ -109,7 +109,8 @@ describe("repair_pull_request Brain tool (#211)", () => {
       expect(result).toMatchObject({ kind: "repair_pull_request", status: "launched", runId: "run:repair" });
       expect(result.workId).toEqual(expect.stringMatching(/^brain-work:/u));
       // Dispatched through the SAME delegation seam every Brain launch uses; the review event is the provenance.
-      expect(launchedInput).toMatchObject({ mode: "review_continuation", repository: "acme/widgets", pullRequest: 42, brainWorkId: expect.stringMatching(/^brain-work:/u), sourceSurfaceId: SOURCE });
+      // The registered issue rides along so the delegation seam wires Graph context (round-6 fix 2).
+      expect(launchedInput).toMatchObject({ mode: "review_continuation", repository: "acme/widgets", pullRequest: 42, issue: 210, brainWorkId: expect.stringMatching(/^brain-work:/u), sourceSurfaceId: SOURCE });
       // The launch reserved with the GitHub event as evidence (not an Intent).
       expect(inbox.specialistLaunch(result.workId as string)!.evidenceIds).toEqual([eventId]);
       // The cycle was atomically reserved and, since the launch succeeded, stays consumed.
