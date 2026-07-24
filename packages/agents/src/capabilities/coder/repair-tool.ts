@@ -18,10 +18,17 @@ const positiveInteger = v.pipe(v.number(), v.integer(), v.minValue(1));
  * dispatched through the SAME Brain→delegation seam every other Brain-owned specialist launch uses
  * (`launchSpecialistWork`, which reserves a durable Brain work id so the run's result returns here).
  *
- * The tool holds the invariants trusted code must own, never the model: it repairs ONLY a registered
- * Coder-owned PR (an external contributor / fork PR is never in the registry, so it is never mutated),
- * and never past the configured review-cycle budget. The budget cycle is consumed only AFTER the
- * launch is durably admitted (registry.commitRepair), so a failed launch never silently wastes it.
+ * The tool holds every invariant trusted code must own, never the model:
+ * - It independently re-fetches the live review and verifies, in trusted code, that it is a
+ *   REQUEST_CHANGES authored by the configured Reviewer App — prompt wording is not an authorization
+ *   boundary, so a human's review or a fabricated review id is refused here (finding 1).
+ * - It repairs ONLY a registered Coder-owned PR (an external / fork PR is never in the registry, so
+ *   it is never mutated), and never past the configured review-cycle budget.
+ * - The budget cycle is consumed only AFTER the launch is durably admitted (registry.commitRepair),
+ *   so a failed launch never silently wastes it (finding 2 of round 1).
+ *
+ * The launch cites the triggering GitHub event's own id as provenance (`evidenceIds`), exactly as
+ * prompt_speaker does — a GitHub-event Batch carries no Intent, so the event itself is the evidence.
  */
 export const createRepairPullRequestTool = () =>
   defineTool({
@@ -29,43 +36,67 @@ export const createRepairPullRequestTool = () =>
     description:
       "Repair a Coder-owned pull request after the standalone Reviewer formally requested changes on it. " +
       "Supply the current Batch id, the originating Surface, the target repository (owner/repo), the pull-request " +
-      "number, and the triggering review's id. It repairs ONLY a pull request this coworker's Coder opened and " +
-      "only within its configured review-cycle budget: an external or fork-headed pull request is reported back " +
-      "untouched, and an exhausted budget converts the pull request to draft with one lifecycle note instead of " +
-      "repairing. A repair run's result returns here as a Specialist result; report the outcome with prompt_speaker.",
+      "number, the triggering review's id, and that review event's own id as evidence. It independently verifies " +
+      "the review is a change request by the configured Reviewer App, and repairs ONLY a pull request this " +
+      "coworker's Coder opened, within its review-cycle budget: an unauthorized review or an external/fork pull " +
+      "request is reported back untouched, and an exhausted budget converts the pull request to draft with one " +
+      "lifecycle note instead of repairing. A repair run's result returns here; report the outcome with prompt_speaker.",
     input: v.object({
       batchId: nonEmptyString,
       surfaceId: nonEmptyString,
       repository: v.pipe(nonEmptyString, v.regex(/^[^/\s]+\/[^/\s]+$/u, "repository must be owner/repo")),
       pullRequest: positiveInteger,
       reviewId: positiveInteger,
+      // The triggering review event's own up-inbox id — the launch's durable provenance (§4).
+      evidenceIds: v.pipe(v.array(nonEmptyString), v.minLength(1)),
     }),
     output: v.union([
       v.object({ kind: v.literal("repair_pull_request"), status: v.literal("launched"), workId: nonEmptyString, runId: nonEmptyString }),
       v.object({ kind: v.literal("repair_pull_request"), status: v.literal("over-budget"), prUrl: nonEmptyString, maxReviewCycles: v.number() }),
       v.object({ kind: v.literal("repair_pull_request"), status: v.literal("duplicate"), previous: v.union([v.literal("launched"), v.literal("over-budget")]) }),
       v.object({ kind: v.literal("repair_pull_request"), status: v.literal("external") }),
+      v.object({ kind: v.literal("repair_pull_request"), status: v.literal("unauthorized"), reason: nonEmptyString }),
     ]),
     run: async ({ input }) => {
-      const { registry, github: resolveGithub } = getCoderRuntime();
+      const { registry, github: resolveGithub, reviewerAppSlug } = getCoderRuntime();
       if (registry === undefined) throw new Error("The coding-job registry is not configured for this Brain runtime.");
+      const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
+      const github = await resolveGithub(repo);
+
+      // Finding 1 — trusted authorization BEFORE any registry/GitHub side effect: re-fetch the live
+      // review and confirm it is a REQUEST_CHANGES by the configured Reviewer App. Fail closed if the
+      // Reviewer App is unprovisioned (no slug to authorize against).
+      if (reviewerAppSlug === undefined) {
+        return { kind: "repair_pull_request" as const, status: "unauthorized" as const, reason: "the Reviewer App is not provisioned; no review can be authorized" };
+      }
+      const { data: review } = await github.pulls.getReview({ owner: repo.owner, repo: repo.repo, pull_number: input.pullRequest, review_id: input.reviewId });
+      const expectedAuthor = `${reviewerAppSlug.toLowerCase()}[bot]`;
+      if (review.state.toUpperCase() !== "CHANGES_REQUESTED" || (review.user?.login ?? "").toLowerCase() !== expectedAuthor) {
+        return {
+          kind: "repair_pull_request" as const,
+          status: "unauthorized" as const,
+          reason: `review ${input.reviewId} is not a REQUEST_CHANGES by ${expectedAuthor} (state=${review.state}, author=${review.user?.login ?? "unknown"})`,
+        };
+      }
+
       const check = registry.checkRepair(input.repository, input.pullRequest, input.reviewId);
       if (check.status === "unregistered") return { kind: "repair_pull_request" as const, status: "external" as const };
       if (check.status === "duplicate") return { kind: "repair_pull_request" as const, status: "duplicate" as const, previous: check.previous };
 
       if (check.status === "over-budget") {
-        const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
-        const { prUrl } = await demoteOverBudget(await resolveGithub(repo), repo, input.pullRequest, check.job.maxReviewCycles);
+        const { prUrl } = await demoteOverBudget(github, repo, input.pullRequest, check.job.maxReviewCycles);
         // Record AFTER the demotion succeeds; the demotion is idempotent so a retry is safe.
         registry.commitRepair(input.repository, input.pullRequest, input.reviewId, "over-budget");
         return { kind: "repair_pull_request" as const, status: "over-budget" as const, prUrl, maxReviewCycles: check.job.maxReviewCycles };
       }
 
-      // Within budget: launch the repair through the Brain→delegation seam, THEN consume the cycle.
+      // Within budget: launch the repair through the Brain→delegation seam, citing the review event as
+      // provenance (no Intent needed), THEN consume the cycle.
       const { workId, runId } = await launchSpecialistWork(
         {
           batchId: input.batchId,
           sourceSurfaceId: input.surfaceId,
+          evidenceIds: input.evidenceIds,
           mode: "review_continuation",
           repository: check.job.repository,
           pullRequest: input.pullRequest,

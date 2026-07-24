@@ -56,17 +56,21 @@ const acceptSpecialistLaunch = async <TInput extends ActionInputSchema>(
 };
 
 export const launchSpecialistWork = async <TInput extends ActionInputSchema>(
-  input: Record<string, unknown> & { batchId: string; sourceSurfaceId: string },
+  input: Record<string, unknown> & { batchId: string; sourceSurfaceId: string; evidenceIds?: readonly string[] },
   spec: SpecialistSpec<TInput>,
 ): Promise<{ workId: string; runId: string }> => {
   spec.ensureAvailable?.();
   const runtime = getDelegationRuntime();
-  const { batchId, sourceSurfaceId, ...specialistInput } = input;
+  // `evidenceIds` is launch provenance, not workflow input — a GitHub-event-triggered launch (#211)
+  // cites the triggering event's own id (no source Intent). Held out of `specialistInput` so it never
+  // reaches the Specialist's workflow. Absent → the inbox derives provenance from the Batch's Intents.
+  const { batchId, sourceSurfaceId, evidenceIds, ...specialistInput } = input;
   const launch = runtime.inbox.reserveSpecialistLaunch({
     batchId,
     sourceSurfaceId,
     specialist: spec.name,
     input: specialistInput,
+    ...(evidenceIds === undefined ? {} : { evidenceIds }),
   });
   return acceptSpecialistLaunch(launch, spec);
 };

@@ -24,6 +24,12 @@ export interface CoderRuntime {
    * legacy delegation tests configure no registry), so it is optional at the boundary.
    */
   readonly registry?: CodingJobRegistry;
+  /**
+   * #211 finding 1: the configured Reviewer App's slug (e.g. "ambient-reviewer"). The repair tool
+   * verifies the triggering review was authored by `<slug>[bot]` before acting. Absent when the
+   * Reviewer App is unprovisioned — repair then fails closed (it cannot authorize any review).
+   */
+  readonly reviewerAppSlug?: string;
 }
 
 const runtimeSlot = createFlueGlobal<CoderRuntime>(

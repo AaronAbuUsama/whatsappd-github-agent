@@ -61,6 +61,7 @@ const configureCoderRuntimeBinding = async (
   paths: ManagedRuntimeDependencies["paths"],
   agentSandbox: ManagedRuntimeDependencies["agentSandbox"],
   registry: ReturnType<typeof createCodingJobRegistry>,
+  reviewerAppSlug: string | undefined,
 ): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
   const resolver = createInstallationResolver(credential);
@@ -69,6 +70,8 @@ const configureCoderRuntimeBinding = async (
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
     registry,
+    // #211 finding 1: the repair tool authorizes a review only if authored by <slug>[bot].
+    ...(reviewerAppSlug === undefined ? {} : { reviewerAppSlug }),
   });
 };
 
@@ -145,8 +148,9 @@ export const createAmbientAgentApp = async ({
   // find the issue/branch/budgets to repair against. Its own SQLite file (not the audited,
   // migration-governed application database), rebuilt lazily; it holds no GitHub-owned review state.
   const codingJobRegistry = createCodingJobRegistry(join(dirname(paths.applicationDatabase), "coding-jobs.sqlite"));
-  await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry);
+  // Resolve the Reviewer App first so its slug can authorize repair reviews in the Coder runtime (#211).
   const reviewerProvisioned = await configureReviewerRuntimeBinding(paths, agentSandbox);
+  await configureCoderRuntimeBinding(paths, agentSandbox, codingJobRegistry, reviewerProvisioned?.appSlug);
   let whatsappControl: WhatsAppRuntimeControl | undefined;
   // The Speaker/Planner file one identity, but issues may be filed across orgs — resolve the
   // installation-scoped client per issue repository (multi-org). Every issue op carries a full

@@ -382,6 +382,10 @@ export interface BrainInbox {
     readonly sourceSurfaceId: string;
     readonly specialist: string;
     readonly input: Readonly<Record<string, unknown>>;
+    // Explicit provenance for a launch with no source Intent — a GitHub-event-triggered launch (#211)
+    // cites the triggering event's own id, exactly as prompt_speaker does (§4). Each id must resolve to
+    // a real Conversation event or admitted GitHub up-inbox event. Omitted → derive from source Intents.
+    readonly evidenceIds?: readonly string[];
   }): SpecialistLaunch;
   markSpecialistLaunchAccepted(workId: string, runId: string, acceptedAt?: string): SpecialistLaunch;
   specialistLaunch(workId: string): SpecialistLaunch | undefined;
@@ -1255,7 +1259,7 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       `);
       return (statement.get(...deltaIds) as { count: number }).count === deltaIds.length;
     },
-    reserveSpecialistLaunch: ({ batchId: rawBatchId, sourceSurfaceId: rawSurfaceId, specialist: rawSpecialist, input }) => {
+    reserveSpecialistLaunch: ({ batchId: rawBatchId, sourceSurfaceId: rawSurfaceId, specialist: rawSpecialist, input, evidenceIds: rawEvidenceIds }) => {
       const requestedBatchId = required(rawBatchId, "Specialist launch Brain Batch id");
       const sourceSurfaceId = required(rawSurfaceId, "Specialist launch source Surface id");
       const specialist = required(rawSpecialist, "Specialist name");
@@ -1263,16 +1267,29 @@ export const createBrainInbox = (databasePath: string, options: BrainInboxOption
       if (batch === undefined || batch.dispatch_id === null) {
         throw new Error(`Brain Batch ${requestedBatchId} is not open and dispatched.`);
       }
-      const sourceIntents = (selectBatchIntents.all(requestedBatchId) as unknown as IntentRow[])
-        .map(hydrate)
-        .filter((intent) => intent.sourceSurfaceId === sourceSurfaceId);
-      if (sourceIntents.length === 0) {
-        throw new Error(`Surface ${sourceSurfaceId} is not provenance for Brain Batch ${requestedBatchId}.`);
+      let evidenceIds: readonly string[];
+      if (rawEvidenceIds !== undefined) {
+        // Explicit provenance (a GitHub-event-triggered launch, #211): each cited id must resolve to a
+        // real Conversation event OR admitted GitHub up-inbox event — the same strict check prompt_speaker
+        // applies (§4). No source Intent is required; the triggering event itself is the provenance.
+        evidenceIds = canonicalIds(rawEvidenceIds, "Specialist launch evidence ids");
+        for (const evidenceId of evidenceIds) {
+          if (evidence.get(evidenceId) === undefined && selectGitHubEvent.get(evidenceId) === undefined) {
+            throw new Error(`Specialist launch evidence ${evidenceId} does not exist.`);
+          }
+        }
+      } else {
+        const sourceIntents = (selectBatchIntents.all(requestedBatchId) as unknown as IntentRow[])
+          .map(hydrate)
+          .filter((intent) => intent.sourceSurfaceId === sourceSurfaceId);
+        if (sourceIntents.length === 0) {
+          throw new Error(`Surface ${sourceSurfaceId} is not provenance for Brain Batch ${requestedBatchId}.`);
+        }
+        evidenceIds = canonicalIds(
+          sourceIntents.flatMap((intent) => [...intent.evidenceIds]),
+          "Specialist launch evidence ids",
+        );
       }
-      const evidenceIds = canonicalIds(
-        sourceIntents.flatMap((intent) => [...intent.evidenceIds]),
-        "Specialist launch evidence ids",
-      );
       const canonicalInput = JSON.parse(JSON.stringify(input)) as Record<string, unknown>;
       const id = specialistWorkId(requestedBatchId, sourceSurfaceId, specialist, canonicalInput);
       insertSpecialistLaunch.run(

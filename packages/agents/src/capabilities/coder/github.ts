@@ -104,6 +104,12 @@ export interface CoderGitHub {
         base: { ref: string };
       };
     }>;
+    // #211 finding 1: independently re-fetch the triggering review so the tool can verify, in trusted
+    // code, that it was a REQUEST_CHANGES authored by the configured Reviewer App — the model may not
+    // be trusted to assert the review's state or author.
+    getReview(input: { owner: string; repo: string; pull_number: number; review_id: number }): Promise<{
+      data: { state: string; user: { login: string } | null };
+    }>;
   };
 }
 
