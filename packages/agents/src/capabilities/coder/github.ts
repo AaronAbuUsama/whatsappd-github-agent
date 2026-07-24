@@ -269,6 +269,12 @@ export const upsertPullRequest = async (
     state: "open",
   });
   const existing = open[0];
+  // #211: a review continuation must update its EXACT PR. If the open head→base PR is a different one
+  // (the reviewed PR was closed and someone opened a new PR from the same branch), never mutate it —
+  // fail closed, same as when no PR is found at all.
+  if (input.requireExisting !== undefined && (existing === undefined || existing.number !== input.requireExisting)) {
+    return { number: input.requireExisting, url: "", created: false, draft: input.draft, moved: true };
+  }
   if (existing !== undefined) {
     await gh.pulls.update({
       owner: repo.owner,

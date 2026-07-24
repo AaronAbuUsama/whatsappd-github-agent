@@ -174,6 +174,29 @@ describe("upsertPullRequest — one open PR per head→base", () => {
     expect(pr).toEqual({ number: 7, url: "", created: false, draft: false, moved: true });
     expect(create).not.toHaveBeenCalled();
   });
+
+  it("#211: a review continuation never mutates a DIFFERENT open PR on the same branch", async () => {
+    // The reviewed PR (#42) was closed; a new PR (#50) was opened from the same branch/base. Never touch it.
+    const list = vi.fn(async () => ({ data: [{ number: 50, node_id: "PR_50", html_url: "https://x/pr/50", draft: false }] }));
+    const create = vi.fn();
+    const update = vi.fn();
+    const graphql = vi.fn();
+    const gh = { graphql, pulls: { list, create, update } } as unknown as CoderGitHub;
+
+    const pr = await upsertPullRequest(gh, REPO, {
+      branch: "agent/coder/issue-42",
+      base: "main",
+      title: "t",
+      body: "b",
+      draft: false,
+      requireExisting: 42,
+    });
+
+    expect(pr).toEqual({ number: 42, url: "", created: false, draft: false, moved: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(graphql).not.toHaveBeenCalled();
+  });
 });
 
 describe("commitChanges — Git Data API out (blobs → tree → commit → ref)", () => {
