@@ -1,5 +1,15 @@
 # ambient-agent
 
+## 0.5.0
+
+### Minor Changes
+
+- 8ff30e9: Add per-tenant libSQL storage for WhatsApp auth state and ChatGPT OAuth credentials.
+- e572490: Add the standalone Reviewer GitHub App workflow for automatic, sandboxed pull-request reviews.
+- 6fce77f: Run new coding jobs through a deterministic Planner, bounded Coder/Verifier loop, then publish the exact verified workspace as a ready or draft pull request.
+- cf9a592: Backfill managed WhatsApp history through each chat's persistent Scribe agent before handing the chat to live extraction.
+- 5eecb2b: Add typed Codex-style Reviewer findings and authorized `@reviewer review` pull-request admission.
+
 ## 0.4.0
 
 ### Minor Changes
