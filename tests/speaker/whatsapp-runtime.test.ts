@@ -553,6 +553,182 @@ describe("paired whatsappd -> Coalescer -> Speaker seam", () => {
     archive.close();
   });
 
+  it("engages a chat added by a live gate reload mid-stream, with no restart (#179 L6)", async () => {
+    const { archive, storeDirectory } = temporaryArchive();
+    const fake = fakeSession();
+    const gate = makeManagedChatGate([CHAT]);
+    const inbox = createManagedChatInbox(archive, { allowed: gate.allowed });
+    const account = createWhatsAppAccount({
+      storeDirectory,
+      archive: inbox.recorder,
+      sessionFactory: () => fake.session,
+    });
+    await account.authenticate({});
+    const dispatches: SpeakerDispatchRequest[] = [];
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(
+            runWhatsAppSession(account.session(), {
+              gate,
+              history: archive,
+              inbox,
+              coalescer: { debounceWindow: Duration.millis(10), maxWait: Duration.millis(20) },
+              dispatch: async (request) => {
+                dispatches.push(request);
+                return { dispatchId: `dispatch-${dispatches.length}`, acceptedAt: "2026-07-24T00:00:00.000Z" };
+              },
+            }),
+          );
+          yield* Effect.yieldNow;
+
+          // Before the reload the added chat is gated out — its message never dispatches.
+          yield* Effect.promise(async () => {
+            for (const listener of fake.messageListeners) {
+              await listener(inbound({ id: "pre-reload-other", chatId: OTHER_CHAT, text: "still gated out" }));
+            }
+          });
+          yield* Effect.sleep(Duration.millis(40));
+          expect(dispatches).toEqual([]);
+
+          // Live reload of the gate — no restart, the same session and stream stay up.
+          gate.reload([CHAT, OTHER_CHAT]);
+
+          // The previously-managed chat still works AND the newly added chat now engages.
+          yield* Effect.promise(async () => {
+            for (const listener of fake.messageListeners) {
+              await listener(inbound({ id: "post-reload-managed", chatId: CHAT, text: "unchanged path" }));
+              await listener(inbound({ id: "post-reload-other", chatId: OTHER_CHAT, text: "now admitted" }));
+            }
+          });
+          yield* Effect.sleep(Duration.millis(60));
+
+          const chats = dispatches.map((request) => request.id).sort();
+          expect(chats).toEqual([CHAT, OTHER_CHAT]);
+        }),
+      ),
+    );
+
+    await account.stop();
+    archive.close();
+  });
+
+  it("reloadManagedChats updates the gate without re-establishing the WhatsApp connection (#179)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    let sessionsCreated = 0;
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => {
+        sessionsCreated += 1;
+        return fakeSession().session;
+      },
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    expect(sessionsCreated).toBe(1);
+
+    // A reload rebuilds the authorization Set only — it never spins up a second session or re-pairs.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+
+    expect(sessionsCreated).toBe(1);
+    expect(getWhatsAppRuntimeStatus().phase).toBe("online");
+    await runtime.stop();
+  });
+
+  it("adds a Surface for a newly-authorized chat and retires it for a de-authorized one (#179 fix 2)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => fakeSession().session,
+    });
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    const jid = "15550000000:7@s.whatsapp.net";
+
+    // Before the reload the added chat has no Surface — an intent from it could not be routed.
+    const before = createSurfaceRegistry(applicationDatabase);
+    expect(before.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    before.close();
+
+    // ADD: both chats authorized → both have an active Surface; the pre-existing one keeps its id.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+    const added = createSurfaceRegistry(applicationDatabase);
+    const originalSurfaceId = added.activeSurface(jid, CHAT)?.id;
+    const otherSurfaceId = added.activeSurface(jid, OTHER_CHAT)?.id;
+    expect(otherSurfaceId).toBeDefined();
+    expect(originalSurfaceId).toBeDefined();
+    added.close();
+
+    // REMOVE: drop OTHER_CHAT → its Surface is retired. Brain directive delivery resolves through
+    // `activeBinding(surfaceId)` (whatsapp-runtime.ts), so a retired binding means outbound delivery
+    // can no longer resolve — enforcement closes outbound in lockstep with the gate closing inbound.
+    // CHAT is untouched and keeps its surface_id.
+    runtime.reloadManagedChats([CHAT]);
+    const removed = createSurfaceRegistry(applicationDatabase);
+    expect(removed.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    expect(removed.activeBinding(otherSurfaceId!)).toBeUndefined();
+    expect(removed.activeSurface(jid, CHAT)).toMatchObject({ id: originalSurfaceId, providerChatId: CHAT });
+    expect(removed.activeBinding(originalSurfaceId!)).toMatchObject({ providerChatId: CHAT });
+    removed.close();
+    await runtime.stop();
+  });
+
+  it("applies a reload that arrived during pairing once auth completes, not the startup set (#179)", async () => {
+    const { applicationDatabase, storeDirectory, archive } = temporaryArchive();
+    archive.close();
+    // A session that stays pre-online until released — the pairing/authenticating window in which a
+    // reload can arrive before the post-auth Surface activation runs.
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const statusListeners = new Set<(status: Status) => void | Promise<void>>();
+    const session = {
+      onStatus(listener: (status: Status) => void | Promise<void>) {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      onMessage: () => () => undefined,
+      onUpdate: () => () => undefined,
+      onConversationSync: () => () => undefined,
+      async start() {
+        await barrier;
+        for (const listener of statusListeners) await listener({ phase: "online" });
+      },
+      async stop() {},
+      identity: () => ({ jid: "15550000000:7@s.whatsapp.net" }),
+    } as unknown as WhatsAppSession;
+
+    const runtime = startWhatsAppRuntime({
+      storeDirectory,
+      applicationDatabase,
+      managedChats: [CHAT],
+      sessionFactory: () => session,
+    });
+    const jid = "15550000000:7@s.whatsapp.net";
+
+    // The reload lands WHILE still pairing — auth has not completed, so no Surface exists yet.
+    runtime.reloadManagedChats([CHAT, OTHER_CHAT]);
+    const midPairing = createSurfaceRegistry(applicationDatabase);
+    expect(midPairing.activeSurface(jid, OTHER_CHAT)).toBeUndefined();
+    midPairing.close();
+
+    // Let authentication finish: the post-auth activation must apply the RELOADED set, not the
+    // original [CHAT] the runtime was constructed with.
+    release();
+    await vi.waitFor(() => expect(getWhatsAppRuntimeStatus().phase).toBe("online"));
+    const afterAuth = createSurfaceRegistry(applicationDatabase);
+    await vi.waitFor(() => expect(afterAuth.activeSurface(jid, OTHER_CHAT)).toMatchObject({ providerChatId: OTHER_CHAT }));
+    expect(afterAuth.activeSurface(jid, CHAT)).toMatchObject({ providerChatId: CHAT });
+    afterAuth.close();
+    await runtime.stop();
+  });
+
   it("opens a reaction-only Window and carries it into Speaker while excluding receipts", async () => {
     const { archive, storeDirectory } = temporaryArchive();
     const fake = fakeSession();

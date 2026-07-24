@@ -59,6 +59,22 @@ describe("Issue Management configuration", () => {
     expect(repository.events()).toEqual([]);
     expect(operations.list()).toEqual([]);
   });
+
+  it("reloads the write allowlist in place while keeping the default repository fixed (#179)", () => {
+    const policy = createIssueManagementPolicy("acme/widgets", ["acme/widgets"]);
+    expect(() => policy.authorize("acme/gadgets")).toThrow("not in the configured GitHub write allowlist");
+
+    policy.reload(["acme/widgets", "acme/gadgets"]);
+
+    expect(policy.authorize("acme/gadgets")).toEqual({ owner: "acme", repo: "gadgets" });
+    // The default repository is a restart-only knob and stays authorized across a reload.
+    expect(policy.authorize()).toEqual({ owner: "acme", repo: "widgets" });
+
+    // Reloading to an empty allowlist falls back to the default repository, never open.
+    policy.reload([]);
+    expect(policy.authorize()).toEqual({ owner: "acme", repo: "widgets" });
+    expect(() => policy.authorize("acme/gadgets")).toThrow("not in the configured GitHub write allowlist");
+  });
 });
 
 describe("production Issue Management tools", () => {

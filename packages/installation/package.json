@@ -16,6 +16,7 @@
     "./github-issue-repository.ts": "./src/github-issue-repository.ts",
     "./schema.ts": "./src/schema.ts",
     "./installation.ts": "./src/installation.ts",
+    "./managed-config-store.ts": "./src/managed-config-store.ts",
     "./migration.ts": "./src/migration.ts",
     "./paths.ts": "./src/paths.ts",
     "./qr.ts": "./src/qr.ts",
