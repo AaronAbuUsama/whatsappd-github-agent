@@ -34,13 +34,12 @@ read-only.
 
 **Remaining before the atomic cutover to `main`:**
 
-- **#211** (S10) — repair Coder-owned PRs after formal Reviewer REQUEST_CHANGES feedback. In
-  progress; its real dependency (S6/#254, inbound webhook transport) is now deployed and
-  verified live.
-- **S12** — delete the superseded Speaker/routing ownership paths and the still-live
-  `TenantRuntime*` dead code (see below — this file's prior "Layer 2 — done" claim was false),
-  reconcile this file and `docs/ARCHITECTURE.md` against the code that actually exists, green
-  the cumulative scenario suite at the final commit, and cut one atomic PR into `main`.
+- **#211** (S10) — repair Coder-owned PRs after formal Reviewer REQUEST_CHANGES feedback.
+  Merged; its real dependency (S6/#254, inbound webhook transport) is deployed and verified live.
+- **S12** — delete the superseded Speaker/routing ownership paths, green the cumulative scenario
+  suite at the final commit, and cut one atomic PR into `main`. The `TenantRuntime*` dead-code
+  removal and the SaaS/web catalog-pin pruning are done (see Layer 2 below); this file and
+  `docs/ARCHITECTURE.md` are reconciled against the code that actually exists.
 
 ## The reset — where the code stands (2026-07-21)
 
@@ -48,11 +47,13 @@ The reset is a code-level cut down to **one runtime path** (single-box self-host
 
 - **Layer 1 — done.** Dropped the dead SaaS / multi-tenant + operator-web stack:
   `apps/{api,web,server}`, `packages/{api,auth,db,env}`, and their tests.
-- **Layer 2 — NOT done, despite this file previously claiming otherwise.** The Phase 1 audit
-  (2026-07-23) proved `TenantRuntimeEnvironment` and the hosted/tenant runtime boot
-  (`packages/installation/src/runtime-dependencies.ts` and its ~8 importers) are still live in
-  the tree — merely dead because nothing sets `AMBIENT_AGENT_RUNTIME_PROFILE`/`TENANT_DB_URL`
-  in the deployed environment. This removal is S12's job, not yet done.
+- **Layer 2 — done (S12 prep).** The Phase 1 audit (2026-07-23) found `TenantRuntimeEnvironment`,
+  `RuntimeDeploymentIdentity`, and `runtimeDeploymentIdentityFromEnvironment`
+  (`packages/installation/src/runtime-dependencies.ts`) still live in the tree — dead because
+  nothing set `AMBIENT_AGENT_RUNTIME_PROFILE`/`AMBIENT_AGENT_CONFIG_VERSION`. S12 removed those
+  symbols and their call sites (CLI lifecycle, bridge-contract health, runtime app), plus the
+  SaaS/web-only pins from the `pnpm-workspace.yaml` catalog. The core single-box runtime
+  dependencies (`getManagedRuntimeDependencies`, the deferred WhatsApp start) are untouched.
 
 Layer 1 was behaviour-neutral on single-box; typecheck + full test suite green, and the
 single-box build is deployed and healthy.

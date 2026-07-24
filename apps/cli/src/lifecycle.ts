@@ -13,7 +13,6 @@ import {
 import { SUBSCRIPTION_PROVIDER_ID } from "@ambient-agent/engine/model/pi-subscription.ts";
 import {
   installManagedRuntimeDependencies,
-  runtimeDeploymentIdentityFromEnvironment,
   startDeferredWhatsAppRuntime,
 } from "@ambient-agent/installation/runtime-dependencies.ts";
 import { resolveAgentSandbox } from "@ambient-agent/installation/agent-sandbox.ts";
@@ -157,7 +156,6 @@ export const startGeneratedRuntime = async (
   const braintrustApiKey = configuration.runtime.tracing.enabled
     ? await readBraintrustApiKeyOrFail(paths)
     : undefined;
-  const deployment = runtimeDeploymentIdentityFromEnvironment();
   const agentSandbox = await resolveAgentSandbox(configuration, paths);
   installManagedRuntimeDependencies({
     authentication,
@@ -165,7 +163,6 @@ export const startGeneratedRuntime = async (
     githubCredential: { ...githubCredential, webhookSecret: githubCredential.webhookSecret },
     paths,
     agentSandbox,
-    ...(deployment === undefined ? {} : { deployment }),
     ...(modelApiKey === undefined ? {} : { modelApiKey }),
     ...(braintrustApiKey === undefined ? {} : { braintrustApiKey }),
   });

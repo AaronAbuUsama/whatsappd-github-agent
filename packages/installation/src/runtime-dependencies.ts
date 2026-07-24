@@ -9,7 +9,6 @@ export interface ManagedRuntimeDependencies {
   /** The Planner App credential — the runtime's issue-filing identity and webhook-secret owner (#135). */
   readonly githubCredential: GitHubAppCredential & { readonly webhookSecret: string };
   readonly paths: ManagedPaths;
-  readonly deployment?: RuntimeDeploymentIdentity;
   /**
    * The per-job agent sandbox both Specialist shells run in, and the workspace root it extracts
    * repos into (#251) — resolved together by {@link resolveAgentSandbox}. Always present: the
@@ -33,16 +32,6 @@ export interface ManagedRuntimeDependencies {
   readonly braintrustApiKey?: string;
 }
 
-export interface TenantRuntimeEnvironment {
-  readonly AMBIENT_AGENT_RUNTIME_PROFILE?: string;
-  readonly AMBIENT_AGENT_CONFIG_VERSION?: string;
-}
-
-export interface RuntimeDeploymentIdentity {
-  readonly configVersion: number;
-  readonly mode: "setup" | "operate";
-}
-
 const RUNTIME_DEPENDENCIES = Symbol.for("ambient-agent.managed-runtime-dependencies");
 const WHATSAPP_RUNTIME_START = Symbol.for("ambient-agent.deferred-whatsapp-runtime-start");
 
@@ -63,22 +52,6 @@ export const getManagedRuntimeDependencies = (): ManagedRuntimeDependencies => {
     throw new Error("Managed runtime dependencies were not configured by the Ambient Agent CLI.");
   }
   return dependencies;
-};
-
-export const runtimeDeploymentIdentityFromEnvironment = (
-  environment: TenantRuntimeEnvironment = process.env,
-): RuntimeDeploymentIdentity | undefined => {
-  const mode = environment.AMBIENT_AGENT_RUNTIME_PROFILE?.trim();
-  const versionValue = environment.AMBIENT_AGENT_CONFIG_VERSION?.trim();
-  if (!mode && !versionValue) return undefined;
-  if (mode !== "setup" && mode !== "operate") {
-    throw new Error("AMBIENT_AGENT_RUNTIME_PROFILE must be setup or operate.");
-  }
-  const configVersion = Number(versionValue);
-  if (!Number.isSafeInteger(configVersion) || configVersion < 1) {
-    throw new Error("AMBIENT_AGENT_CONFIG_VERSION must be a positive integer.");
-  }
-  return { configVersion, mode };
 };
 
 // The generated server and the CLI are separate bundles, so this handoff crosses
