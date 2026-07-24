@@ -157,18 +157,24 @@ export const convertPullRequestToDraft = async (github: CoderGitHub, nodeId: str
  * Upsert ONE idempotent lifecycle comment on the PR, keyed on a hidden marker: find the prior
  * marked comment and update it, else create it. A webhook redelivery or explicit retry converges
  * on the same single comment rather than duplicating.
+ *
+ * The marker match is restricted to OUR OWN bot's comments — by `botLogin` when known, else any
+ * Bot author — so a human comment that quotes the marker is never adopted and edited (round-4 finding).
  */
 export const upsertLifecycleComment = async (
   github: CoderGitHub,
   repo: GitHubRepositoryRef,
   prNumber: number,
   body: string,
+  botLogin: string | undefined,
 ): Promise<void> => {
   const marker = budgetCommentMarker(prNumber);
   const fullBody = `${body}\n\n${marker}`;
+  const authoredByUs = (comment: { user?: { login?: string; type?: string } | null }): boolean =>
+    botLogin === undefined ? comment.user?.type === "Bot" : (comment.user?.login ?? "").toLowerCase() === botLogin;
   for (let page = 1; ; page += 1) {
     const { data } = await github.issues.listComments({ owner: repo.owner, repo: repo.repo, issue_number: prNumber, per_page: 100, page });
-    const existing = data.find((comment) => comment.body?.includes(marker));
+    const existing = data.find((comment) => comment.body?.includes(marker) && authoredByUs(comment));
     if (existing !== undefined) {
       await github.issues.updateComment({ owner: repo.owner, repo: repo.repo, comment_id: existing.id, body: fullBody });
       return;
@@ -190,6 +196,7 @@ export const demoteOverBudget = async (
   repo: GitHubRepositoryRef,
   prNumber: number,
   maxReviewCycles: number,
+  botLogin: string | undefined,
 ): Promise<{ prUrl: string }> => {
   const { data: pr } = await github.pulls.get({ owner: repo.owner, repo: repo.repo, pull_number: prNumber });
   if ((pr.draft ?? false) === false && pr.node_id !== undefined) {
@@ -202,6 +209,7 @@ export const demoteOverBudget = async (
     `Changes were requested again, but this pull request has reached its configured repair budget of ` +
       `${maxReviewCycles} external review cycle${maxReviewCycles === 1 ? "" : "s"}. No further automatic repair ` +
       `will run; converting to draft for human attention.`,
+    botLogin,
   );
   return { prUrl: pr.html_url };
 };

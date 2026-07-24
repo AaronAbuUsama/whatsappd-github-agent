@@ -293,8 +293,10 @@ const run = async ({ harness, input, log }: {
     if (isContinuation) {
       const live = await fetchReviewContinuation(github, repo, input.pullRequest!);
       const expectedHeadRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
-      const forkHeaded = live.headRepoFull !== undefined && live.headRepoFull.toLowerCase() !== expectedHeadRepo;
-      if (live.state !== "open" || forkHeaded || live.headRef !== branch) {
+      // Fail closed on an unverifiable head repo (§10): a null head.repo — GitHub reports this when the
+      // source repo is deleted/unreachable — is treated the same as a verified different repo, both blocked.
+      const notSameRepo = live.headRepoFull === undefined || live.headRepoFull.toLowerCase() !== expectedHeadRepo;
+      if (live.state !== "open" || notSameRepo || live.headRef !== branch) {
         waypoint("workflow", "completed");
         return {
           outcome: "blocked",

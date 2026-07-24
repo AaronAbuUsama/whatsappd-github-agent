@@ -30,6 +30,12 @@ export interface CoderRuntime {
    * Reviewer App is unprovisioned — repair then fails closed (it cannot authorize any review).
    */
   readonly reviewerAppSlug?: string;
+  /**
+   * #211 round-4: the Coder App's own slug, so the over-budget lifecycle comment is matched only when
+   * authored by `<slug>[bot]` — a human comment that quotes the marker is never edited. Best-effort at
+   * boot; absent → the comment scan degrades to any Bot-authored marker match.
+   */
+  readonly coderAppSlug?: string;
 }
 
 const runtimeSlot = createFlueGlobal<CoderRuntime>(

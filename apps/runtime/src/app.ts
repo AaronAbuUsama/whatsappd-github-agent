@@ -65,13 +65,23 @@ const configureCoderRuntimeBinding = async (
 ): Promise<void> => {
   const credential = await readProvisionedGitHubAppCredential(paths.githubAppCredentials.coder, "coder");
   const resolver = createInstallationResolver(credential);
+  // #211 round-4: resolve the Coder App's own slug (App-identity JWT route) so the over-budget lifecycle
+  // comment is only ever matched to OUR bot's comment. Best-effort — a boot GitHub blip must not take the
+  // Coder path down, so failure leaves it undefined and the comment scan degrades to any Bot author.
+  let coderAppSlug: string | undefined;
+  try {
+    coderAppSlug = await reviewerSlug(githubAppJwtClient(credential) as unknown as ReviewerGitHub);
+  } catch (cause) {
+    console.warn("[coder] could not resolve the coder App slug; lifecycle-comment author filtering degrades to bot-type", cause);
+  }
   configureCoderRuntime({
     github: async (repo) => (await resolver.octokitFor(repo.owner, repo.repo)) as unknown as CoderGitHub,
     sandbox: agentSandbox.sandbox,
     workspacesRoot: agentSandbox.workspacesRoot,
     registry,
-    // #211 finding 1: the repair tool authorizes a review only if authored by <slug>[bot].
+    // #211 finding 1: the repair tool authorizes a review only if authored by <reviewer-slug>[bot].
     ...(reviewerAppSlug === undefined ? {} : { reviewerAppSlug }),
+    ...(coderAppSlug === undefined ? {} : { coderAppSlug }),
   });
 };
 

@@ -7,6 +7,7 @@ import { demoteOverBudget } from "./continuation.ts";
 import { getCoderRuntime } from "./runtime.ts";
 import { coderSpecialistSpec } from "./workflow.ts";
 import { launchSpecialistWork } from "../delegation/tools.ts";
+import { getDelegationRuntime } from "../delegation/runtime.ts";
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const positiveInteger = v.pipe(v.number(), v.integer(), v.minValue(1));
@@ -58,7 +59,7 @@ export const createRepairPullRequestTool = () =>
       v.object({ kind: v.literal("repair_pull_request"), status: v.literal("unauthorized"), reason: nonEmptyString }),
     ]),
     run: async ({ input }) => {
-      const { registry, github: resolveGithub, reviewerAppSlug } = getCoderRuntime();
+      const { registry, github: resolveGithub, reviewerAppSlug, coderAppSlug } = getCoderRuntime();
       if (registry === undefined) throw new Error("The coding-job registry is not configured for this Brain runtime.");
       const repo = parseGitHubRepository(input.repository, (value) => new Error(`Coder repository must be owner/repo, got ${value}`));
       const github = await resolveGithub(repo);
@@ -79,6 +80,29 @@ export const createRepairPullRequestTool = () =>
         };
       }
 
+      // Provenance precision (round-4 finding): the cited evidence must actually be THIS review event —
+      // at least one cited id in the current Batch must be the pull_request_review event for this exact
+      // review id, PR number, and repository. Batch membership alone (checked at launch) is not enough:
+      // an unrelated-but-batch-scoped event must not be recorded as what triggered this repair.
+      const batch = getDelegationRuntime().inbox.claimBatch();
+      const cited = (batch?.githubEvents ?? []).filter((event) => input.evidenceIds.includes(event.id));
+      const triggering = cited.find((event) => {
+        const detail = event.detail as { review?: { id?: unknown }; pullRequest?: { number?: unknown } };
+        return (
+          event.eventName === "pull_request_review" &&
+          detail.review?.id === input.reviewId &&
+          detail.pullRequest?.number === input.pullRequest &&
+          event.repository.toLowerCase() === input.repository.toLowerCase()
+        );
+      });
+      if (triggering === undefined) {
+        return {
+          kind: "repair_pull_request" as const,
+          status: "unauthorized" as const,
+          reason: `no cited evidence is the pull_request_review event for review ${input.reviewId} on ${input.repository}#${input.pullRequest}`,
+        };
+      }
+
       // Atomically decide AND reserve (budget + cycle in one step) so two concurrent reviews can never
       // both launch past the same budget check (finding 3). On any subsequent side-effect failure we
       // release the reservation, so a failed launch/demotion never permanently wastes a cycle.
@@ -88,7 +112,7 @@ export const createRepairPullRequestTool = () =>
 
       if (reservation.status === "over-budget") {
         try {
-          const { prUrl } = await demoteOverBudget(github, repo, input.pullRequest, reservation.job.maxReviewCycles);
+          const { prUrl } = await demoteOverBudget(github, repo, input.pullRequest, reservation.job.maxReviewCycles, coderAppSlug === undefined ? undefined : `${coderAppSlug.toLowerCase()}[bot]`);
           return { kind: "repair_pull_request" as const, status: "over-budget" as const, prUrl, maxReviewCycles: reservation.job.maxReviewCycles };
         } catch (cause) {
           registry.releaseRepair(input.repository, input.pullRequest, input.reviewId);

@@ -65,11 +65,13 @@ describe("fetchReviewContinuation (#211)", () => {
   });
 });
 
-/** A github double that records mutations, seeded with the live PR draft state. */
-const fakeGitHub = (draft: boolean) => {
-  const comments: { id: number; body: string }[] = [];
+type Comment = { id: number; body: string; user?: { login?: string; type?: string } | null };
+
+/** A github double that records mutations, seeded with the live PR draft state and any pre-existing comments. */
+const fakeGitHub = (draft: boolean, seed: Comment[] = []) => {
+  const comments: Comment[] = [...seed];
   const graphqlCalls: string[] = [];
-  let nextId = 1;
+  let nextId = 100;
   const github = {
     graphql: vi.fn(async (query: string) => {
       graphqlCalls.push(query);
@@ -81,7 +83,7 @@ const fakeGitHub = (draft: boolean) => {
     issues: {
       listComments: vi.fn(async () => ({ data: comments })),
       createComment: vi.fn(async ({ body }: { body: string }) => {
-        const created = { id: nextId++, body };
+        const created: Comment = { id: nextId++, body, user: { login: "ambient-coder[bot]", type: "Bot" } };
         comments.push(created);
         return { data: { id: created.id, html_url: "" } };
       }),
@@ -95,18 +97,31 @@ const fakeGitHub = (draft: boolean) => {
   return { github, comments, graphqlCalls };
 };
 
+const BOT = "ambient-coder[bot]";
+
 describe("demoteOverBudget (#211)", () => {
   it("converts a ready PR to draft and upserts exactly ONE idempotent lifecycle comment", async () => {
     const seam = fakeGitHub(false);
-    const first = await demoteOverBudget(seam.github, repo, 42, 2);
+    const first = await demoteOverBudget(seam.github, repo, 42, 2, BOT);
     expect(first.prUrl).toBe("https://github.com/acme/widgets/pull/42");
     expect(seam.graphqlCalls.some((q) => q.includes("convertPullRequestToDraft"))).toBe(true);
     expect(seam.comments).toHaveLength(1);
     const body = seam.comments[0]!.body;
 
     // A retry (crash recovery, or a later over-budget review) updates the SAME comment, never duplicates.
-    await demoteOverBudget(seam.github, repo, 42, 2);
+    await demoteOverBudget(seam.github, repo, 42, 2, BOT);
     expect(seam.comments).toHaveLength(1);
     expect(seam.comments[0]!.body).toBe(body);
+  });
+
+  it("round-4: never adopts a human comment that quotes the marker — it posts a fresh bot comment", async () => {
+    // A human comment whose body contains the exact hidden marker. It must NOT be edited.
+    const human: Comment = { id: 1, body: "see <!-- ambient-agent-repair-budget:42 --> above", user: { login: "maintainer", type: "User" } };
+    const seam = fakeGitHub(true, [human]);
+    await demoteOverBudget(seam.github, repo, 42, 2, BOT);
+    // The human comment is untouched; a new bot-authored comment was created.
+    expect(seam.comments.find((c) => c.id === 1)!.body).toBe("see <!-- ambient-agent-repair-budget:42 --> above");
+    expect(seam.comments).toHaveLength(2);
+    expect(seam.comments[1]!.user?.login).toBe(BOT);
   });
 });

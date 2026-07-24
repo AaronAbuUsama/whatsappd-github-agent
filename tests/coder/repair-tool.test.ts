@@ -80,6 +80,7 @@ const fixture = (
     sandbox: (() => ({})) as never,
     workspacesRoot: "/tmp",
     registry,
+    coderAppSlug: "ambient-coder",
     ...("reviewerAppSlug" in opts ? { reviewerAppSlug: opts.reviewerAppSlug } : { reviewerAppSlug: SLUG }),
   });
   configureDelegationRuntime({
@@ -229,7 +230,7 @@ describe("repair_pull_request Brain tool (#211)", () => {
     }
   });
 
-  it("FINDING 2 (round 3): rejects an evidence id that is real but not part of this Batch, and releases the reservation", async () => {
+  it("FINDING 2 (round 3): an off-batch evidence id is rejected as unauthorized — no reservation, no launch", async () => {
     const registry = createCodingJobRegistry(":memory:");
     registry.upsert(job);
     let admissions = 0;
@@ -243,14 +244,33 @@ describe("repair_pull_request Brain tool (#211)", () => {
         action: "submitted",
         repository: "acme/widgets",
         summary: "unrelated review",
-        detail: {},
+        detail: { review: { id: 501 }, pullRequest: { number: 42 } },
       });
-      const result = createRepairPullRequestTool().run({
+      const result = await (createRepairPullRequestTool().run({
         input: { batchId, surfaceId: SOURCE, repository: "acme/widgets", pullRequest: 42, reviewId: 501, evidenceIds: [offBatch.id] },
-      } as never) as Promise<Record<string, unknown>>;
-      await expect(result).rejects.toThrow(/is not part of Brain Batch/u);
+      } as never) as Promise<Record<string, unknown>>);
+      expect(result).toMatchObject({ kind: "repair_pull_request", status: "unauthorized" });
       expect(admissions).toBe(0);
-      // The reservation the tool took before launching was released — no cycle wasted.
+      // Rejected before reserving — no cycle consumed.
+      expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
+    } finally {
+      inbox.close();
+      registry.close();
+    }
+  });
+
+  it("FINDING 2 (round 4): rejects cited evidence that IS in the batch but references a different review/PR", async () => {
+    const registry = createCodingJobRegistry(":memory:");
+    registry.upsert(job);
+    let admissions = 0;
+    // The batch's one event is the review for #42/501 — but the tool is asked to repair with reviewId 999.
+    const { inbox, batchId, eventId } = fixture(registry, async () => { admissions += 1; return { runId: "r" }; });
+    try {
+      const result = await (createRepairPullRequestTool().run({
+        input: { batchId, surfaceId: SOURCE, repository: "acme/widgets", pullRequest: 42, reviewId: 999, evidenceIds: [eventId] },
+      } as never) as Promise<Record<string, unknown>>);
+      expect(result).toMatchObject({ kind: "repair_pull_request", status: "unauthorized" });
+      expect(admissions).toBe(0);
       expect(registry.get("acme/widgets", 42)!.reviewCycle).toBe(0);
     } finally {
       inbox.close();

@@ -22,7 +22,7 @@ export interface CoderGitHub {
     // #211: PR-level lifecycle comments are issue comments; the over-budget notice is upserted on
     // a hidden marker so redelivery/retry updates the one comment instead of duplicating it.
     listComments(input: { owner: string; repo: string; issue_number: number; per_page: number; page: number }): Promise<{
-      data: ReadonlyArray<{ id: number; body?: string | null }>;
+      data: ReadonlyArray<{ id: number; body?: string | null; user?: { login?: string; type?: string } | null }>;
     }>;
     createComment(input: { owner: string; repo: string; issue_number: number; body: string }): Promise<{
       data: { id: number; html_url: string };
