@@ -104,6 +104,16 @@ describe("resolveEntitySurface — one prompt operation for group reply and know
     expect(resolveEntitySurface(deps, personOnGroup)).toBeUndefined();
     expect(surfaces.activeSurface(ACCOUNT, "discovered-group@g.us")).toBeUndefined(); // never activated.
 
+    // Same guard must hold for a non-lowercase group JID — the registry lowercases internally, so a
+    // case-sensitive check would miss it and open the group as a DM.
+    const personOnUpperGroup = attestEntity(store, {
+      type: "person",
+      properties: { name: "MislinkedUpper" },
+      identity: { platform: "whatsapp", externalId: "STRANGER@G.US" },
+    });
+    expect(resolveEntitySurface(deps, personOnUpperGroup)).toBeUndefined();
+    expect(surfaces.activeSurface(ACCOUNT, "STRANGER@G.US")).toBeUndefined(); // never activated.
+
     store.close();
     surfaces.close();
   });
