@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { createBrainInbox } from "../../packages/engine/src/brain/inbox.ts";
+import { wakeBrain, type DispatchBrain } from "../../packages/agents/src/brain/dispatch.ts";
+import { createBrainInbox, type BrainInbox } from "../../packages/engine/src/brain/inbox.ts";
 import { createConversationArchive } from "../../packages/engine/src/intake/conversation-archive.ts";
 
 const roots: string[] = [];
@@ -25,14 +26,22 @@ const fixture = (): string => {
 const openInbox = (databasePath: string, now: () => string) =>
   createBrainInbox(databasePath, { providerChatIdForSurface: () => "chat@g.us", now });
 
-describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6)", () => {
+// A self-scheduled wake is a local effect of an open, dispatched Batch (ADR 0006). Drive one into being
+// by admitting a sweep, claiming it, and marking it dispatched — the realistic "Brain handling a sweep
+// self-schedules a follow-up" flow.
+const dispatchedBatch = (inbox: BrainInbox) => {
+  inbox.runProactiveClock();
+  const batch = inbox.claimBatch()!;
+  return inbox.markBatchDispatched(batch.id, { dispatchId: `d:${batch.id}`, acceptedAt: batch.createdAt });
+};
+
+describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6, ADR 0006)", () => {
   it("admits exactly one outstanding Proactive Sweep and never a duplicate while it is outstanding", () => {
     let clock = 0;
     const inbox = openInbox(fixture(), () => `2026-07-22T12:00:0${clock}.000Z`);
 
     clock = 1;
-    const first = inbox.runProactiveClock();
-    expect(first).toEqual({ admittedSweep: true, admittedWakes: 0 });
+    expect(inbox.runProactiveClock()).toEqual({ admittedSweep: true, admittedWakes: 0 });
 
     // A second tick while the first sweep is still outstanding (unclaimed) admits nothing.
     clock = 2;
@@ -56,19 +65,68 @@ describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6)",
     inbox.close();
   });
 
-  it("content-addresses a self-scheduled wake so the same loop + time coalesces to one row", () => {
+  it("a transient wake failure leaves the sweep Batch open, and the next wake re-dispatches it (no wedge)", async () => {
+    let clock = 0;
+    const inbox = openInbox(fixture(), () => `2026-07-22T12:00:0${clock}.000Z`);
+    clock = 1;
+    inbox.runProactiveClock();
+
+    // wakeBrain claims the sweep Batch, then the dispatch throws: the Batch is now open but undispatched.
+    const failing: DispatchBrain = () => Promise.reject(new Error("transient dispatch failure"));
+    await expect(wakeBrain(inbox, failing)).rejects.toThrow("transient");
+
+    // The guard correctly sees it as still outstanding, so no duplicate sweep — but liveness must not wedge.
+    clock = 2;
+    expect(inbox.runProactiveClock()).toEqual({ admittedSweep: false, admittedWakes: 0 });
+
+    // The next successful wake re-dispatches the SAME still-open Batch rather than leaving it stuck forever.
+    clock = 3;
+    const dispatched: string[] = [];
+    const ok: DispatchBrain = (request) => {
+      dispatched.push(request.input.batch.id);
+      return Promise.resolve({ dispatchId: "d-ok", acceptedAt: "2026-07-22T12:00:03.000Z" });
+    };
+    const batch = await wakeBrain(inbox, ok);
+    expect(batch?.dispatch?.dispatchId).toBe("d-ok");
+    expect(batch?.scheduledWakes[0]?.kind).toBe("sweep");
+    expect(dispatched).toHaveLength(1);
+    inbox.close();
+  });
+
+  it("records a Brain Effect that commits with the wake row and settles with its Batch (ADR 0006)", () => {
     const inbox = openInbox(fixture(), () => "2026-07-22T12:00:00.000Z");
-    const wake = inbox.scheduleWake({ reason: "chase the deploy commitment", dueAt: "2026-07-22T14:00:00.000Z" });
+    const batch = dispatchedBatch(inbox);
+    const wake = inbox.scheduleWake({ batchId: batch.id, reason: "chase the deploy", dueAt: "2026-07-22T14:00:00.000Z" });
+
+    const effects = inbox.effects(batch.id).filter((e) => e.kind === "schedule_wake");
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({ kind: "schedule_wake", wakeId: wake.id, status: "completed" });
+
+    // The completed effect lets the creating Batch settle cleanly — the wake is owned, not orphaned.
+    expect(() => inbox.settleBatch(batch.id)).not.toThrow();
+    inbox.close();
+  });
+
+  it("requires an open dispatched Batch and content-addresses the wake so a retry coalesces", () => {
+    const inbox = openInbox(fixture(), () => "2026-07-22T12:00:00.000Z");
+    expect(() =>
+      inbox.scheduleWake({ batchId: "brain-batch:nope", reason: "x", dueAt: "2026-07-22T14:00:00.000Z" }),
+    ).toThrow("not open and dispatched");
+    const batch = dispatchedBatch(inbox);
+    const wake = inbox.scheduleWake({ batchId: batch.id, reason: "chase", dueAt: "2026-07-22T14:00:00.000Z" });
     expect(wake.id).toMatch(/^scheduled-wake:[a-f0-9]{64}$/u);
-    expect(inbox.scheduleWake({ reason: "chase the deploy commitment", dueAt: "2026-07-22T14:00:00.000Z" })).toEqual(wake);
+    expect(inbox.scheduleWake({ batchId: batch.id, reason: "chase", dueAt: "2026-07-22T14:00:00.000Z" })).toEqual(wake);
     inbox.close();
   });
 
   it("a due wake survives restart and fires exactly once", () => {
     const databasePath = fixture();
     const scheduling = openInbox(databasePath, () => "2026-07-22T12:00:00.000Z");
-    scheduling.scheduleWake({ reason: "chase the overdue review", dueAt: "2026-07-22T14:00:00.000Z" });
-    scheduling.close(); // crash before the wake ever came due
+    const creating = dispatchedBatch(scheduling);
+    scheduling.scheduleWake({ batchId: creating.id, reason: "chase the overdue review", dueAt: "2026-07-22T14:00:00.000Z" });
+    scheduling.recordSilence(creating.id, "Scheduled a follow-up; nothing else this sweep.");
+    scheduling.settleBatch(creating.id); // free the frontier, then crash before the wake ever came due
+    scheduling.close();
 
     // Restart AFTER it is due — boot due scan admits it exactly once.
     const rebooted = openInbox(databasePath, () => "2026-07-22T15:00:00.000Z");
@@ -90,10 +148,25 @@ describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6)",
     again.close();
   });
 
-  it("does not admit a wake that is not yet due", () => {
+  it("normalizes a non-UTC-offset dueAt to canonical UTC so it fires when the instant is actually due", () => {
     const databasePath = fixture();
-    const inbox = openInbox(databasePath, () => "2026-07-22T12:00:00.000Z");
-    inbox.scheduleWake({ reason: "future check", dueAt: "2026-07-22T18:00:00.000Z" });
+    const inbox = openInbox(databasePath, () => "2026-07-22T12:30:00.000Z");
+    const batch = dispatchedBatch(inbox);
+    // +02:00 14:00 is 12:00 UTC — already past a 12:30 UTC now. Raw-string ordering would wrongly skip it.
+    const wake = inbox.scheduleWake({ batchId: batch.id, reason: "offset check", dueAt: "2026-07-22T14:00:00.000+02:00" });
+    expect(wake.dueAt).toBe("2026-07-22T12:00:00.000Z");
+    inbox.recordSilence(batch.id, "done");
+    inbox.settleBatch(batch.id);
+    expect(inbox.runProactiveClock().admittedWakes).toBe(1);
+    inbox.close();
+  });
+
+  it("does not admit a wake that is not yet due", () => {
+    const inbox = openInbox(fixture(), () => "2026-07-22T12:00:00.000Z");
+    const batch = dispatchedBatch(inbox);
+    inbox.scheduleWake({ batchId: batch.id, reason: "future check", dueAt: "2026-07-22T18:00:00.000Z" });
+    inbox.recordSilence(batch.id, "done");
+    inbox.settleBatch(batch.id);
     // now < dueAt → the sweep is admitted but the future wake is not.
     expect(inbox.runProactiveClock()).toEqual({ admittedSweep: true, admittedWakes: 0 });
     expect(inbox.pendingScheduledWakes().filter((w) => w.kind === "scheduled")).toHaveLength(0);
@@ -102,7 +175,8 @@ describe("proactive clock — Scheduled Wake + coalesced Proactive Sweep (§6)",
 
   it("rejects a non-ISO due time", () => {
     const inbox = openInbox(fixture(), () => "2026-07-22T12:00:00.000Z");
-    expect(() => inbox.scheduleWake({ reason: "bad", dueAt: "whenever" })).toThrow("ISO-8601");
+    const batch = dispatchedBatch(inbox);
+    expect(() => inbox.scheduleWake({ batchId: batch.id, reason: "bad", dueAt: "whenever" })).toThrow("ISO-8601");
     inbox.close();
   });
 });

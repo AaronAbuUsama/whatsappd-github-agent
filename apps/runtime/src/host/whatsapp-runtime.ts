@@ -279,14 +279,16 @@ export const startWhatsAppRuntime = (options: WhatsAppRuntimeOptions): WhatsAppR
   // admission wakes directly.
   let brainReady = false;
   let proactiveClockTimer: ReturnType<typeof setInterval> | undefined;
-  // The cron/boot due scan (§6): admit a coalesced Proactive Sweep + every due Scheduled Wake, then wake
-  // the Brain if anything was admitted. Idempotent and durable — safe to run on boot and on every tick.
-  // Non-fatal by design: a wake we cannot dispatch now (like a boot issue-filing) must never kill the
-  // runtime fiber — the durable sweep/wake rows persist and the open Batch re-dispatches on the next tick.
+  // The cron/boot due scan (§6): admit a coalesced Proactive Sweep + every due Scheduled Wake, then wake.
+  // Idempotent and durable — safe on boot and on every tick. Always wake, even when the scan admitted
+  // nothing new: wakeBrain re-claims and re-dispatches an already-open Batch (its claimBatch returns the
+  // open Batch first), so a Batch left claimed-but-undispatched by a prior transient wake failure is
+  // retried here instead of wedging the clock. Non-fatal by design: a wake we cannot dispatch now (like a
+  // boot issue-filing) must never kill the runtime fiber — the durable rows persist and retry next tick.
   const runProactiveClock = async (): Promise<void> => {
     try {
-      const tick = brainInbox.runProactiveClock();
-      if (tick.admittedSweep || tick.admittedWakes > 0) await wakeBrain(brainInbox);
+      brainInbox.runProactiveClock();
+      await wakeBrain(brainInbox);
     } catch (cause) {
       getLogger("brain").warn(
         { event: "brain.proactive-clock.failed", error: errorMessage(cause) },

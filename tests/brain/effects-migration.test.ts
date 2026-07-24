@@ -155,10 +155,12 @@ describe("brain_effects file_issue migration", () => {
         accepted_at TEXT,
         settled_at TEXT
       ) STRICT;
+      -- Already widened to the CURRENT kind set (incl. 'schedule_wake'), so the effects-rebuild guard is
+      -- skipped and only the dangling-children repair path can fix the FKs below — the path under test.
       CREATE TABLE brain_effects (
         effect_id TEXT PRIMARY KEY,
         batch_id TEXT NOT NULL REFERENCES brain_batches(batch_id),
-        kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue')),
+        kind TEXT NOT NULL CHECK (kind IN ('prompt_speaker', 'stay_silent', 'file_issue', 'schedule_wake')),
         payload_json TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'completed')),
         dispatch_id TEXT,
